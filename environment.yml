@@ -1,0 +1,7 @@
+name: forwantofanail
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - sqlalchemy
+  - h3-py
