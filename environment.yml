@@ -5,3 +5,5 @@ dependencies:
   - python=3.11
   - sqlalchemy
   - h3-py
+  - fastapi
+  - uvicorn

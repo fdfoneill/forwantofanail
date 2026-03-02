@@ -20,6 +20,11 @@ class MessageCreateRequest(BaseModel):
     priority: str = "normal"
 
 
+class TimeAdvanceRequest(BaseModel):
+    steps: int = 1
+    execute_actions: bool = True
+
+
 class TimePayload(BaseModel):
     day: int
     watch: int

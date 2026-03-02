@@ -144,6 +144,25 @@ def move_army(
     )
 
 
+def calculate_move_watches(session: Session, army_id: int, destination_id: str) -> int:
+    army = session.get(Army, army_id)
+    if army is None:
+        raise ValueError(f"Unknown army_id {army_id}")
+
+    destination = session.get(Location, destination_id)
+    if destination is None:
+        raise ValueError(f"Unknown destination {destination_id}")
+
+    origin = army.location
+    if origin is None:
+        raise ValueError(f"Army {army_id} has no current location.")
+
+    if not are_adjacent(origin.location_id, destination.location_id):
+        raise ValueError("Destination is not adjacent to current location.")
+
+    return _movement_cost(session, army, origin, destination)
+
+
 def list_valid_destinations(session: Session, army_id: int) -> list[str]:
     army = session.get(Army, army_id)
     if army is None:
