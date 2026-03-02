@@ -5,13 +5,14 @@ import csv
 from datetime import date
 from pathlib import Path
 
-from core.database import Base, create_session, get_engine
-from core.models import (
+from forwantofanail.core.database import Base, create_session, get_engine
+from forwantofanail.core.models import (
     Army,
     Commander,
     CommanderTrait,
     Detachment,
     DetachmentSpecial,
+    GameClock,
     Location,
     Movement,
     Stronghold,
@@ -199,6 +200,9 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
                     },
                 )
             )
+
+        if session.get(GameClock, 1) is None:
+            session.add(GameClock(singleton_id=1, day=1, watch=1))
 
         session.commit()
     except Exception:

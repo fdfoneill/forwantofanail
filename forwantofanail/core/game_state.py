@@ -5,8 +5,8 @@ from datetime import date
 
 from sqlalchemy.orm import Session
 
-from mechanics.movement import MoveResult, move_army
-from mechanics.time import GameTime, Watch
+from forwantofanail.mechanics.movement import MoveResult, move_army
+from forwantofanail.mechanics.time import GameTime, Watch
 
 
 @dataclass

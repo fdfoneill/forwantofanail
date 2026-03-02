@@ -4,11 +4,13 @@ from sqlalchemy import (
     Boolean,
     Column,
     Date,
+    DateTime,
     Float,
     ForeignKey,
     Integer,
     PrimaryKeyConstraint,
     String,
+    Text,
 )
 from sqlalchemy.orm import relationship
 
@@ -53,6 +55,20 @@ class Commander(Base):
 
     traits = relationship("CommanderTrait", back_populates="commander", cascade="all, delete-orphan")
     armies = relationship("Army", back_populates="commander")
+    actions = relationship("Action", back_populates="commander", cascade="all, delete-orphan")
+    sent_messages = relationship(
+        "Message",
+        back_populates="sender",
+        cascade="all, delete-orphan",
+        foreign_keys="Message.sender_id",
+    )
+    received_messages = relationship(
+        "Message",
+        back_populates="recipient",
+        cascade="all, delete-orphan",
+        foreign_keys="Message.recipient_id",
+    )
+    auth_tokens = relationship("AuthToken", back_populates="commander", cascade="all, delete-orphan")
 
 
 class CommanderTrait(Base):
@@ -139,3 +155,58 @@ class Movement(Base):
 
     army = relationship("Army", back_populates="movements")
     location = relationship("Location", back_populates="movements")
+
+
+class GameClock(Base):
+    __tablename__ = "game_clock"
+
+    singleton_id = Column(Integer, primary_key=True, default=1)
+    day = Column(Integer, nullable=False, default=1)
+    watch = Column(Integer, nullable=False, default=1)
+
+
+class AuthToken(Base):
+    __tablename__ = "auth_tokens"
+
+    token = Column(String(128), primary_key=True)
+    commander_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False)
+
+    commander = relationship("Commander", back_populates="auth_tokens")
+
+
+class Action(Base):
+    __tablename__ = "actions"
+
+    action_id = Column(Integer, primary_key=True, autoincrement=True)
+    commander_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=False, index=True)
+    kind = Column(String(40), nullable=False)
+    state = Column(String(30), nullable=False, default="queued", index=True)
+    parameters_json = Column(Text, nullable=False, default="{}")
+    accepted_at = Column(DateTime, nullable=False)
+    started_day = Column(Integer, nullable=True)
+    started_watch = Column(Integer, nullable=True)
+    eta_day = Column(Integer, nullable=True)
+    eta_watch = Column(Integer, nullable=True)
+
+    commander = relationship("Commander", back_populates="actions")
+
+
+class Message(Base):
+    __tablename__ = "messages"
+
+    message_id = Column(Integer, primary_key=True, autoincrement=True)
+    sender_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=False, index=True)
+    recipient_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=False, index=True)
+    content = Column(Text, nullable=False)
+    priority = Column(String(20), nullable=False, default="normal")
+    sent_day = Column(Integer, nullable=False)
+    sent_watch = Column(Integer, nullable=False)
+    delivery_day = Column(Integer, nullable=False)
+    delivery_watch = Column(Integer, nullable=False)
+    status = Column(String(20), nullable=False, default="delivered")
+    is_read = Column(Boolean, nullable=False, default=False, index=True)
+    created_at = Column(DateTime, nullable=False)
+
+    sender = relationship("Commander", back_populates="sent_messages", foreign_keys=[sender_id])
+    recipient = relationship("Commander", back_populates="received_messages", foreign_keys=[recipient_id])
