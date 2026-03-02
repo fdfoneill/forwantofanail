@@ -13,41 +13,69 @@ In For Want of a Nail, you take command of one of these factions, leading your a
 
 ```
 forwantofanail/
-├── core/
-│   ├── __init__.py
-│   ├── models.py          # SQLAlchemy models (armies, strongholds, etc.)
-│   ├── database.py        # DB connection and session management
-│   └── game_state.py      # Core game state queries and updates
-├── mechanics/
-│   ├── __init__.py
-│   ├── movement.py        # Movement calculations, pathfinding
-│   ├── supply.py          # Supply consumption, foraging
-│   ├── combat.py          # Battle resolution (can be stubbed initially)
-│   └── time.py            # Watch progression, time management
-├── communication/
-│   ├── __init__.py
-│   ├── messages.py        # Message creation, delivery, routing
-│   ├── orders.py          # Parsing and validating orders
-│   └── reports.py         # Generating scout reports, status updates
-├── commanders/
-│   ├── __init__.py
-│   ├── ai_commander.py    # LLM-based commander logic
-│   ├── prompts.py         # System prompts for different commander types
-│   └── human_interface.py # Utilities for human player interaction
-├── api/
-│   ├── __init__.py
-│   ├── routes.py          # Flask/FastAPI endpoints
-│   └── schemas.py         # Request/response schemas
-├── web/
-│   ├── static/           # CSS, JS, map images
-│   └── templates/        # HTML templates
-├── data/
-│   ├── map_data.json     # Hex grid, terrain, roads
-│   └── scenario.json     # Initial faction/army setup
-├── tests/
-│   └── ...
-└── main.py               # Application entry point
+├── environment.yml
+├── README.md
+└── forwantofanail/
+    ├── api/
+    │   ├── app.py                # FastAPI app + /dev/dashboard route
+    │   ├── design_doc.md
+    │   ├── routes.py             # REST endpoints
+    │   └── schemas.py            # Request schemas
+    ├── core/
+    │   ├── database.py           # SQLAlchemy engine/session helpers
+    │   ├── models.py             # World + runtime DB models
+    │   ├── initialize_db.py      # Reset/load scenario data from CSV
+    │   ├── migrate_runtime_tables.py
+    │   └── game_state.py
+    ├── mechanics/
+    │   ├── movement.py           # Adjacency + movement rules
+    │   └── time.py               # Watch progression
+    ├── data/
+    │   └── *.csv                 # Scenario source data
+    └── web/
+        └── static/dev_dashboard.html
 ```
+
+# Getting Started
+
+## 1) Create environment
+
+```bash
+conda env create -f environment.yml
+conda activate forwantofanail
+```
+
+## 2) Initialize/reset database (fresh scenario)
+
+Run this when starting a new game state from CSVs or after schema changes:
+
+```bash
+python -m forwantofanail.core.initialize_db --reset
+```
+
+If you want to keep existing scenario/world rows and only ensure runtime tables exist:
+
+```bash
+python -m forwantofanail.core.migrate_runtime_tables
+```
+
+## 3) Start dev API server
+
+```bash
+uvicorn forwantofanail.api.app:app --reload
+```
+
+## 4) Open local tools
+
+* Interactive API docs: `http://127.0.0.1:8000/docs`
+* Dev dashboard: `http://127.0.0.1:8000/dev/dashboard`
+
+## 5) Optional admin token for time controls
+
+`POST /v1/admin/time/advance` supports optional header `X-Admin-Token`.
+
+If `DEV_ADMIN_TOKEN` is set in your shell, this endpoint requires that exact header value.
+The dev dashboard includes an Admin Token field for this.
 
 # Data Structure
 
@@ -116,12 +144,48 @@ Table: movements
 - date DATE
 - watch INT
 
+Table: game_clock
+- singleton_id INT PRIMARY KEY (always 1)
+- day INT
+- watch INT
+
+Table: auth_tokens
+- token VARCHAR(128) PRIMARY KEY
+- commander_id INT FOREIGN KEY REFERENCES commanders(commander_id)
+- created_at DATETIME
+
+Table: actions
+- action_id INT PRIMARY KEY
+- commander_id INT FOREIGN KEY REFERENCES commanders(commander_id)
+- kind VARCHAR(40)
+- state VARCHAR(30)
+- parameters_json TEXT
+- accepted_at DATETIME
+- started_day INT NULL
+- started_watch INT NULL
+- eta_day INT NULL
+- eta_watch INT NULL
+
+Table: messages
+- message_id INT PRIMARY KEY
+- sender_id INT FOREIGN KEY REFERENCES commanders(commander_id)
+- recipient_id INT FOREIGN KEY REFERENCES commanders(commander_id)
+- content TEXT
+- priority VARCHAR(20)
+- sent_day INT
+- sent_watch INT
+- delivery_day INT
+- delivery_watch INT
+- status VARCHAR(20)
+- is_read BOOL
+- created_at DATETIME
+
 # Turn Structure and Movement
 Each in-game day is divided into five Watches: Matin, Prime, Noon, Vesper, and Night. Armies normally move and act during the four non-Night watches, though a risk-taking commander can choose to march through the night. 
 
 The LOCATIONS table divides the game map into a collection of discrete locations. This can be visualized as overlaying a tiling of hexagonal cells onto the region. The LOCATION_ID field contains h3 indices, which can be used to determine adjacency between cells. The h3 values are only used for graph connectivity; the scale is set at 1 league per cell. 
 
-When moving between two locations where IS_ROAD==TRUE ("on-road"), an army can move 1 league (1 cell) per Watch. Off-road, an army can move 1 league every other watch (half-speed). Wagons cannot move off-rad at all.
+When moving between two locations where IS_ROAD==TRUE ("on-road"), an army can move 1 league (1 cell) per Watch. Off-road, an army can move 1 league every other watch (half-speed). Wagons cannot move off-road at all.
 
 Whenever an army enters a new cell, a record is added to the MOVEMENTS table, recording the army_id, location_id of the cell it entered, date, and watch (as INT where Night=0, Matin=1, Prime=2, Noon=3, Vesper=4).
 
