@@ -407,6 +407,12 @@ def login(payload: LoginRequest, session: Session = Depends(_get_session)):
     }
 
 
+@router.get("/commanders")
+def list_commanders(session: Session = Depends(_get_session)):
+    commanders = session.query(Commander).order_by(Commander.commander_name.asc()).all()
+    return [{"id": _commander_ref(commander.commander_id), "name": commander.commander_name} for commander in commanders]
+
+
 @router.get("/time")
 def get_time(session: Session = Depends(_get_session)):
     return _clock_payload(_get_or_create_clock(session))
