@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+import os
 import json
 import secrets
 from typing import Any
@@ -10,7 +11,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
-from forwantofanail.api.schemas import ActionCreateRequest, LoginRequest, MessageCreateRequest
+from forwantofanail.api.schemas import (
+    ActionCreateRequest,
+    LoginRequest,
+    MessageCreateRequest,
+    TimeAdvanceRequest,
+)
 from forwantofanail.core.database import create_session
 from forwantofanail.core.models import (
     Action,
@@ -20,9 +26,11 @@ from forwantofanail.core.models import (
     GameClock,
     Location,
     Message,
+    Movement,
     Stronghold,
     TerrainType,
 )
+from forwantofanail.mechanics.movement import calculate_move_watches, list_valid_destinations
 from forwantofanail.mechanics.time import Watch
 
 router = APIRouter(prefix="/v1")
@@ -35,6 +43,7 @@ WATCH_LABELS = {
     Watch.VESPER: "vesper",
 }
 ACTIVE_ACTION_STATES = {"queued", "in_progress"}
+SCENARIO_EPOCH = date(2000, 1, 1)
 
 
 def _commander_ref(commander_id: int) -> str:
@@ -124,6 +133,99 @@ def _is_delivered_filter(day: int, watch: int):
         Message.delivery_day < day,
         and_(Message.delivery_day == day, Message.delivery_watch <= watch),
     )
+
+
+def _advance_day_watch(day: int, watch: int, steps: int = 1) -> tuple[int, int]:
+    current_day = day
+    current_watch = watch
+    for _ in range(steps):
+        next_watch = (current_watch + 1) % 5
+        if current_watch == int(Watch.NIGHT) and next_watch == int(Watch.MATIN):
+            current_day += 1
+        current_watch = next_watch
+    return current_day, current_watch
+
+
+def _watch_is_at_or_after(day: int, watch: int, other_day: int, other_watch: int) -> bool:
+    return (day, watch) >= (other_day, other_watch)
+
+
+def _scenario_date_for_day(day: int) -> date:
+    return SCENARIO_EPOCH + timedelta(days=max(day - 1, 0))
+
+
+def _get_destination_h3(action: Action) -> str | None:
+    try:
+        payload = json.loads(action.parameters_json or "{}")
+    except json.JSONDecodeError:
+        return None
+    destination_h3 = payload.get("destination_h3")
+    if isinstance(destination_h3, str) and destination_h3:
+        return destination_h3
+    return None
+
+
+def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
+    started = 0
+    completed = 0
+    failed = 0
+
+    active_actions = (
+        session.query(Action)
+        .filter(Action.state.in_(ACTIVE_ACTION_STATES))
+        .order_by(Action.accepted_at.asc(), Action.action_id.asc())
+        .all()
+    )
+    for action in active_actions:
+        army = session.query(Army).filter(Army.commander_id == action.commander_id).first()
+        if army is None:
+            action.state = "failed"
+            failed += 1
+            continue
+        destination_h3 = _get_destination_h3(action)
+        if destination_h3 is None:
+            action.state = "failed"
+            failed += 1
+            continue
+
+        if action.state == "queued":
+            action.started_day = clock.day
+            action.started_watch = clock.watch
+            action.state = "in_progress"
+            started += 1
+
+            # Compute ETA from current conditions at action start.
+            try:
+                watches_needed = calculate_move_watches(session, army.army_id, destination_h3)
+            except ValueError:
+                action.state = "failed"
+                failed += 1
+                continue
+            action.eta_day, action.eta_watch = _advance_day_watch(clock.day, clock.watch, watches_needed)
+
+        if action.state == "in_progress":
+            if action.eta_day is None or action.eta_watch is None:
+                action.state = "failed"
+                failed += 1
+                continue
+            if _watch_is_at_or_after(clock.day, clock.watch, action.eta_day, action.eta_watch):
+                if destination_h3 not in set(list_valid_destinations(session, army.army_id)):
+                    action.state = "failed"
+                    failed += 1
+                    continue
+                army.location_id = destination_h3
+                session.add(
+                    Movement(
+                        army_id=army.army_id,
+                        location_id=destination_h3,
+                        date=_scenario_date_for_day(clock.day),
+                        watch=clock.watch,
+                    )
+                )
+                action.state = "completed"
+                completed += 1
+
+    return {"started": started, "completed": completed, "failed": failed}
 
 
 def _get_current_commander_id(
@@ -308,6 +410,56 @@ def login(payload: LoginRequest, session: Session = Depends(_get_session)):
 @router.get("/time")
 def get_time(session: Session = Depends(_get_session)):
     return _clock_payload(_get_or_create_clock(session))
+
+
+@router.post("/admin/time/advance")
+def advance_time_for_development(
+    payload: TimeAdvanceRequest,
+    session: Session = Depends(_get_session),
+    x_admin_token: str | None = Header(default=None),
+):
+    if payload.steps < 1:
+        raise HTTPException(status_code=400, detail="steps must be >= 1")
+
+    configured_admin_token = os.getenv("DEV_ADMIN_TOKEN")
+    if configured_admin_token and x_admin_token != configured_admin_token:
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+
+    clock = _get_or_create_clock(session)
+    start = _clock_payload(clock)
+    timeline = []
+    actions_started = 0
+    actions_completed = 0
+    actions_failed = 0
+
+    for _ in range(payload.steps):
+        clock.day, clock.watch = _advance_day_watch(clock.day, clock.watch, 1)
+        tick_result = {"started": 0, "completed": 0, "failed": 0}
+        if payload.execute_actions:
+            tick_result = _execute_action_tick(session, clock)
+            actions_started += tick_result["started"]
+            actions_completed += tick_result["completed"]
+            actions_failed += tick_result["failed"]
+        timeline.append(
+            {
+                "time": _clock_payload(clock),
+                "actions": tick_result,
+            }
+        )
+
+    session.commit()
+    return {
+        "start_time": start,
+        "end_time": _clock_payload(clock),
+        "steps": payload.steps,
+        "execute_actions": payload.execute_actions,
+        "timeline": timeline,
+        "actions_summary": {
+            "started": actions_started,
+            "completed": actions_completed,
+            "failed": actions_failed,
+        },
+    }
 
 
 @router.get("/me/view")
