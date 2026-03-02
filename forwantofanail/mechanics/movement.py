@@ -5,8 +5,8 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from core.models import Army, Detachment, Location, Movement, TerrainType
-from mechanics.time import GameTime, Watch, advance_time
+from forwantofanail.core.models import Army, Detachment, Location, Movement, TerrainType
+from forwantofanail.mechanics.time import GameTime, Watch, advance_time
 
 
 RIVER_TERRAIN_NAME = "River"
