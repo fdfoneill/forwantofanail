@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from forwantofanail.core.models import Army, Detachment, Location, Movement, TerrainType
+from forwantofanail.core.models import Army, Detachment, Location, Movement, Stronghold, TerrainType
 from forwantofanail.mechanics.time import GameTime, Watch, advance_time
 
 
@@ -46,28 +46,42 @@ def _terrain(session: Session, location: Location) -> TerrainType:
     return terrain
 
 
+def _is_stronghold_location(session: Session, location_id: str) -> bool:
+    row = (
+        session.query(Stronghold.stronghold_id)
+        .filter(Stronghold.location_id == location_id)
+        .first()
+    )
+    return row is not None
+
+
 def _is_river(terrain: TerrainType) -> bool:
     return terrain.terrain_name.strip().lower() == RIVER_TERRAIN_NAME.lower()
 
 
 def _movement_cost(session: Session, army: Army, origin: Location, destination: Location) -> int:
     on_road = origin.is_road and destination.is_road
+    origin_is_stronghold = _is_stronghold_location(session, origin.location_id)
+    destination_is_stronghold = _is_stronghold_location(session, destination.location_id)
+    stronghold_transition = origin_is_stronghold or destination_is_stronghold
+    effective_on_road = on_road or stronghold_transition
+
     has_wagons = _has_wagons(army)
-    if not on_road and has_wagons:
+    if not effective_on_road and has_wagons:
         raise ValueError("Armies with wagons cannot move off-road.")
 
     terrain = _terrain(session, destination)
-    if terrain.is_water and not _is_river(terrain) and not army.is_embarked:
+    if terrain.is_water and not _is_river(terrain) and not army.is_embarked and not destination_is_stronghold:
         raise ValueError("Armies must be embarked to enter open water.")
 
-    if _is_river(terrain) and not on_road:
+    if _is_river(terrain) and not effective_on_road and not destination_is_stronghold:
         if has_wagons:
             raise ValueError("Armies with wagons cannot enter river cells off-road.")
         if _has_infantry(army):
             return 5
 
-    base_cost = 1 if on_road else 2
-    if on_road:
+    base_cost = 1 if effective_on_road else 2
+    if effective_on_road:
         return base_cost
 
     multiplier = terrain.speed_multiplier or 1.0

@@ -32,6 +32,7 @@ from forwantofanail.core.models import (
     TerrainType,
 )
 from forwantofanail.mechanics.movement import calculate_move_watches, list_valid_destinations
+from forwantofanail.mechanics.supply import consume_supply_for_all_armies, supply_stats
 from forwantofanail.mechanics.time import Watch
 
 router = APIRouter(prefix="/v1")
@@ -301,8 +302,7 @@ def _find_commander_army(session: Session, commander_id: int) -> Army:
 
 
 def _serialize_army(army: Army) -> dict[str, Any]:
-    total_people = army.noncombattant_count + sum(det.warrior_count for det in army.detachments)
-    days_estimate = round(army.army_supply / total_people, 2) if total_people > 0 else None
+    stats = supply_stats(army)
 
     status_flags = []
     if army.is_embarked:
@@ -331,8 +331,9 @@ def _serialize_army(army: Army) -> dict[str, Any]:
         },
         "supply": {
             "current": army.army_supply,
-            "capacity": None,
-            "days_estimate": days_estimate,
+            "capacity": stats.capacity,
+            "daily_consumption": stats.daily_consumption,
+            "days_estimate": stats.days_estimate,
         },
         "status_flags": status_flags,
     }
@@ -495,6 +496,9 @@ def advance_time_for_development(
 
     for _ in range(payload.steps):
         clock.day, clock.watch = _advance_day_watch(clock.day, clock.watch, 1)
+        supply_result = None
+        if clock.watch == int(Watch.NIGHT):
+            supply_result = consume_supply_for_all_armies(session)
         tick_result = {"started": 0, "completed": 0, "failed": 0}
         if payload.execute_actions:
             tick_result = _execute_action_tick(session, clock)
@@ -505,6 +509,7 @@ def advance_time_for_development(
             {
                 "time": _clock_payload(clock),
                 "actions": tick_result,
+                "supply": supply_result,
             }
         )
 
