@@ -1,0 +1,451 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>For Want of a Nail - Player Dashboard</title>
+  <style>
+    :root {
+      --bg: #f5f2eb;
+      --panel: #fffaf1;
+      --ink: #1b1a18;
+      --muted: #6a645b;
+      --line: #d7cfc2;
+      --accent: #145f66;
+      --water: #4d85c8;
+      --forest: #2f6f3f;
+      --open-ground: #b8d98e;
+      --rainforest: #175f34;
+      --mountain: #8f8a80;
+      --desert: #d6b978;
+      --river: #5a9bd6;
+      --unknown: #c9c6be;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 85% 8%, #d9ecef 0%, transparent 45%),
+        radial-gradient(circle at 4% 95%, #f4ddc8 0%, transparent 45%),
+        var(--bg);
+      min-height: 100vh;
+      padding: 20px;
+    }
+    h1 {
+      margin: 0 0 14px;
+      font-size: 28px;
+      letter-spacing: 0.02em;
+    }
+    .shell {
+      display: grid;
+      grid-template-columns: 340px 1fr;
+      gap: 16px;
+      align-items: start;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.05);
+    }
+    .controls {
+      padding: 14px;
+    }
+    .label {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    select, button {
+      width: 100%;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      padding: 10px 12px;
+      font-size: 14px;
+      margin-bottom: 10px;
+      background: #fff;
+    }
+    button {
+      background: linear-gradient(135deg, var(--accent), #1b7d86);
+      color: #fff;
+      border-color: transparent;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .status {
+      min-height: 22px;
+      color: var(--muted);
+      font-size: 13px;
+      margin-top: 4px;
+    }
+    .status.error { color: #a22a2a; }
+    .meta {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .map-panel {
+      position: relative;
+      min-height: 74vh;
+      overflow: hidden;
+    }
+    #mapCanvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .legend {
+      position: absolute;
+      right: 12px;
+      top: 12px;
+      background: rgba(255, 250, 241, 0.92);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px;
+      font-size: 12px;
+      color: var(--muted);
+      max-width: 180px;
+    }
+    .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin: 3px 0;
+    }
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 2px;
+      border: 1px solid rgba(0, 0, 0, 0.2);
+      flex: 0 0 12px;
+    }
+    @media (max-width: 980px) {
+      .shell { grid-template-columns: 1fr; }
+      .map-panel { min-height: 62vh; }
+    }
+  </style>
+</head>
+<body>
+  <h1>Player Environs Dashboard</h1>
+
+  <div class="shell">
+    <section class="panel controls">
+      <div class="label">Commander</div>
+      <select id="commanderSelect">
+        <option value="">Select commander...</option>
+      </select>
+      <button id="refreshBtn">Refresh View</button>
+      <div class="status" id="statusLine"></div>
+
+      <div class="meta">
+        <div><strong>Time:</strong> <span id="timeText">-</span></div>
+        <div><strong>Center Cell:</strong> <span id="centerText">-</span></div>
+        <div><strong>Radius:</strong> <span id="radiusText">-</span></div>
+        <div><strong>Visible Cells:</strong> <span id="cellCountText">0</span></div>
+      </div>
+    </section>
+
+    <section class="panel map-panel" id="mapPanel">
+      <svg id="mapCanvas" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="legend" id="legend"></div>
+    </section>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/h3-js@4.1.0/dist/h3-js.umd.js"></script>
+  <script>
+    const state = {
+      token: null,
+      selectedCommander: null,
+      view: null,
+      projectedCells: [],
+      mapWidth: 1000,
+      mapHeight: 700,
+    };
+
+    const TERRAIN_COLORS = {
+      "open ground": "var(--open-ground)",
+      "forest": "var(--forest)",
+      "rainforest": "var(--rainforest)",
+      "mountainous": "var(--mountain)",
+      "desert": "var(--desert)",
+      "river": "var(--river)",
+      "open water": "var(--water)",
+    };
+
+    const TERRAIN_ORDER = ["open ground", "forest", "rainforest", "mountainous", "desert", "river", "open water"];
+
+    const els = {
+      commanderSelect: document.getElementById("commanderSelect"),
+      refreshBtn: document.getElementById("refreshBtn"),
+      statusLine: document.getElementById("statusLine"),
+      timeText: document.getElementById("timeText"),
+      centerText: document.getElementById("centerText"),
+      radiusText: document.getElementById("radiusText"),
+      cellCountText: document.getElementById("cellCountText"),
+      mapCanvas: document.getElementById("mapCanvas"),
+      mapPanel: document.getElementById("mapPanel"),
+      legend: document.getElementById("legend"),
+    };
+
+    function setStatus(message, isError = false) {
+      els.statusLine.textContent = message || "";
+      els.statusLine.classList.toggle("error", !!isError);
+    }
+
+    function terrainKey(value) {
+      return String(value || "unknown").trim().toLowerCase();
+    }
+
+    function terrainColor(terrainType) {
+      return TERRAIN_COLORS[terrainKey(terrainType)] || "var(--unknown)";
+    }
+
+    function parseBoundary(boundary) {
+      return boundary.map((point) => {
+        if (Array.isArray(point)) {
+          return { lat: point[0], lng: point[1] };
+        }
+        return { lat: point.lat, lng: point.lng };
+      });
+    }
+
+    function cellBoundary(h3Index) {
+      if (window.h3.cellToBoundary) {
+        return parseBoundary(window.h3.cellToBoundary(h3Index));
+      }
+      if (window.h3.h3ToGeoBoundary) {
+        return parseBoundary(window.h3.h3ToGeoBoundary(h3Index, true));
+      }
+      throw new Error("h3 boundary function unavailable");
+    }
+
+    function cellCenter(h3Index) {
+      if (window.h3.cellToLatLng) {
+        const [lat, lng] = window.h3.cellToLatLng(h3Index);
+        return { lat, lng };
+      }
+      if (window.h3.h3ToGeo) {
+        const [lat, lng] = window.h3.h3ToGeo(h3Index);
+        return { lat, lng };
+      }
+      throw new Error("h3 center function unavailable");
+    }
+
+    async function api(path, options = {}, useAuth = false) {
+      const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+      if (useAuth && state.token) {
+        headers["Authorization"] = `Bearer ${state.token}`;
+      }
+      const response = await fetch(path, { ...options, headers });
+      const contentType = response.headers.get("content-type") || "";
+      const data = contentType.includes("application/json") ? await response.json() : await response.text();
+      if (!response.ok) {
+        throw new Error(typeof data === "object" ? JSON.stringify(data) : data);
+      }
+      return data;
+    }
+
+    async function loadCommanders() {
+      const commanders = await api("/v1/commanders");
+      const options = ["<option value=''>Select commander...</option>"];
+      for (const cmd of commanders) {
+        options.push(`<option value="${cmd.name}">${cmd.name}</option>`);
+      }
+      els.commanderSelect.innerHTML = options.join("");
+    }
+
+    async function loginCommander(commanderName) {
+      const payload = await api("/v1/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ commander_name: commanderName }),
+      });
+      state.token = payload.token;
+      state.selectedCommander = payload.commander.name;
+    }
+
+    function renderLegend() {
+      const rows = ["<div><strong>Terrain</strong></div>"];
+      for (const key of TERRAIN_ORDER) {
+        rows.push(`<div class=\"legend-row\"><span class=\"swatch\" style=\"background:${terrainColor(key)}\"></span>${key}</div>`);
+      }
+      rows.push('<div style="margin-top:6px;">Road cells: label "road"</div>');
+      rows.push('<div>Strongholds: name label</div>');
+      els.legend.innerHTML = rows.join("");
+    }
+
+    function projectCells(cells, width, height) {
+      const raw = [];
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
+
+      for (const cell of cells) {
+        const center = cellCenter(cell.h3);
+        const boundary = cellBoundary(cell.h3);
+        const centerX = center.lng * Math.cos((center.lat * Math.PI) / 180);
+        const centerY = -center.lat;
+
+        const poly = boundary.map((p) => {
+          const x = p.lng * Math.cos((p.lat * Math.PI) / 180);
+          const y = -p.lat;
+          minX = Math.min(minX, x);
+          maxX = Math.max(maxX, x);
+          minY = Math.min(minY, y);
+          maxY = Math.max(maxY, y);
+          return { x, y };
+        });
+
+        raw.push({ cell, centerX, centerY, poly });
+      }
+
+      const pad = 36;
+      const dx = Math.max(maxX - minX, 1e-6);
+      const dy = Math.max(maxY - minY, 1e-6);
+      const scale = Math.min((width - pad * 2) / dx, (height - pad * 2) / dy);
+
+      return raw.map((item) => ({
+        cell: item.cell,
+        center: {
+          x: pad + (item.centerX - minX) * scale,
+          y: pad + (item.centerY - minY) * scale,
+        },
+        poly: item.poly.map((p) => ({
+          x: pad + (p.x - minX) * scale,
+          y: pad + (p.y - minY) * scale,
+        })),
+        scale,
+      }));
+    }
+
+    function renderMap() {
+      const view = state.view;
+      if (!view || !view.environs || !Array.isArray(view.environs.cells)) {
+        els.mapCanvas.innerHTML = "";
+        return;
+      }
+      const cells = view.environs.cells;
+      const width = state.mapWidth;
+      const height = state.mapHeight;
+      els.mapCanvas.setAttribute("viewBox", `0 0 ${width} ${height}`);
+
+      const projected = projectCells(cells, width, height);
+      state.projectedCells = projected;
+      const labelSize = Math.max(8, Math.min(13, width / 110));
+      const roadSize = Math.max(8, labelSize - 1);
+      const strongholdSize = Math.max(9, labelSize + 1);
+
+      const polygons = [];
+      const labels = [];
+
+      for (const item of projected) {
+        const points = item.poly.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+        polygons.push(
+          `<polygon points="${points}" fill="${terrainColor(item.cell.terrain_type)}" stroke="#3f3b34" stroke-width="1.05" opacity="0.94" />`
+        );
+
+        labels.push(
+          `<text x="${item.center.x.toFixed(1)}" y="${(item.center.y + labelSize * 0.25).toFixed(1)}" text-anchor="middle" font-size="${labelSize}" fill="#1a1815" font-family="IBM Plex Sans, Avenir Next, sans-serif">${item.cell.h3}</text>`
+        );
+
+        if (item.cell.has_road) {
+          labels.push(
+            `<text x="${item.center.x.toFixed(1)}" y="${(item.center.y + labelSize + 10).toFixed(1)}" text-anchor="middle" font-size="${roadSize}" fill="#5a230d" font-weight="600" font-family="IBM Plex Sans, Avenir Next, sans-serif">road</text>`
+          );
+        }
+
+        if (item.cell.stronghold && item.cell.stronghold.name) {
+          labels.push(
+            `<text x="${item.center.x.toFixed(1)}" y="${(item.center.y - labelSize - 10).toFixed(1)}" text-anchor="middle" font-size="${strongholdSize}" fill="#112d56" font-weight="700" font-family="IBM Plex Sans, Avenir Next, sans-serif">${item.cell.stronghold.name}</text>`
+          );
+        }
+      }
+
+      els.mapCanvas.innerHTML = `<g>${polygons.join("")}</g><g>${labels.join("")}</g>`;
+    }
+
+    function updateMetadata(view) {
+      if (!view) {
+        els.timeText.textContent = "-";
+        els.centerText.textContent = "-";
+        els.radiusText.textContent = "-";
+        els.cellCountText.textContent = "0";
+        return;
+      }
+      els.timeText.textContent = `Day ${view.time.day}, watch ${view.time.watch} (${view.time.watch_label})`;
+      els.centerText.textContent = view.environs.center_h3;
+      els.radiusText.textContent = String(view.environs.radius);
+      els.cellCountText.textContent = String(view.environs.cells.length);
+    }
+
+    async function refreshView() {
+      if (!state.token) {
+        return;
+      }
+      const view = await api("/v1/me/view", {}, true);
+      state.view = view;
+      updateMetadata(view);
+      renderMap();
+      setStatus(`Loaded ${view.environs.cells.length} cells for ${state.selectedCommander}`);
+    }
+
+    els.commanderSelect.addEventListener("change", async (event) => {
+      const commanderName = event.target.value;
+      if (!commanderName) {
+        state.token = null;
+        state.selectedCommander = null;
+        state.view = null;
+        updateMetadata(null);
+        renderMap();
+        setStatus("");
+        return;
+      }
+      try {
+        await loginCommander(commanderName);
+        await refreshView();
+      } catch (err) {
+        setStatus(`Login/load error: ${err.message}`, true);
+      }
+    });
+
+    els.refreshBtn.addEventListener("click", async () => {
+      if (!state.token) {
+        setStatus("Select a commander first.", true);
+        return;
+      }
+      try {
+        await refreshView();
+      } catch (err) {
+        setStatus(`Refresh error: ${err.message}`, true);
+      }
+    });
+
+    const resizeObserver = new ResizeObserver(() => {
+      const rect = els.mapPanel.getBoundingClientRect();
+      state.mapWidth = Math.max(600, Math.floor(rect.width - 2));
+      state.mapHeight = Math.max(420, Math.floor(rect.height - 2));
+      renderMap();
+    });
+    resizeObserver.observe(els.mapPanel);
+
+    (async function init() {
+      renderLegend();
+      try {
+        await loadCommanders();
+        const rect = els.mapPanel.getBoundingClientRect();
+        state.mapWidth = Math.max(600, Math.floor(rect.width - 2));
+        state.mapHeight = Math.max(420, Math.floor(rect.height - 2));
+      } catch (err) {
+        setStatus(`Init error: ${err.message}`, true);
+      }
+    })();
+  </script>
+</body>
+</html>

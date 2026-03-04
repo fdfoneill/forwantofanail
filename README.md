@@ -69,6 +69,7 @@ uvicorn forwantofanail.api.app:app --reload
 
 * Interactive API docs: `http://127.0.0.1:8000/docs`
 * Dev dashboard: `http://127.0.0.1:8000/dev/dashboard`
+* Player dashboard: `http://127.0.0.1:8000/player/dashboard`
 
 ## 5) Optional admin token for time controls
 

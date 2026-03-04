@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>For Want of a Nail Dev Dashboard</title>
+  <style>
+    :root {
+      --bg: #f4efe7;
+      --panel: #fffaf2;
+      --ink: #1e1b18;
+      --muted: #6f665a;
+      --accent: #0f6d63;
+      --accent-2: #8a3c1f;
+      --line: #d9cdbd;
+      --error: #a81f1f;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "IBM Plex Sans", "Avenir Next", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 90% -10%, #dbece8 0%, transparent 40%),
+        radial-gradient(circle at -10% 110%, #f5ddcf 0%, transparent 38%),
+        var(--bg);
+      min-height: 100vh;
+      padding: 24px;
+    }
+    h1 {
+      margin: 0 0 16px;
+      font-size: 28px;
+      letter-spacing: 0.02em;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, 1fr);
+      gap: 16px;
+    }
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.05);
+    }
+    .clock { grid-column: span 12; }
+    .player { grid-column: span 8; }
+    .dev { grid-column: span 4; }
+    .title {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 10px;
+    }
+    .clock-readout {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .clock-day {
+      font-size: 34px;
+      font-weight: 700;
+      color: var(--accent-2);
+    }
+    .clock-watch {
+      font-size: 20px;
+      font-weight: 600;
+    }
+    label {
+      display: block;
+      font-size: 13px;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    select, input, button {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 14px;
+      background: #fff;
+    }
+    input, select { margin-bottom: 10px; }
+    button {
+      cursor: pointer;
+      border-color: transparent;
+      color: #fff;
+      background: linear-gradient(135deg, var(--accent), #138d7f);
+      font-weight: 600;
+    }
+    button.secondary {
+      background: linear-gradient(135deg, #394a5f, #54718f);
+      margin-top: 8px;
+    }
+    button:disabled { opacity: 0.6; cursor: not-allowed; }
+    pre {
+      background: #171614;
+      color: #ece8e2;
+      border-radius: 10px;
+      padding: 12px;
+      margin: 10px 0 0;
+      min-height: 260px;
+      max-height: 430px;
+      overflow: auto;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    .inline {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .status {
+      margin-top: 10px;
+      min-height: 18px;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .error { color: var(--error); }
+    @media (max-width: 960px) {
+      .player, .dev { grid-column: span 12; }
+    }
+  </style>
+</head>
+<body>
+  <h1>For Want of a Nail - Dev Dashboard</h1>
+
+  <div class="grid">
+    <section class="panel clock">
+      <div class="title">Clock</div>
+      <div class="clock-readout">
+        <div class="clock-day" id="clockDay">Day -</div>
+        <div class="clock-watch" id="clockWatch">Watch -</div>
+      </div>
+      <div class="status" id="clockStatus"></div>
+    </section>
+
+    <section class="panel player">
+      <div class="title">Player</div>
+      <label for="commanderSelect">Commander</label>
+      <select id="commanderSelect">
+        <option value="">Select commander...</option>
+      </select>
+
+      <label for="moveDestination">Queue Move Action (destination H3)</label>
+      <div class="inline">
+        <input id="moveDestination" type="text" placeholder="8f6889082cc8cdb" />
+        <button id="moveButton" style="width:auto;">Queue</button>
+      </div>
+
+      <div class="status" id="playerStatus"></div>
+      <pre id="viewOutput">Select a commander to log in and load view.</pre>
+    </section>
+
+    <section class="panel dev">
+      <div class="title">Dev</div>
+      <label for="adminToken">Admin Token (optional)</label>
+      <input id="adminToken" type="password" placeholder="matches DEV_ADMIN_TOKEN" />
+      <label for="stepCount">Advance Watches</label>
+      <input id="stepCount" type="number" min="1" value="1" />
+      <button id="advanceButton">Advance Time</button>
+      <button id="refreshButton" class="secondary">Refresh Panels</button>
+      <div class="status" id="devStatus"></div>
+    </section>
+  </div>
+
+  <script>
+    const state = {
+      token: null,
+      commanderName: null,
+      commanders: [],
+      adminToken: "",
+    };
+
+    const els = {
+      commanderSelect: document.getElementById("commanderSelect"),
+      moveDestination: document.getElementById("moveDestination"),
+      moveButton: document.getElementById("moveButton"),
+      viewOutput: document.getElementById("viewOutput"),
+      playerStatus: document.getElementById("playerStatus"),
+      clockDay: document.getElementById("clockDay"),
+      clockWatch: document.getElementById("clockWatch"),
+      clockStatus: document.getElementById("clockStatus"),
+      adminToken: document.getElementById("adminToken"),
+      stepCount: document.getElementById("stepCount"),
+      advanceButton: document.getElementById("advanceButton"),
+      refreshButton: document.getElementById("refreshButton"),
+      devStatus: document.getElementById("devStatus"),
+    };
+
+    function setStatus(el, message, isError = false) {
+      el.textContent = message || "";
+      el.classList.toggle("error", !!isError);
+    }
+
+    async function api(path, options = {}, useAuth = false) {
+      const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+      if (useAuth && state.token) {
+        headers["Authorization"] = `Bearer ${state.token}`;
+      }
+      const response = await fetch(path, { ...options, headers });
+      const contentType = response.headers.get("content-type") || "";
+      const data = contentType.includes("application/json") ? await response.json() : await response.text();
+      if (!response.ok) {
+        const msg = typeof data === "object" ? JSON.stringify(data) : data;
+        throw new Error(msg || `${response.status} ${response.statusText}`);
+      }
+      return data;
+    }
+
+    async function loadCommanders() {
+      const commanders = await api("/v1/commanders");
+      state.commanders = commanders;
+      const options = ["<option value=''>Select commander...</option>"];
+      for (const commander of commanders) {
+        options.push(`<option value="${commander.name}">${commander.name} (${commander.id})</option>`);
+      }
+      els.commanderSelect.innerHTML = options.join("");
+    }
+
+    async function loginCommander(commanderName) {
+      const payload = await api("/v1/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ commander_name: commanderName }),
+      });
+      state.token = payload.token;
+      state.commanderName = payload.commander.name;
+      setStatus(els.playerStatus, `Logged in as ${state.commanderName}`);
+    }
+
+    async function refreshClock() {
+      try {
+        const time = await api("/v1/time");
+        els.clockDay.textContent = `Day ${time.day}`;
+        els.clockWatch.textContent = `Watch ${time.watch} (${time.watch_label})`;
+        setStatus(els.clockStatus, "Clock synced");
+      } catch (err) {
+        setStatus(els.clockStatus, `Clock error: ${err.message}`, true);
+      }
+    }
+
+    async function refreshPlayerView() {
+      if (!state.token) {
+        els.viewOutput.textContent = "Select a commander to log in and load view.";
+        return;
+      }
+      try {
+        const view = await api("/v1/me/view", {}, true);
+        els.viewOutput.textContent = JSON.stringify(view, null, 2);
+      } catch (err) {
+        setStatus(els.playerStatus, `View error: ${err.message}`, true);
+      }
+    }
+
+    async function refreshAll() {
+      await refreshClock();
+      await refreshPlayerView();
+    }
+
+    els.commanderSelect.addEventListener("change", async (event) => {
+      const commanderName = event.target.value;
+      if (!commanderName) {
+        state.token = null;
+        state.commanderName = null;
+        setStatus(els.playerStatus, "");
+        els.viewOutput.textContent = "Select a commander to log in and load view.";
+        return;
+      }
+      try {
+        await loginCommander(commanderName);
+        await refreshAll();
+      } catch (err) {
+        setStatus(els.playerStatus, `Login error: ${err.message}`, true);
+      }
+    });
+
+    els.moveButton.addEventListener("click", async () => {
+      if (!state.token) {
+        setStatus(els.playerStatus, "Select a commander first.", true);
+        return;
+      }
+      const destination = els.moveDestination.value.trim();
+      if (!destination) {
+        setStatus(els.playerStatus, "Enter a destination H3 index.", true);
+        return;
+      }
+      try {
+        const result = await api("/v1/me/actions", {
+          method: "POST",
+          body: JSON.stringify({ kind: "move", destination_h3: destination }),
+        }, true);
+        setStatus(els.playerStatus, `Action queued: ${result.action_id}`);
+        els.moveDestination.value = "";
+        await refreshPlayerView();
+      } catch (err) {
+        setStatus(els.playerStatus, `Move error: ${err.message}`, true);
+      }
+    });
+
+    els.advanceButton.addEventListener("click", async () => {
+      const steps = Number(els.stepCount.value || "1");
+      if (!Number.isFinite(steps) || steps < 1) {
+        setStatus(els.devStatus, "Steps must be >= 1", true);
+        return;
+      }
+      const adminToken = els.adminToken.value.trim();
+      const headers = {};
+      if (adminToken) {
+        headers["X-Admin-Token"] = adminToken;
+      }
+      try {
+        els.advanceButton.disabled = true;
+        const result = await api("/v1/admin/time/advance", {
+          method: "POST",
+          headers,
+          body: JSON.stringify({ steps, execute_actions: true }),
+        });
+        setStatus(
+          els.devStatus,
+          `Advanced to day ${result.end_time.day}, watch ${result.end_time.watch} (${result.end_time.watch_label}). ` +
+            `Actions: +${result.actions_summary.started} start, ${result.actions_summary.completed} done, ${result.actions_summary.failed} failed.`
+        );
+        await refreshAll();
+      } catch (err) {
+        setStatus(els.devStatus, `Advance error: ${err.message}`, true);
+      } finally {
+        els.advanceButton.disabled = false;
+      }
+    });
+
+    els.refreshButton.addEventListener("click", refreshAll);
+
+    (async function init() {
+      try {
+        await loadCommanders();
+        await refreshClock();
+      } catch (err) {
+        setStatus(els.clockStatus, `Init error: ${err.message}`, true);
+      }
+    })();
+  </script>
+</body>
+</html>
