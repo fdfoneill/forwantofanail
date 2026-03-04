@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 64 64"
+     width="64"
+     height="64"
+     aria-label="City icon"
+     role="img">
+
+  <path fill="#000" d="
+    M12 46
+    Q16 28 20 46
+    V58
+    H12
+    Z
+
+    M22 40
+    Q32 14 42 40
+    V58
+    H22
+    Z
+
+    M44 46
+    Q48 28 52 46
+    V58
+    H44
+    Z
+
+    M12 44
+    H52
+    V58
+    H12
+    Z
+  "/>
+
+</svg>

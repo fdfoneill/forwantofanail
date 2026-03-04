@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" aria-label="Crenellated tower icon" role="img">
+  <!-- Solid silhouette -->
+  <path fill="#000" d="
+    M16 6
+    H22 V14 H26 V6
+    H30 V14 H34 V6
+    H38 V14 H42 V6
+    H48 V58
+    H16
+    Z
+    M24 58
+    V40
+    Q24 34 32 34
+    Q40 34 40 40
+    V58
+    Z
+  "/>
+</svg>

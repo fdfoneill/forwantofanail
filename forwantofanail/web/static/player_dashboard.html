@@ -113,6 +113,62 @@
       color: var(--muted);
       max-width: 180px;
     }
+    .hover-card {
+      position: absolute;
+      display: none;
+      min-width: 280px;
+      max-width: 380px;
+      background: rgba(255, 250, 241, 0.97);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: 0 8px 18px rgba(0, 0, 0, 0.16);
+      padding: 10px;
+      z-index: 4;
+      pointer-events: auto;
+    }
+    .hover-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    .hover-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+    }
+    .hover-input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 7px 9px;
+      font-size: 12px;
+      font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+      background: #fff;
+    }
+    .hover-copy {
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 7px 10px;
+      font-size: 12px;
+      font-weight: 600;
+      color: #fff;
+      background: linear-gradient(135deg, var(--accent), #1b7d86);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .hover-meta {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--ink);
+      line-height: 1.5;
+    }
+    .hover-meta .k {
+      color: var(--muted);
+      margin-right: 6px;
+    }
     .legend-row {
       display: flex;
       align-items: center;
@@ -155,6 +211,14 @@
     <section class="panel map-panel" id="mapPanel">
       <svg id="mapCanvas" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet"></svg>
       <div class="legend" id="legend"></div>
+      <div class="hover-card" id="hoverCard">
+        <div class="hover-title">Cell Index</div>
+        <div class="hover-row">
+          <input id="hoverH3Input" class="hover-input" type="text" readonly />
+          <button id="copyH3Btn" class="hover-copy" type="button">Copy</button>
+        </div>
+        <div class="hover-meta" id="hoverMeta"></div>
+      </div>
     </section>
   </div>
 
@@ -165,8 +229,10 @@
       selectedCommander: null,
       view: null,
       projectedCells: [],
+      borderRoadNeighbors: new Set(),
       mapWidth: 1000,
       mapHeight: 700,
+      pinnedH3: null,
     };
 
     const TERRAIN_COLORS = {
@@ -180,6 +246,21 @@
     };
 
     const TERRAIN_ORDER = ["open ground", "forest", "rainforest", "mountainous", "desert", "river", "open water"];
+    const STRONGHOLD_ICON_BY_TYPE = {
+      city: "/static/icons/strongholds/city.svg",
+      town: "/static/icons/strongholds/town.svg",
+      fortress: "/static/icons/strongholds/fortress.svg",
+    };
+    const STRONGHOLD_ICON_SCALE_BY_TYPE = {
+      city: 1.06,
+      town: 0.96,
+      fortress: 0.88,
+    };
+    const STRONGHOLD_ICON_Y_OFFSET_BY_TYPE = {
+      city: -0.07,
+      town: 0.0,
+      fortress: 0.0,
+    };
 
     const els = {
       commanderSelect: document.getElementById("commanderSelect"),
@@ -192,6 +273,10 @@
       mapCanvas: document.getElementById("mapCanvas"),
       mapPanel: document.getElementById("mapPanel"),
       legend: document.getElementById("legend"),
+      hoverCard: document.getElementById("hoverCard"),
+      hoverH3Input: document.getElementById("hoverH3Input"),
+      copyH3Btn: document.getElementById("copyH3Btn"),
+      hoverMeta: document.getElementById("hoverMeta"),
     };
 
     function setStatus(message, isError = false) {
@@ -238,6 +323,24 @@
       throw new Error("h3 center function unavailable");
     }
 
+    function areNeighborCells(a, b) {
+      if (window.h3.areNeighborCells) {
+        return window.h3.areNeighborCells(a, b);
+      }
+      if (window.h3.h3IndexesAreNeighbors) {
+        return window.h3.h3IndexesAreNeighbors(a, b);
+      }
+      return false;
+    }
+
+    function neighborCells(h3Index) {
+      if (window.h3.gridDisk) {
+        const disk = window.h3.gridDisk(h3Index, 1);
+        return disk.filter((value) => value !== h3Index);
+      }
+      return [];
+    }
+
     async function api(path, options = {}, useAuth = false) {
       const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
       if (useAuth && state.token) {
@@ -275,8 +378,8 @@
       for (const key of TERRAIN_ORDER) {
         rows.push(`<div class=\"legend-row\"><span class=\"swatch\" style=\"background:${terrainColor(key)}\"></span>${key}</div>`);
       }
-      rows.push('<div style="margin-top:6px;">Road cells: label "road"</div>');
-      rows.push('<div>Strongholds: name label</div>');
+      rows.push('<div style="margin-top:6px;">Roads: brown links between adjacent road cells</div>');
+      rows.push('<div>Strongholds: icon by type</div>');
       els.legend.innerHTML = rows.join("");
     }
 
@@ -303,26 +406,58 @@
           return { x, y };
         });
 
-        raw.push({ cell, centerX, centerY, poly });
+        raw.push({ cell, centerLat: center.lat, centerLng: center.lng, centerX, centerY, poly });
       }
 
       const pad = 36;
       const dx = Math.max(maxX - minX, 1e-6);
       const dy = Math.max(maxY - minY, 1e-6);
       const scale = Math.min((width - pad * 2) / dx, (height - pad * 2) / dy);
+      const toScreen = (lat, lng) => ({
+        x: pad + ((lng * Math.cos((lat * Math.PI) / 180)) - minX) * scale,
+        y: pad + ((-lat) - minY) * scale,
+      });
 
-      return raw.map((item) => ({
+      const projected = raw.map((item) => ({
         cell: item.cell,
-        center: {
-          x: pad + (item.centerX - minX) * scale,
-          y: pad + (item.centerY - minY) * scale,
-        },
+        center: toScreen(item.centerLat, item.centerLng),
         poly: item.poly.map((p) => ({
           x: pad + (p.x - minX) * scale,
           y: pad + (p.y - minY) * scale,
         })),
         scale,
       }));
+      return { projected, toScreen };
+    }
+
+    function rayPolygonBoundaryPoint(center, dir, polygon) {
+      const eps = 1e-6;
+      let bestT = Infinity;
+      let bestPoint = null;
+
+      const cross = (ax, ay, bx, by) => ax * by - ay * bx;
+
+      for (let i = 0; i < polygon.length; i += 1) {
+        const a = polygon[i];
+        const b = polygon[(i + 1) % polygon.length];
+        const sx = b.x - a.x;
+        const sy = b.y - a.y;
+        const qpx = a.x - center.x;
+        const qpy = a.y - center.y;
+
+        const denom = cross(dir.x, dir.y, sx, sy);
+        if (Math.abs(denom) < eps) {
+          continue;
+        }
+        const t = cross(qpx, qpy, sx, sy) / denom;
+        const u = cross(qpx, qpy, dir.x, dir.y) / denom;
+        if (t > eps && u >= -eps && u <= 1 + eps && t < bestT) {
+          bestT = t;
+          bestPoint = { x: center.x + dir.x * t, y: center.y + dir.y * t };
+        }
+      }
+
+      return bestPoint;
     }
 
     function renderMap() {
@@ -336,43 +471,219 @@
       const height = state.mapHeight;
       els.mapCanvas.setAttribute("viewBox", `0 0 ${width} ${height}`);
 
-      const projected = projectCells(cells, width, height);
+      const projection = projectCells(cells, width, height);
+      const projected = projection.projected;
       state.projectedCells = projected;
-      const labelSize = Math.max(8, Math.min(13, width / 110));
-      const roadSize = Math.max(8, labelSize - 1);
-      const strongholdSize = Math.max(9, labelSize + 1);
 
       const polygons = [];
-      const labels = [];
+      let centerPolygon = "";
+      const roadLines = [];
+      const strongholdIcons = [];
+      const centerByH3 = new Map();
 
       for (const item of projected) {
-        const points = item.poly.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
-        polygons.push(
-          `<polygon points="${points}" fill="${terrainColor(item.cell.terrain_type)}" stroke="#3f3b34" stroke-width="1.05" opacity="0.94" />`
-        );
+        centerByH3.set(item.cell.h3, item.center);
+      }
+      const polyByH3 = new Map();
+      for (const item of projected) {
+        polyByH3.set(item.cell.h3, item.poly);
+      }
 
-        labels.push(
-          `<text x="${item.center.x.toFixed(1)}" y="${(item.center.y + labelSize * 0.25).toFixed(1)}" text-anchor="middle" font-size="${labelSize}" fill="#1a1815" font-family="IBM Plex Sans, Avenir Next, sans-serif">${item.cell.h3}</text>`
-        );
-
-        if (item.cell.has_road) {
-          labels.push(
-            `<text x="${item.center.x.toFixed(1)}" y="${(item.center.y + labelSize + 10).toFixed(1)}" text-anchor="middle" font-size="${roadSize}" fill="#5a230d" font-weight="600" font-family="IBM Plex Sans, Avenir Next, sans-serif">road</text>`
-          );
+      const roadCells = cells.filter((cell) => cell.has_road).map((cell) => cell.h3);
+      const uniqueRoadPairs = new Set();
+      for (let i = 0; i < roadCells.length; i += 1) {
+        for (let j = i + 1; j < roadCells.length; j += 1) {
+          const a = roadCells[i];
+          const b = roadCells[j];
+          if (!areNeighborCells(a, b)) {
+            continue;
+          }
+          const pair = a < b ? `${a}|${b}` : `${b}|${a}`;
+          uniqueRoadPairs.add(pair);
         }
+      }
+      for (const pair of uniqueRoadPairs) {
+        const [a, b] = pair.split("|");
+        const c1 = centerByH3.get(a);
+        const c2 = centerByH3.get(b);
+        if (!c1 || !c2) {
+          continue;
+        }
+        roadLines.push(
+          `<line x1="${c1.x.toFixed(1)}" y1="${c1.y.toFixed(1)}" x2="${c2.x.toFixed(1)}" y2="${c2.y.toFixed(1)}" stroke="#8b5a2b" stroke-width="3.2" stroke-linecap="round" opacity="0.9" />`
+        );
+      }
 
-        if (item.cell.stronghold && item.cell.stronghold.name) {
-          labels.push(
-            `<text x="${item.center.x.toFixed(1)}" y="${(item.center.y - labelSize - 10).toFixed(1)}" text-anchor="middle" font-size="${strongholdSize}" fill="#112d56" font-weight="700" font-family="IBM Plex Sans, Avenir Next, sans-serif">${item.cell.stronghold.name}</text>`
+      // Border stubs: visible road cell -> off-environs adjacent road cell.
+      const visibleSet = new Set(cells.map((cell) => cell.h3));
+      const borderRoadSet = state.borderRoadNeighbors || new Set();
+      for (const roadCell of roadCells) {
+        const c1 = centerByH3.get(roadCell);
+        const originPoly = polyByH3.get(roadCell);
+        if (!c1) {
+          continue;
+        }
+        if (!originPoly || originPoly.length < 3) {
+          continue;
+        }
+        for (const neighbor of neighborCells(roadCell)) {
+          if (visibleSet.has(neighbor)) {
+            continue;
+          }
+          if (!borderRoadSet.has(neighbor)) {
+            continue;
+          }
+          const geo = cellCenter(neighbor);
+          const c2 = projection.toScreen(geo.lat, geo.lng);
+          const dx = c2.x - c1.x;
+          const dy = c2.y - c1.y;
+          const length = Math.hypot(dx, dy);
+          if (length < 1e-6) {
+            continue;
+          }
+          const dir = { x: dx / length, y: dy / length };
+          const edgePoint = rayPolygonBoundaryPoint(c1, dir, originPoly);
+          if (!edgePoint) {
+            continue;
+          }
+          roadLines.push(
+            `<line x1="${c1.x.toFixed(1)}" y1="${c1.y.toFixed(1)}" x2="${edgePoint.x.toFixed(1)}" y2="${edgePoint.y.toFixed(1)}" stroke="#8b5a2b" stroke-width="3.2" stroke-linecap="round" opacity="0.9" />`
           );
         }
       }
 
-      els.mapCanvas.innerHTML = `<g>${polygons.join("")}</g><g>${labels.join("")}</g>`;
+      for (const item of projected) {
+        const points = item.poly.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+        const isCenter = item.cell.h3 === view.environs.center_h3;
+        const stroke = isCenter ? "#ffffff" : "#3f3b34";
+        const strokeWidth = isCenter ? "2.6" : "1.05";
+        const polygon = `<polygon class="cell-poly" data-h3="${item.cell.h3}" points="${points}" fill="${terrainColor(item.cell.terrain_type)}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="0.94" />`;
+        if (isCenter) {
+          centerPolygon = polygon;
+        } else {
+          polygons.push(polygon);
+        }
+
+        if (item.cell.stronghold && item.cell.stronghold.name) {
+          const strongholdType = String(item.cell.stronghold.type || "").trim().toLowerCase();
+          const iconHref = STRONGHOLD_ICON_BY_TYPE[strongholdType];
+          if (iconHref) {
+            const xs = item.poly.map((p) => p.x);
+            const ys = item.poly.map((p) => p.y);
+            const cellWidth = Math.max(...xs) - Math.min(...xs);
+            const cellHeight = Math.max(...ys) - Math.min(...ys);
+            const baseScale = 0.82;
+            const typeScale = STRONGHOLD_ICON_SCALE_BY_TYPE[strongholdType] || 1.0;
+            const iconSize = Math.max(20, Math.min(cellWidth, cellHeight) * baseScale * typeScale);
+            const iconX = item.center.x - iconSize / 2;
+            const yOffsetFactor = STRONGHOLD_ICON_Y_OFFSET_BY_TYPE[strongholdType] || 0.0;
+            const iconY = item.center.y - iconSize / 2 + iconSize * yOffsetFactor;
+            strongholdIcons.push(
+              `<image href="${iconHref}" x="${iconX.toFixed(1)}" y="${iconY.toFixed(1)}" width="${iconSize.toFixed(1)}" height="${iconSize.toFixed(1)}" preserveAspectRatio="xMidYMid meet" pointer-events="none" />`
+            );
+          }
+        }
+      }
+
+      if (centerPolygon) {
+        polygons.push(centerPolygon);
+      }
+      els.mapCanvas.innerHTML = `<g>${polygons.join("")}</g><g>${roadLines.join("")}</g><g>${strongholdIcons.join("")}</g>`;
+      bindHoverHandlers();
+    }
+
+    function hideHoverCard() {
+      els.hoverCard.style.display = "none";
+    }
+
+    function positionHoverCard(clientX, clientY) {
+      const panelRect = els.mapPanel.getBoundingClientRect();
+      const cardRect = els.hoverCard.getBoundingClientRect();
+      const margin = 12;
+      let x = clientX - panelRect.left + 14;
+      let y = clientY - panelRect.top + 14;
+      if (x + cardRect.width + margin > panelRect.width) {
+        x = panelRect.width - cardRect.width - margin;
+      }
+      if (y + cardRect.height + margin > panelRect.height) {
+        y = panelRect.height - cardRect.height - margin;
+      }
+      x = Math.max(margin, x);
+      y = Math.max(margin, y);
+      els.hoverCard.style.left = `${x}px`;
+      els.hoverCard.style.top = `${y}px`;
+    }
+
+    function showHoverCard(h3Index, clientX, clientY) {
+      els.hoverH3Input.value = h3Index;
+      const cell = state.view?.environs?.cells?.find((c) => c.h3 === h3Index);
+      if (cell) {
+        const terrain = cell.terrain_type || "unknown";
+        const roadText = cell.has_road ? "yes" : "no";
+        let strongholdText = "none";
+        if (cell.stronghold && cell.stronghold.name) {
+          const shType = cell.stronghold.type || "unknown";
+          strongholdText = `${cell.stronghold.name} (${shType})`;
+        }
+        els.hoverMeta.innerHTML =
+          `<div><span class=\"k\">Terrain:</span>${terrain}</div>` +
+          `<div><span class=\"k\">Road:</span>${roadText}</div>` +
+          `<div><span class=\"k\">Stronghold:</span>${strongholdText}</div>`;
+      } else {
+        els.hoverMeta.innerHTML = "";
+      }
+      els.hoverCard.style.display = "block";
+      positionHoverCard(clientX, clientY);
+    }
+
+    function pinCard(h3Index, clientX, clientY) {
+      state.pinnedH3 = h3Index;
+      showHoverCard(h3Index, clientX, clientY);
+      setStatus(`Pinned ${h3Index}. Click map background to unpin.`);
+    }
+
+    function clearPin() {
+      state.pinnedH3 = null;
+      hideHoverCard();
+    }
+
+    function bindHoverHandlers() {
+      const polys = els.mapCanvas.querySelectorAll(".cell-poly");
+      polys.forEach((poly) => {
+        poly.addEventListener("mouseenter", (event) => {
+          if (state.pinnedH3) {
+            return;
+          }
+          showHoverCard(poly.dataset.h3 || "", event.clientX, event.clientY);
+        });
+        poly.addEventListener("mousemove", (event) => {
+          if (state.pinnedH3) {
+            return;
+          }
+          if (els.hoverCard.style.display === "block") {
+            positionHoverCard(event.clientX, event.clientY);
+          }
+        });
+        poly.addEventListener("mouseleave", () => {
+          if (!state.pinnedH3) {
+            hideHoverCard();
+          }
+        });
+        poly.addEventListener("click", (event) => {
+          event.stopPropagation();
+          const h3Index = poly.dataset.h3 || "";
+          if (state.pinnedH3 === h3Index) {
+            clearPin();
+            return;
+          }
+          pinCard(h3Index, event.clientX, event.clientY);
+        });
+      });
     }
 
     function updateMetadata(view) {
       if (!view) {
+        clearPin();
         els.timeText.textContent = "-";
         els.centerText.textContent = "-";
         els.radiusText.textContent = "-";
@@ -390,7 +701,11 @@
         return;
       }
       const view = await api("/v1/me/view", {}, true);
+      const cellsParam = encodeURIComponent(view.environs.cells.map((cell) => cell.h3).join(","));
+      const borderRoads = await api(`/v1/me/roads/border?cells=${cellsParam}`, {}, true);
       state.view = view;
+      state.borderRoadNeighbors = new Set((borderRoads.roads || []).map((value) => String(value)));
+      state.pinnedH3 = null;
       updateMetadata(view);
       renderMap();
       setStatus(`Loaded ${view.environs.cells.length} cells for ${state.selectedCommander}`);
@@ -437,6 +752,31 @@
 
     (async function init() {
       renderLegend();
+      els.copyH3Btn.addEventListener("click", async () => {
+        if (!els.hoverH3Input.value) {
+          return;
+        }
+        try {
+          await navigator.clipboard.writeText(els.hoverH3Input.value);
+          setStatus(`Copied ${els.hoverH3Input.value}`);
+        } catch (err) {
+          els.hoverH3Input.select();
+          setStatus("Clipboard blocked; index selected for manual copy.");
+        }
+      });
+      els.hoverH3Input.addEventListener("focus", () => els.hoverH3Input.select());
+      els.mapCanvas.addEventListener("mouseleave", () => {
+        if (!state.pinnedH3) {
+          hideHoverCard();
+        }
+      });
+      els.mapCanvas.addEventListener("click", () => {
+        if (state.pinnedH3) {
+          clearPin();
+          setStatus("Unpinned cell.");
+        }
+      });
+      els.hoverCard.addEventListener("click", (event) => event.stopPropagation());
       try {
         await loadCommanders();
         const rect = els.mapPanel.getBoundingClientRect();
