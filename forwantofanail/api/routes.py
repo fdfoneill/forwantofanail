@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 import os
 import json
@@ -170,13 +171,26 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
     completed = 0
     failed = 0
 
-    active_actions = (
-        session.query(Action)
-        .filter(Action.state.in_(ACTIVE_ACTION_STATES))
-        .order_by(Action.accepted_at.asc(), Action.action_id.asc())
-        .all()
-    )
+    active_actions = session.query(Action).filter(Action.state.in_(ACTIVE_ACTION_STATES)).all()
+    in_progress_by_commander: dict[int, list[Action]] = defaultdict(list)
+    queued_by_commander: dict[int, list[Action]] = defaultdict(list)
     for action in active_actions:
+        if action.state == "in_progress":
+            in_progress_by_commander[action.commander_id].append(action)
+        elif action.state == "queued":
+            queued_by_commander[action.commander_id].append(action)
+
+    # Safety invariant: keep only one in-progress action per commander.
+    for commander_id, commander_actions in in_progress_by_commander.items():
+        commander_actions.sort(key=lambda a: (a.accepted_at, a.action_id))
+        for extra in commander_actions[1:]:
+            extra.state = "failed"
+            failed += 1
+        in_progress_by_commander[commander_id] = commander_actions[:1]
+
+    # First, attempt to complete currently in-progress actions.
+    for commander_id, commander_actions in in_progress_by_commander.items():
+        action = commander_actions[0]
         army = session.query(Army).filter(Army.commander_id == action.commander_id).first()
         if army is None:
             action.state = "failed"
@@ -188,42 +202,65 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
             failed += 1
             continue
 
-        if action.state == "queued":
-            action.started_day = clock.day
-            action.started_watch = clock.watch
-            action.state = "in_progress"
-            started += 1
+        if action.eta_day is None or action.eta_watch is None:
+            action.state = "failed"
+            failed += 1
+            continue
+        if _watch_is_at_or_after(clock.day, clock.watch, action.eta_day, action.eta_watch):
+            if destination_h3 not in set(list_valid_destinations(session, army.army_id)):
+                action.state = "failed"
+                failed += 1
+                continue
+            army.location_id = destination_h3
+            session.add(
+                Movement(
+                    army_id=army.army_id,
+                    location_id=destination_h3,
+                    date=_scenario_date_for_day(clock.day),
+                    watch=clock.watch,
+                )
+            )
+            action.state = "completed"
+            completed += 1
 
-            # Compute ETA from current conditions at action start.
+    # Then, promote queued actions when no in-progress action remains.
+    commander_ids = set(in_progress_by_commander.keys()) | set(queued_by_commander.keys())
+    for commander_id in commander_ids:
+        has_in_progress = any(
+            action.state == "in_progress" for action in in_progress_by_commander.get(commander_id, [])
+        )
+        if has_in_progress:
+            continue
+
+        queued = queued_by_commander.get(commander_id, [])
+        queued.sort(key=lambda a: (a.accepted_at, a.action_id))
+        army = session.query(Army).filter(Army.commander_id == commander_id).first()
+        if army is None:
+            for action in queued:
+                action.state = "failed"
+                failed += 1
+            continue
+
+        for action in queued:
+            destination_h3 = _get_destination_h3(action)
+            if destination_h3 is None:
+                action.state = "failed"
+                failed += 1
+                continue
+
             try:
                 watches_needed = calculate_move_watches(session, army.army_id, destination_h3)
             except ValueError:
                 action.state = "failed"
                 failed += 1
                 continue
-            action.eta_day, action.eta_watch = _advance_day_watch(clock.day, clock.watch, watches_needed)
 
-        if action.state == "in_progress":
-            if action.eta_day is None or action.eta_watch is None:
-                action.state = "failed"
-                failed += 1
-                continue
-            if _watch_is_at_or_after(clock.day, clock.watch, action.eta_day, action.eta_watch):
-                if destination_h3 not in set(list_valid_destinations(session, army.army_id)):
-                    action.state = "failed"
-                    failed += 1
-                    continue
-                army.location_id = destination_h3
-                session.add(
-                    Movement(
-                        army_id=army.army_id,
-                        location_id=destination_h3,
-                        date=_scenario_date_for_day(clock.day),
-                        watch=clock.watch,
-                    )
-                )
-                action.state = "completed"
-                completed += 1
+            action.started_day = clock.day
+            action.started_watch = clock.watch
+            action.state = "in_progress"
+            action.eta_day, action.eta_watch = _advance_day_watch(clock.day, clock.watch, watches_needed)
+            started += 1
+            break
 
     return {"started": started, "completed": completed, "failed": failed}
 
@@ -370,10 +407,18 @@ def _environs_radius_for_army(army: Army) -> int:
 
 
 def _get_current_action_row(session: Session, commander_id: int) -> Action | None:
+    in_progress = (
+        session.query(Action)
+        .filter(Action.commander_id == commander_id, Action.state == "in_progress")
+        .order_by(Action.accepted_at.asc(), Action.action_id.asc())
+        .first()
+    )
+    if in_progress is not None:
+        return in_progress
     return (
         session.query(Action)
-        .filter(Action.commander_id == commander_id, Action.state.in_(ACTIVE_ACTION_STATES))
-        .order_by(Action.accepted_at.desc())
+        .filter(Action.commander_id == commander_id, Action.state == "queued")
+        .order_by(Action.accepted_at.asc(), Action.action_id.asc())
         .first()
     )
 
@@ -495,6 +540,38 @@ def get_my_view(
     }
 
 
+@router.get("/me/roads/border")
+def get_border_road_neighbors(
+    cells: str = Query(..., description="Comma-separated H3 cells currently visible"),
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    _ = commander_id  # endpoint is still commander-scoped via auth
+    requested = [value.strip() for value in cells.split(",") if value.strip()]
+    visible_set = set(requested)
+    if not visible_set:
+        return {"roads": []}
+
+    h3_module = h3
+    neighbor_candidates: set[str] = set()
+    for cell in visible_set:
+        try:
+            neighbors = set(h3_module.grid_ring(cell, 1))
+        except Exception:
+            continue
+        neighbor_candidates.update(neighbors - visible_set)
+
+    if not neighbor_candidates:
+        return {"roads": []}
+
+    road_neighbors = (
+        session.query(Location.location_id)
+        .filter(Location.location_id.in_(neighbor_candidates), Location.is_road.is_(True))
+        .all()
+    )
+    return {"roads": [row[0] for row in road_neighbors]}
+
+
 @router.post("/me/actions")
 def create_action(
     payload: ActionCreateRequest,
@@ -502,10 +579,6 @@ def create_action(
     session: Session = Depends(_get_session),
 ):
     army = _find_commander_army(session, commander_id)
-
-    existing = _get_current_action_row(session, commander_id)
-    if existing is not None:
-        raise HTTPException(status_code=409, detail="Commander already has an active action")
 
     destination_h3 = payload.destination_h3
     destination = session.get(Location, destination_h3)

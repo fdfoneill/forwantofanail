@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" aria-label="Walled town icon" role="img">
+  <path fill="#000" d="
+    M8 18
+    H12 V22 H14 V18
+    H18 V22 H20 V18
+    H22 V58
+    H8 Z
+
+    M42 18
+    H46 V22 H48 V18
+    H52 V22 H54 V18
+    H56 V58
+    H42 Z
+
+    M26 34 L32 28 L38 34 V42 H26 Z
+    M18 38 L22 34 L26 38 V44 H18 Z
+    M38 38 L42 34 L46 38 V44 H38 Z
+
+    M12 28
+    H16 V32 H20 V28
+    H24 V32 H28 V28
+    H32 V32 H36 V28
+    H40 V32 H44 V28
+    H48 V58
+    H12 Z
+  "/>
+</svg>
