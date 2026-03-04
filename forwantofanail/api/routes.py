@@ -166,6 +166,24 @@ def _get_destination_h3(action: Action) -> str | None:
     return None
 
 
+def _start_action_now_if_valid(session: Session, action: Action, army: Army, clock: GameClock) -> bool:
+    destination_h3 = _get_destination_h3(action)
+    if destination_h3 is None:
+        action.state = "failed"
+        return False
+    try:
+        watches_needed = calculate_move_watches(session, army.army_id, destination_h3)
+    except ValueError:
+        action.state = "failed"
+        return False
+
+    action.started_day = clock.day
+    action.started_watch = clock.watch
+    action.state = "in_progress"
+    action.eta_day, action.eta_watch = _advance_day_watch(clock.day, clock.watch, watches_needed)
+    return True
+
+
 def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
     started = 0
     completed = 0
@@ -242,23 +260,9 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
             continue
 
         for action in queued:
-            destination_h3 = _get_destination_h3(action)
-            if destination_h3 is None:
-                action.state = "failed"
+            if not _start_action_now_if_valid(session, action, army, clock):
                 failed += 1
                 continue
-
-            try:
-                watches_needed = calculate_move_watches(session, army.army_id, destination_h3)
-            except ValueError:
-                action.state = "failed"
-                failed += 1
-                continue
-
-            action.started_day = clock.day
-            action.started_watch = clock.watch
-            action.state = "in_progress"
-            action.eta_day, action.eta_watch = _advance_day_watch(clock.day, clock.watch, watches_needed)
             started += 1
             break
 
@@ -599,6 +603,21 @@ def create_action(
         accepted_at=datetime.now(timezone.utc),
     )
     session.add(action)
+
+    # Immediate start: if commander has no in-progress action, this action becomes active now.
+    in_progress_exists = (
+        session.query(Action)
+        .filter(
+            Action.commander_id == commander_id,
+            Action.state == "in_progress",
+        )
+        .first()
+        is not None
+    )
+    if not in_progress_exists:
+        clock = _get_or_create_clock(session)
+        _start_action_now_if_valid(session, action, army, clock)
+
     session.commit()
     session.refresh(action)
 
