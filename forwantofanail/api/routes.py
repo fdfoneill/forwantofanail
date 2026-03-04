@@ -229,7 +229,13 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
                 action.state = "failed"
                 failed += 1
                 continue
-            army.location_id = destination_h3
+            destination_location = session.get(Location, destination_h3)
+            if destination_location is None:
+                action.state = "failed"
+                failed += 1
+                continue
+            # Keep FK and relationship state consistent for follow-on queued actions in the same tick.
+            army.location = destination_location
             session.add(
                 Movement(
                     army_id=army.army_id,
