@@ -148,6 +148,18 @@ def _advance_day_watch(day: int, watch: int, steps: int = 1) -> tuple[int, int]:
     return current_day, current_watch
 
 
+def _advance_active_watches(day: int, watch: int, steps: int) -> tuple[int, int]:
+    """Advance by non-night watches only; night transitions do not consume progress."""
+    current_day = day
+    current_watch = watch
+    remaining = steps
+    while remaining > 0:
+        current_day, current_watch = _advance_day_watch(current_day, current_watch, 1)
+        if current_watch != int(Watch.NIGHT):
+            remaining -= 1
+    return current_day, current_watch
+
+
 def _watch_is_at_or_after(day: int, watch: int, other_day: int, other_watch: int) -> bool:
     return (day, watch) >= (other_day, other_watch)
 
@@ -168,6 +180,9 @@ def _get_destination_h3(action: Action) -> str | None:
 
 
 def _start_action_now_if_valid(session: Session, action: Action, army: Army, clock: GameClock) -> bool:
+    if clock.watch == int(Watch.NIGHT):
+        # No movement starts at night; keep queued for next active watch.
+        return False
     destination_h3 = _get_destination_h3(action)
     if destination_h3 is None:
         action.state = "failed"
@@ -181,7 +196,7 @@ def _start_action_now_if_valid(session: Session, action: Action, army: Army, clo
     action.started_day = clock.day
     action.started_watch = clock.watch
     action.state = "in_progress"
-    action.eta_day, action.eta_watch = _advance_day_watch(clock.day, clock.watch, watches_needed)
+    action.eta_day, action.eta_watch = _advance_active_watches(clock.day, clock.watch, watches_needed)
     return True
 
 
@@ -225,6 +240,8 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
             action.state = "failed"
             failed += 1
             continue
+        if clock.watch == int(Watch.NIGHT):
+            continue
         if _watch_is_at_or_after(clock.day, clock.watch, action.eta_day, action.eta_watch):
             if destination_h3 not in set(list_valid_destinations(session, army.army_id)):
                 action.state = "failed"
@@ -256,6 +273,8 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
         )
         if has_in_progress:
             continue
+        if clock.watch == int(Watch.NIGHT):
+            continue
 
         queued = queued_by_commander.get(commander_id, [])
         queued.sort(key=lambda a: (a.accepted_at, a.action_id))
@@ -268,6 +287,9 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
 
         for action in queued:
             if not _start_action_now_if_valid(session, action, army, clock):
+                if action.state == "queued":
+                    # Night: leave queued; do not advance to next queued action.
+                    break
                 failed += 1
                 continue
             started += 1
@@ -625,8 +647,8 @@ def create_action(
         .first()
         is not None
     )
-    if not in_progress_exists:
-        clock = _get_or_create_clock(session)
+    clock = _get_or_create_clock(session)
+    if not in_progress_exists and clock.watch != int(Watch.NIGHT):
         _start_action_now_if_valid(session, action, army, clock)
 
     session.commit()

@@ -711,7 +711,7 @@
       els.supplyCurrentText.textContent = String(supply.current ?? "-");
       els.supplyCapacityText.textContent = String(supply.capacity ?? "-");
       els.supplyDailyText.textContent = String(supply.daily_consumption ?? "-");
-      els.supplyDaysText.textContent = supply.days_estimate == null ? "-" : String(supply.days_estimate);
+      els.supplyDaysText.textContent = supply.days_estimate == null ? "-" : String(Math.floor(Number(supply.days_estimate)));
     }
 
     async function refreshView() {
