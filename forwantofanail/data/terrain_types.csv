@@ -1,0 +1,8 @@
+terrain_id,terrain_name,speed_multiplier,is_water,scout_multiplier
+0,Open Ground,1,FALSE,1
+1,Forest,1,FALSE,0.5
+2,Rainforest,1,FALSE,0.5
+3,Mountainous,0.5,FALSE,1
+4,Desert,1,FALSE,1
+5,River,1,TRUE,1
+6,Open Water,1,TRUE,1

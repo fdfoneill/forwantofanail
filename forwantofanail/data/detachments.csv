@@ -1,0 +1,64 @@
+﻿detachment_id,detachment_name,army_id,is_heavy,is_cavalry,wagon_count,warrior_count,is_mercenary
+0,1st Jerboon Men-at-Arms,0,TRUE,FALSE,70,800,FALSE
+1,2nd Jerboon Volunteers,0,FALSE,FALSE,40,700,FALSE
+2,3rd Jerboon Half-Trolls,0,TRUE,FALSE,40,600,FALSE
+3,4th Jerboon Volunteers,0,FALSE,FALSE,10,800,FALSE
+4,5th Jerboon Volunteers,0,FALSE,FALSE,15,600,FALSE
+5,1st Bemm Men-at-Arms,0,TRUE,FALSE,60,700,FALSE
+6,2nd Bemm Half-Trolls,0,TRUE,FALSE,40,500,FALSE
+7,3rd Bemm Volunteers,0,FALSE,FALSE,30,600,FALSE
+8,1st Cua Rangers,0,FALSE,FALSE,0,400,FALSE
+9,1st Sandpass Rangers,0,FALSE,FALSE,0,400,FALSE
+10,1st Merewey Volunteers,0,FALSE,FALSE,10,600,FALSE
+11,1st Lebooni Volunteers,0,FALSE,FALSE,20,500,FALSE
+12,1st Jerboon Heavy Cavalry,0,TRUE,TRUE,0,300,FALSE
+13,2nd Jerboon Cavalry,0,FALSE,TRUE,0,400,FALSE
+14,1st Bemm Cavalry,0,FALSE,TRUE,0,275,FALSE
+15,2nd Bemm Heavy Cavalry,0,TRUE,TRUE,0,200,FALSE
+16,1st Lugana Cavalry,0,FALSE,TRUE,0,300,FALSE
+17,1st Taree Cavalry,0,FALSE,TRUE,0,200,FALSE
+18,The Laugher's Privateers,2,FALSE,FALSE,0,400,FALSE
+19,Captain Golin's Freebooters,2,FALSE,FALSE,0,400,FALSE
+20,1st Port Yarbalk Infantry,2,FALSE,FALSE,40,600,FALSE
+21,2nd Port Yarbalk Infantry,2,FALSE,FALSE,20,500,FALSE
+22,1st Traffra Heavy Infantry,2,TRUE,FALSE,40,500,FALSE
+23,2nd Traffra Heavy Infantry,2,TRUE,FALSE,35,400,FALSE
+24,3rd Traffra Infantry,2,FALSE,FALSE,20,400,FALSE
+25,1st Highhold Caprites,2,FALSE,TRUE,0,200,FALSE
+26,1st Traffra Heavy Cavalry,2,TRUE,TRUE,0,225,FALSE
+27,2nd Traffra Cavalry,2,FALSE,TRUE,0,200,FALSE
+28,1st Port Yarbalk Heavy Cavalry,2,TRUE,TRUE,0,150,FALSE
+29,1st Brialgon Heavy Infantry,1,TRUE,FALSE,70,700,FALSE
+30,2nd Brialgon Heavy Infantry,1,TRUE,FALSE,50,600,FALSE
+31,3rd Brialgon Infantry,1,FALSE,FALSE,30,700,FALSE
+32,4th Brialgon Mendicants,1,FALSE,FALSE,20,500,FALSE
+33,1st Yinnagul Heavy Infantry,1,TRUE,FALSE,40,400,FALSE
+34,2nd Yinnagul Infantry,1,FALSE,FALSE,15,600,FALSE
+35,1st Plovul Mendicants,1,FALSE,FALSE,0,500,FALSE
+36,1st Tarean Mendicants,1,FALSE,FALSE,0,400,FALSE
+37,1st Seblen Skirmishers,1,FALSE,FALSE,0,400,FALSE
+38,1st Bucca Infantry,1,FALSE,FALSE,20,400,FALSE
+39,1st Saintsguard,1,TRUE,TRUE,0,300,FALSE
+40,2nd Saintsguard,1,TRUE,TRUE,0,225,FALSE
+41,1st Yinnagul Heavy Cavalry,1,TRUE,TRUE,0,300,FALSE
+42,2nd Yinnagul Cavalry,1,FALSE,TRUE,0,400,FALSE
+43,1st Lamm Grenadiers,3,TRUE,FALSE,80,800,FALSE
+44,2nd Lamm Heavy Infantry,3,TRUE,FALSE,60,700,FALSE
+45,3rd Lamm Infantry,3,FALSE,FALSE,40,800,FALSE
+46,4th Lamm Infantry,3,FALSE,FALSE,30,600,FALSE
+47,1st Onjo Grenadiers,3,TRUE,FALSE,60,600,FALSE
+48,2nd Onjo Infantry,3,FALSE,FALSE,25,700,FALSE
+49,1st Orbost Infantry,3,FALSE,FALSE,30,700,FALSE
+50,2nd Orbost Infantry,3,FALSE,FALSE,15,600,FALSE
+51,3rd Orbost Infantry,3,FALSE,FALSE,10,500,FALSE
+52,1st Nkaa Grenadiers,3,TRUE,FALSE,30,400,FALSE
+53,1st Argal Infantry,3,FALSE,FALSE,0,600,FALSE
+54,1st Rothost Heavy Infantry,3,TRUE,FALSE,20,400,FALSE
+55,1st Hebtesh Skirmishers,3,FALSE,FALSE,0,600,FALSE
+56,1st Onjo Drake-Riders,3,TRUE,TRUE,0,300,FALSE
+57,2nd Onjo Drake-Riders,3,TRUE,TRUE,0,300,FALSE
+58,1st Lamm Heavy Cavalry,3,TRUE,TRUE,0,400,FALSE
+59,2nd Lamm Cavalry,3,FALSE,TRUE,0,400,FALSE
+60,3rd Lamm Cavalry,3,FALSE,TRUE,0,200,FALSE
+61,1st Err Cavalry,3,FALSE,TRUE,0,200,FALSE
+62,1st Birgey Cavalry,3,FALSE,TRUE,0,200,FALSE
