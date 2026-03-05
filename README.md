@@ -17,7 +17,7 @@ forwantofanail/
 ├── README.md
 └── forwantofanail/
     ├── api/
-    │   ├── app.py                # FastAPI app + /dev/dashboard route
+    │   ├── app.py                # FastAPI app + dashboard/static routes
     │   ├── design_doc.md
     │   ├── routes.py             # REST endpoints
     │   └── schemas.py            # Request schemas
@@ -29,11 +29,15 @@ forwantofanail/
     │   └── game_state.py
     ├── mechanics/
     │   ├── movement.py           # Adjacency + movement rules
+    │   ├── supply.py             # Supply capacity + consumption
     │   └── time.py               # Watch progression
     ├── data/
     │   └── *.csv                 # Scenario source data
     └── web/
-        └── static/dev_dashboard.html
+        └── static/
+            ├── dev_dashboard.html
+            ├── player_dashboard.html
+            └── icons/strongholds/
 ```
 
 # Getting Started
@@ -78,6 +82,14 @@ uvicorn forwantofanail.api.app:app --reload
 If `DEV_ADMIN_TOKEN` is set in your shell, this endpoint requires that exact header value.
 The dev dashboard includes an Admin Token field for this.
 
+## API notes (current implementation)
+
+* `GET /v1/commanders` returns commander names for dashboard login selection.
+* `GET /v1/me/roads/border?cells=...` returns adjacent off-environs road cells for player-map border road stubs.
+* Actions support queueing: multiple `queued` actions per commander, one `in_progress`.
+* Movement does not start or complete during watch `0` (Night).
+* Supply is consumed once daily at the transition into watch `0` (Night).
+
 # Data Structure
 
 Table: armies
@@ -119,7 +131,7 @@ Table: commander_traits
 Table: locations
 - location_id CHAR(15) PRIMARY KEY
 - is_road BOOL
-- region VARCHAR(100) FOREIGN KEY REFERENCES strongholds(stronghold_name)
+- region VARCHAR(100)
 - terrain_id INT FOREIGN KEY REFERENCES terrain_types(terrain_id)
 - settlement INT
 - foraged_this_season BOOL
@@ -182,13 +194,29 @@ Table: messages
 - created_at DATETIME
 
 # Turn Structure and Movement
-Each in-game day is divided into five Watches: Matin, Prime, Noon, Vesper, and Night. Armies normally move and act during the four non-Night watches, though a risk-taking commander can choose to march through the night. 
+Each in-game day is divided into five Watches: Matin, Prime, Noon, Vesper, and Night. In the current implementation, movement actions progress only during watches 1-4; watch 0 (Night) is a rest watch where movement does not start or complete.
 
 The LOCATIONS table divides the game map into a collection of discrete locations. This can be visualized as overlaying a tiling of hexagonal cells onto the region. The LOCATION_ID field contains h3 indices, which can be used to determine adjacency between cells. The h3 values are only used for graph connectivity; the scale is set at 1 league per cell. 
 
 When moving between two locations where IS_ROAD==TRUE ("on-road"), an army can move 1 league (1 cell) per Watch. Off-road, an army can move 1 league every other watch (half-speed). Wagons cannot move off-road at all.
 
 Whenever an army enters a new cell, a record is added to the MOVEMENTS table, recording the army_id, location_id of the cell it entered, date, and watch (as INT where Night=0, Matin=1, Prime=2, Noon=3, Vesper=4).
+
+# Supply
+
+Supply consumption is applied once per day at the transition into watch `0` (Night).
+
+Daily consumption:
+- infantry: `1` per unit
+- noncombatants: `1` per unit
+- cavalry: `10` per unit
+- wagons: `10` per unit
+
+Carrying capacity:
+- infantry: `15` per unit
+- noncombatants: `15` per unit
+- cavalry: `75` per unit
+- wagons: `1000` per unit
 
 # Scouting
 
