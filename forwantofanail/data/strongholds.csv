@@ -1,0 +1,125 @@
+stronghold_id,location_id,stronghold_name,stronghold_type,control,stronghold_threshold
+0,8f6889082cc8011,Kirdag,Town,Delisgar,10
+1,8f6889082cc8065,Bream Watch,Fortress,Delisgar,20
+2,8f6889082cc8083,Tarag,Fortress,Delisgar,20
+3,8f6889082cc8098,Nagos,Fortress,Delisgar,20
+4,8f6889082cc80b0,Tarean,Town,Delisgar,10
+5,8f6889082cc80c1,Veliken,Town,Delisgar,10
+6,8f6889082cc80ca,Ft. St. Ulma,Fortress,Delisgar,20
+7,8f6889082cc8111,Preff Hold,Fortress,Allakia,20
+8,8f6889082cc8116,Keffra,Town,Allakia,10
+9,8f6889082cc8140,Raffos Keep,Fortress,Delisgar,20
+10,8f6889082cc8159,Dialgen,Town,Delisgar,10
+11,8f6889082cc8173,Traffra,City,Allakia,15
+12,8f6889082cc8184,Ft. St. Lavora,Fortress,Delisgar,20
+13,8f6889082cc8212,Orbost,City,Dinn,15
+14,8f6889082cc8226,Dapto Watch,Fortress,Dinn,20
+15,8f6889082cc8298,Vardac Crossing,Fortress,Dinn,20
+16,8f6889082cc831c,Sawte,Town,Dinn,10
+17,8f6889082cc8355,Bostion's Hold,Fortress,Dinn,20
+18,8f6889082cc839d,Ulgis,Town,Dinn,10
+19,8f6889082cc8448,Yinnagul,City,Delisgar,15
+20,8f6889082cc8463,Bucca,Town,Delisgar,10
+21,8f6889082cc84d4,Rushkegal,Town,Delisgar,10
+22,8f6889082cc850d,Ft. St. Agnella,Fortress,Delisgar,20
+23,8f6889082cc8520,Plovul,Town,Delisgar,10
+24,8f6889082cc8543,Ft. St. Elga,Fortress,Delisgar,20
+25,8f6889082cc8573,The Hagiomphalos,Fortress,Delisgar,20
+26,8f6889082cc8602,Ormo,Town,Delisgar,10
+27,8f6889082cc8636,Castle Nalish,Fortress,Delisgar,20
+28,8f6889082cc8686,Meono,Town,Boonan,10
+29,8f6889082cc86c3,Soobridge Watch,Fortress,Boonan,20
+30,8f6889082cc8753,Ft. Orr,Fortress,Delisgar,20
+31,8f6889082cc8754,Nabiac,Town,Delisgar,10
+32,8f6889082cc8785,Festien,Town,Delisgar,10
+33,8f6889082cc8799,Three Road Keep,Fortress,Delisgar,20
+34,8f6889082cc87b6,Lastien,Town,Delisgar,10
+35,8f6889082cc8892,Gorolkan,Town,Allakia,10
+36,8f6889082cc8a52,Yamnos,Town,Dinn,10
+37,8f6889082cc8b10,Castle Razgal,Fortress,Dinn,20
+38,8f6889082cc8b8c,Parl,Town,Dinn,10
+39,8f6889082cc8ba3,Hemz,Town,Dinn,10
+40,8f6889082cc8ba4,Getch,Town,Dinn,10
+41,8f6889082cc8c54,Smara,Town,Allakia,10
+42,8f6889082cc8ca1,Oughan Keep,Fortress,Allakia,20
+43,8f6889082cc8cdb,Brialgon,City,Delisgar,15
+44,8f6889082cc8d31,Highhold,Fortress,Allakia,20
+45,8f6889082cc8d44,Braff Mouth,Town,Allakia,10
+46,8f6889082cc8d4c,Ft. Pelk,Fortress,Allakia,20
+47,8f6889082cc8d9e,Joukra,Town,Allakia,10
+48,8f6889082cc9009,Kinchell,Town,Dinn,10
+49,8f6889082cc9015,Buroi Castle,Fortress,Dinn,20
+50,8f6889082cc9026,Onbur Watch,Fortress,Dinn,20
+51,8f6889082cc905c,Tonchell Fortress,Fortress,Dinn,20
+52,8f6889082cc9096,Ikachell,Town,Dinn,10
+53,8f6889082cc90ae,Ongul,Town,Dinn,10
+54,8f6889082cc90ed,Kinnawa,Town,Dinn,10
+55,8f6889082cc9115,Honey Watch,Fortress,Dinn,20
+56,8f6889082cc9151,Munmor,Town,Dinn,10
+57,8f6889082cc9164,Warr's Watch,Fortress,Dinn,20
+58,8f6889082cc9170,Lamm,City,Dinn,15
+59,8f6889082cc91ab,Yonn,Town,Dinn,10
+60,8f6889082cc91b6,Osterhold,Fortress,Dinn,20
+61,8f6889082cc9415,Sultan's Rock,Fortress,Dinn,20
+62,8f6889082cc941c,Nkaa,Town,Dinn,10
+63,8f6889082cc9451,Neruga's Gate,Fortress,Dinn,20
+64,8f6889082cc9489,Naku Keep,Fortress,Boonan,20
+65,8f6889082cc9513,Otirr,Town,Dinn,10
+66,8f6889082cc9541,Purann,Town,Dinn,10
+67,8f6889082cc9564,Irnost,Town,Dinn,10
+68,8f6889082cc9599,Jomma Keep,Fortress,Dinn,20
+69,8f6889082cc9619,Birgey,Town,Dinn,10
+70,8f6889082cc9672,Iroj Fortress,Fortress,Dinn,20
+71,8f6889082cc96b1,Brick Bridge,Fortress,Boonan,20
+72,8f6889082cc9711,Err,Town,Dinn,10
+73,8f6889082cc9743,Kagar,Town,Dinn,10
+74,8f6889082cc9764,Nkuwa Crossroads,Fortress,Dinn,20
+75,8f6889082cc98dc,Arrawar,Town,Dinn,10
+76,8f6889082cc9a02,Peiba Keep,Fortress,Dinn,20
+77,8f6889082cc9a30,Penjey,Town,Dinn,10
+78,8f6889082cc9a84,Oniki Crossroads,Fortress,Dinn,20
+79,8f6889082cc9a9e,Kinjo,Town,Dinn,10
+80,8f6889082cc9aa8,Jezaiba,Town,Dinn,10
+81,8f6889082cc9b92,Jozeg Keep,Fortress,Dinn,20
+82,8f6889082cc9b9a,Onjo,City,Dinn,15
+83,8f6889082cc9ba3,Sengar,Town,Dinn,10
+84,8f6889082cc9c1e,Brogesh,Town,Dinn,10
+85,8f6889082cc9c54,Bralos,Town,Dinn,10
+86,8f6889082cc9c5d,Rothost,Town,Dinn,10
+87,8f6889082cc9c6d,Edgal,Town,Dinn,10
+88,8f6889082cc9c96,Argal,Town,Dinn,10
+89,8f6889082cc9d80,Tesh Keep,Fortress,Dinn,20
+90,8f6889082cc9d91,Hebtesh,Town,Dinn,10
+91,8f6889082cc9da2,Yumesh,Town,Dinn,10
+92,8f6889082cca966,Seblen,Town,Delisgar,10
+93,8f6889082ccaa60,Jerboon,City,Boonan,15
+94,8f6889082ccaa96,Sooari Fortress,Fortress,Boonan,20
+95,8f6889082ccaaa1,Taree,Town,Boonan,10
+96,8f6889082ccab16,Hoonan Pass,Fortress,Boonan,20
+97,8f6889082ccab19,Padoo,Town,Boonan,10
+98,8f6889082ccb10c,Drover's Guard,Fortress,Boonan,20
+99,8f6889082ccb120,Dumba,Town,Boonan,10
+100,8f6889082ccb183,Merewey,Town,Boonan,10
+101,8f6889082ccb869,Karang,Town,Boonan,10
+102,8f6889082ccb8aa,Joa,Town,Boonan,10
+103,8f6889082ccb925,Lakavos,Town,Dinn,10
+104,8f6889082ccb98d,Keep Cuaba,Fortress,Boonan,20
+105,8f6889082ccb9aa,Cua,Town,Boonan,10
+106,8f6889082ccba33,Lugana,Town,Boonan,10
+107,8f6889082ccba95,Talum,Town,Boonan,10
+108,8f6889082ccbb49,Kuragang,Town,Boonan,10
+109,8f6889082ccbb98,The Sapphire Dome,Fortress,Boonan,20
+110,8f6889082ccbba4,Bemm,City,Boonan,15
+111,8f6889082ccbce4,Sandpass Hold,Fortress,Boonan,20
+112,8f6889082ccbd84,Fort Droogama,Fortress,Boonan,20
+113,8f6889082ccbd88,Lebooni,Town,Boonan,10
+114,8f6889082ccbda1,Deiri,Town,Boonan,10
+115,8f6889082ccc619,Ft. Rulk,Fortress,Allakia,20
+116,8f6889082ccc622,Ilkin,Town,Allakia,10
+117,8f6889082ccc695,Leyke,Town,Allakia,10
+118,8f6889082ccc6ab,Port Yarbalk,City,Allakia,15
+119,8f6889082ccc6dc,The Silverfort,Fortress,Allakia,20
+120,8f6889082cce24a,Briarm,Town,Delisgar,10
+121,8f6889082cce264,Touk,Town,Allakia,10
+122,8f6889082cce26e,Myall Keep,Fortress,Delisgar,20
+123,8f6889082ccea4c,Craugh,Town,Allakia,10
