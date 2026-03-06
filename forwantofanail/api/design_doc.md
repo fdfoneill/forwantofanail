@@ -16,7 +16,7 @@ Design goals:
 This version assumes:
 
 * Single army per commander
-* One active action at a time
+* One in-progress action at a time (with queued follow-on actions allowed)
 * No combat resolution yet
 * Combined “dashboard” view endpoint
 
@@ -440,8 +440,11 @@ The codebase now includes:
 The following endpoints are DB-backed (no in-memory fallback):
 
 * `POST /v1/auth/login`
+* `GET /v1/commanders`
 * `GET /v1/time`
+* `POST /v1/admin/time/advance` (dev/admin control)
 * `GET /v1/me/view`
+* `GET /v1/me/roads/border`
 * `POST /v1/me/actions`
 * `GET /v1/me/actions/current`
 * `POST /v1/me/actions/{id}/cancel`
@@ -455,12 +458,14 @@ The following endpoints are DB-backed (no in-memory fallback):
 Current API behavior differs from the original examples in these ways:
 
 * IDs are `cmd_<int>`, `army_<int>`, `det_<int>`, `sh_<int>`, `act_<int>`, `msg_<int>`.
-* `army.supply.capacity` is `null` (capacity model not yet implemented).
-* `current_action.eta` is `null` unless an ETA is written by a game loop.
+* `army.supply` includes `current`, `capacity`, `daily_consumption`, and `days_estimate`.
+* `current_action.eta` is populated when an action is `in_progress`; queued actions may have `eta = null`.
 * Messages are persisted and delivery-gated by `(delivery_day, delivery_watch)`, but currently created as immediately delivered.
 * Environs radius is computed server-side: `2` normally, `4` when any detachment is cavalry.
 * Action creation accepts `{\"kind\":\"move\", \"destination_h3\": \"...\"}`.
+* Actions are queued FIFO per commander (multiple queued, one in-progress).
+* Movement actions do not start or resolve in watch `0` (Night), and Night does not count toward movement ETA progress.
 
 ## 9.4 Validation Added for Move Actions
 
-`POST /v1/me/actions` with `kind=\"move\"` validates `destination_h3` against adjacency + movement constraints (terrain, wagons, river/open-water rules) via existing movement mechanics.
+`POST /v1/me/actions` with `kind=\"move\"` validates only that `destination_h3` exists. Adjacency + movement constraints (terrain, wagons, river/open-water rules) are validated at action start/resolution time via movement mechanics.
