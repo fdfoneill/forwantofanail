@@ -10,8 +10,8 @@ class LoginRequest(BaseModel):
 
 
 class ActionCreateRequest(BaseModel):
-    kind: Literal["move"]
-    destination_h3: str
+    kind: Literal["move", "forage"]
+    destination_h3: str | None = None
 
 
 class MessageCreateRequest(BaseModel):

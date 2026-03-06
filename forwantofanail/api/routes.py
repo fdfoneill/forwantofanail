@@ -258,25 +258,47 @@ def _get_destination_h3(action: Action) -> str | None:
     return None
 
 
-def _start_action_now_if_valid(session: Session, action: Action, army: Army, clock: GameClock) -> bool:
-    if clock.watch == int(Watch.NIGHT):
-        # No movement starts at night; keep queued for next active watch.
-        return False
-    destination_h3 = _get_destination_h3(action)
-    if destination_h3 is None:
-        action.state = "failed"
-        return False
-    try:
-        watches_needed = calculate_move_watches(session, army.army_id, destination_h3)
-    except ValueError:
-        action.state = "failed"
-        return False
+def _forage_supply_gain_for_army(session: Session, army: Army) -> tuple[int, list[Location]]:
+    radius = _environs_radius_for_army(army)
+    visible_h3 = list(h3.grid_disk(army.location_id, radius))
+    locations = session.query(Location).filter(Location.location_id.in_(visible_h3)).all()
+    gain = sum(max(int(location.settlement or 0), 0) * 2500 for location in locations)
+    return gain, locations
 
-    action.started_day = clock.day
-    action.started_watch = clock.watch
-    action.state = "in_progress"
-    action.eta_day, action.eta_watch = _advance_active_watches(clock.day, clock.watch, watches_needed)
-    return True
+
+def _start_action_now_if_valid(session: Session, action: Action, army: Army, clock: GameClock) -> bool:
+    if action.kind == "move":
+        if clock.watch == int(Watch.NIGHT):
+            # No movement starts at night; keep queued for next active watch.
+            return False
+        destination_h3 = _get_destination_h3(action)
+        if destination_h3 is None:
+            action.state = "failed"
+            return False
+        try:
+            watches_needed = calculate_move_watches(session, army.army_id, destination_h3)
+        except ValueError:
+            action.state = "failed"
+            return False
+        action.started_day = clock.day
+        action.started_watch = clock.watch
+        action.state = "in_progress"
+        action.eta_day, action.eta_watch = _advance_active_watches(clock.day, clock.watch, watches_needed)
+        return True
+
+    if action.kind == "forage":
+        if clock.watch != int(Watch.NIGHT):
+            # Forage starts only at night; keep queued until watch 0.
+            return False
+        action.started_day = clock.day
+        action.started_watch = clock.watch
+        action.state = "in_progress"
+        # Forage duration is exactly 4 watches, ending at watch 4 the same day.
+        action.eta_day, action.eta_watch = _advance_day_watch(clock.day, clock.watch, 4)
+        return True
+
+    action.state = "failed"
+    return False
 
 
 def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
@@ -309,40 +331,55 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
             action.state = "failed"
             failed += 1
             continue
-        destination_h3 = _get_destination_h3(action)
-        if destination_h3 is None:
-            action.state = "failed"
-            failed += 1
-            continue
-
         if action.eta_day is None or action.eta_watch is None:
             action.state = "failed"
             failed += 1
             continue
-        if clock.watch == int(Watch.NIGHT):
+        if action.kind == "move" and clock.watch == int(Watch.NIGHT):
             continue
         if _watch_is_at_or_after(clock.day, clock.watch, action.eta_day, action.eta_watch):
-            if destination_h3 not in set(list_valid_destinations(session, army.army_id)):
-                action.state = "failed"
-                failed += 1
-                continue
-            destination_location = session.get(Location, destination_h3)
-            if destination_location is None:
-                action.state = "failed"
-                failed += 1
-                continue
-            # Keep FK and relationship state consistent for follow-on queued actions in the same tick.
-            army.location = destination_location
-            session.add(
-                Movement(
-                    army_id=army.army_id,
-                    location_id=destination_h3,
-                    date=_scenario_date_for_day(clock.day),
-                    watch=clock.watch,
+            if action.kind == "move":
+                destination_h3 = _get_destination_h3(action)
+                if destination_h3 is None:
+                    action.state = "failed"
+                    failed += 1
+                    continue
+                if destination_h3 not in set(list_valid_destinations(session, army.army_id)):
+                    action.state = "failed"
+                    failed += 1
+                    continue
+                destination_location = session.get(Location, destination_h3)
+                if destination_location is None:
+                    action.state = "failed"
+                    failed += 1
+                    continue
+                # Keep FK and relationship state consistent for follow-on queued actions in the same tick.
+                army.location = destination_location
+                session.add(
+                    Movement(
+                        army_id=army.army_id,
+                        location_id=destination_h3,
+                        date=_scenario_date_for_day(clock.day),
+                        watch=clock.watch,
+                    )
                 )
-            )
-            action.state = "completed"
-            completed += 1
+                action.state = "completed"
+                completed += 1
+                continue
+
+            if action.kind == "forage":
+                gain, visible_locations = _forage_supply_gain_for_army(session, army)
+                capacity = supply_stats(army).capacity
+                army.army_supply = min(capacity, army.army_supply + gain)
+                for location in visible_locations:
+                    if int(location.settlement or 0) > 0:
+                        location.foraged_this_season = True
+                action.state = "completed"
+                completed += 1
+                continue
+
+            action.state = "failed"
+            failed += 1
 
     # Then, promote queued actions when no in-progress action remains.
     commander_ids = set(in_progress_by_commander.keys()) | set(queued_by_commander.keys())
@@ -352,9 +389,6 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
         )
         if has_in_progress:
             continue
-        if clock.watch == int(Watch.NIGHT):
-            continue
-
         queued = queued_by_commander.get(commander_id, [])
         queued.sort(key=lambda a: (a.accepted_at, a.action_id))
         army = session.query(Army).filter(Army.commander_id == commander_id).first()
@@ -741,40 +775,79 @@ def create_action(
     session: Session = Depends(_get_session),
 ):
     army = _find_commander_army(session, commander_id)
+    clock = _get_or_create_clock(session)
+    action_params: dict[str, Any] = {}
+    if payload.kind == "move":
+        destination_h3 = payload.destination_h3
+        if not destination_h3:
+            raise HTTPException(status_code=400, detail="destination_h3 is required for move actions")
+        destination = session.get(Location, destination_h3)
+        if destination is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Unknown move destination_h3",
+                    "destination_h3": destination_h3,
+                },
+            )
+        action_params["destination_h3"] = destination_h3
+    elif payload.kind == "forage":
+        # Forage can only be issued at Night (watch 0).
+        if clock.watch != int(Watch.NIGHT):
+            action = Action(
+                commander_id=commander_id,
+                kind=payload.kind,
+                state="failed",
+                parameters_json=json.dumps(action_params),
+                accepted_at=datetime.now(timezone.utc),
+            )
+            session.add(action)
+            session.commit()
+            session.refresh(action)
+            return {
+                "action_id": _action_ref(action.action_id),
+                "kind": action.kind,
+                "state": action.state,
+                "accepted_at": action.accepted_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+            }
 
-    destination_h3 = payload.destination_h3
-    destination = session.get(Location, destination_h3)
-    if destination is None:
-        raise HTTPException(
-            status_code=400,
-            detail={
-                "message": "Unknown move destination_h3",
-                "destination_h3": destination_h3,
-            },
+        # Night forage preempts all existing active actions for this commander.
+        active_actions = (
+            session.query(Action)
+            .filter(
+                Action.commander_id == commander_id,
+                Action.state.in_(ACTIVE_ACTION_STATES),
+            )
+            .all()
         )
+        for existing in active_actions:
+            existing.state = "cancelled"
 
     action = Action(
         commander_id=commander_id,
         kind=payload.kind,
         state="queued",
-        parameters_json=json.dumps({"destination_h3": destination_h3}),
+        parameters_json=json.dumps(action_params),
         accepted_at=datetime.now(timezone.utc),
     )
     session.add(action)
 
     # Immediate start: if commander has no in-progress action, this action becomes active now.
-    in_progress_exists = (
-        session.query(Action)
-        .filter(
-            Action.commander_id == commander_id,
-            Action.state == "in_progress",
+    if payload.kind == "forage":
+        if not _start_action_now_if_valid(session, action, army, clock):
+            action.state = "failed"
+    else:
+        in_progress_exists = (
+            session.query(Action)
+            .filter(
+                Action.commander_id == commander_id,
+                Action.state == "in_progress",
+            )
+            .first()
+            is not None
         )
-        .first()
-        is not None
-    )
-    clock = _get_or_create_clock(session)
-    if not in_progress_exists and clock.watch != int(Watch.NIGHT):
-        _start_action_now_if_valid(session, action, army, clock)
+        if not in_progress_exists:
+            _start_action_now_if_valid(session, action, army, clock)
 
     session.commit()
     session.refresh(action)
