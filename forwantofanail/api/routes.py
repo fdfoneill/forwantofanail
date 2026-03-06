@@ -440,7 +440,12 @@ def _serialize_army(army: Army) -> dict[str, Any]:
     }
 
 
-def _serialize_environs(session: Session, center_h3: str, radius: int) -> dict[str, Any]:
+def _serialize_environs(
+    session: Session,
+    center_h3: str,
+    radius: int,
+    exclude_army_id: int | None = None,
+) -> dict[str, Any]:
     disk = list(h3.grid_disk(center_h3, radius))
     locations = session.query(Location).filter(Location.location_id.in_(disk)).all()
 
@@ -460,11 +465,25 @@ def _serialize_environs(session: Session, center_h3: str, radius: int) -> dict[s
             sh.stronghold_name: sh.control
             for sh in session.query(Stronghold).filter(Stronghold.stronghold_name.in_(region_names)).all()
         }
+    other_armies_by_location: dict[str, list[dict[str, Any]]] = {}
+    other_armies_query = session.query(Army).filter(Army.location_id.in_(disk), Army.is_garrison.is_(False))
+    if exclude_army_id is not None:
+        other_armies_query = other_armies_query.filter(Army.army_id != exclude_army_id)
+    for other_army in other_armies_query.all():
+        location_bucket = other_armies_by_location.setdefault(other_army.location_id, [])
+        location_bucket.append(
+            {
+                "army_id": _army_ref(other_army.army_id),
+                "name": other_army.army_name,
+                "faction": other_army.army_faction,
+            }
+        )
 
     cells = []
     for location in locations:
         terrain = terrains.get(location.terrain_id)
         stronghold = strongholds.get(location.location_id)
+        other_armies = other_armies_by_location.get(location.location_id, [])
         cells.append(
             {
                 "h3": location.location_id,
@@ -485,6 +504,7 @@ def _serialize_environs(session: Session, center_h3: str, radius: int) -> dict[s
                     else None
                 ),
                 "observations": [],
+                "other_armies": other_armies,
             }
         )
 
@@ -671,7 +691,12 @@ def get_my_view(
     return {
         "time": _clock_payload(clock),
         "army": _serialize_army(army),
-        "environs": _serialize_environs(session, army.location_id, environs_radius),
+        "environs": _serialize_environs(
+            session,
+            army.location_id,
+            environs_radius,
+            exclude_army_id=army.army_id,
+        ),
         "messages": _serialize_message_summary(delivered_messages),
         "current_action": _serialize_action(current_action) if current_action else None,
     }

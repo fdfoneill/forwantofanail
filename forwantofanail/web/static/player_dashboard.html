@@ -346,6 +346,7 @@
       town: "/static/icons/strongholds/town.svg",
       fortress: "/static/icons/strongholds/fortress.svg",
     };
+    const OTHER_ARMY_ICON = "/static/icons/armies/other_army.svg";
     const STRONGHOLD_ICON_SCALE_BY_TYPE = {
       city: 1.06,
       town: 0.96,
@@ -653,6 +654,7 @@
       let centerPolygon = "";
       const roadLines = [];
       const strongholdIcons = [];
+      const otherArmyIcons = [];
       const centerByH3 = new Map();
 
       for (const item of projected) {
@@ -756,12 +758,26 @@
             );
           }
         }
+
+        const otherArmies = Array.isArray(item.cell.other_armies) ? item.cell.other_armies : [];
+        if (otherArmies.length > 0) {
+          const xs = item.poly.map((p) => p.x);
+          const ys = item.poly.map((p) => p.y);
+          const cellWidth = Math.max(...xs) - Math.min(...xs);
+          const cellHeight = Math.max(...ys) - Math.min(...ys);
+          const iconSize = Math.max(14, Math.min(cellWidth, cellHeight) * 0.34);
+          const iconX = item.center.x - iconSize / 2;
+          const iconY = item.center.y - iconSize / 2;
+          otherArmyIcons.push(
+            `<image href="${OTHER_ARMY_ICON}" x="${iconX.toFixed(1)}" y="${iconY.toFixed(1)}" width="${iconSize.toFixed(1)}" height="${iconSize.toFixed(1)}" preserveAspectRatio="xMidYMid meet" pointer-events="none" />`
+          );
+        }
       }
 
       if (centerPolygon) {
         polygons.push(centerPolygon);
       }
-      els.mapCanvas.innerHTML = `<g>${polygons.join("")}</g><g>${roadLines.join("")}</g><g>${strongholdIcons.join("")}</g>`;
+      els.mapCanvas.innerHTML = `<g>${polygons.join("")}</g><g>${roadLines.join("")}</g><g>${strongholdIcons.join("")}</g><g>${otherArmyIcons.join("")}</g>`;
       bindHoverHandlers();
     }
 
