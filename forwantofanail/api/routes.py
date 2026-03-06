@@ -102,6 +102,18 @@ def _parse_commander_ref(value: str) -> int:
         raise HTTPException(status_code=400, detail="recipient_id must be an integer or cmd_<id>") from exc
 
 
+def _commander_display_name(commander: Commander) -> str:
+    title = (commander.commander_title or "").strip()
+    name = (commander.commander_name or "").strip()
+    return f"{title} {name}".strip() if title else name
+
+
+def _message_sender_display_name(message: Message) -> str:
+    if message.sender_commander is not None:
+        return _commander_display_name(message.sender_commander)
+    return message.sender_name
+
+
 def _get_session():
     session = create_session()
     try:
@@ -583,9 +595,8 @@ def _serialize_message_summary(messages: list[Message]) -> dict[str, Any]:
         latest.append(
             {
                 "id": _message_ref(message.message_id),
-                "from": {"name": message.sender_name},
+                "from": {"name": _message_sender_display_name(message)},
                 "delivered_watch": _to_watch_stamp(message.delivery_day, message.delivery_watch),
-                "snippet": message.content[:120],
                 "is_read": message.is_read,
             }
         )
@@ -658,7 +669,15 @@ def login(payload: LoginRequest, session: Session = Depends(_get_session)):
 @router.get("/commanders")
 def list_commanders(session: Session = Depends(_get_session)):
     commanders = session.query(Commander).order_by(Commander.commander_name.asc()).all()
-    return [{"id": _commander_ref(commander.commander_id), "name": commander.commander_name} for commander in commanders]
+    return [
+        {
+            "id": _commander_ref(commander.commander_id),
+            "name": commander.commander_name,
+            "title": commander.commander_title,
+            "display_name": _commander_display_name(commander),
+        }
+        for commander in commanders
+    ]
 
 
 @router.get("/time")
@@ -897,7 +916,15 @@ def list_correspondents(
         .order_by(Commander.commander_name.asc())
         .all()
     )
-    return [{"id": _commander_ref(commander.commander_id), "name": commander.commander_name} for commander in correspondents]
+    return [
+        {
+            "id": _commander_ref(commander.commander_id),
+            "name": commander.commander_name,
+            "title": commander.commander_title,
+            "display_name": _commander_display_name(commander),
+        }
+        for commander in correspondents
+    ]
 
 
 @router.get("/me/actions/current")
@@ -955,7 +982,7 @@ def send_message(
 
     message = _create_message(
         session,
-        sender_name=sender.commander_name,
+        sender_name=_commander_display_name(sender),
         sender_commander_id=commander_id,
         sender_stronghold_id=None,
         recipient_id=recipient_id,
@@ -990,6 +1017,7 @@ def list_messages(
         Message.status == "received",
         _is_delivered_filter(clock.day, clock.watch),
     )
+    query = query.options(joinedload(Message.sender_commander))
     if unread_only:
         query = query.filter(Message.is_read.is_(False))
 
@@ -1000,9 +1028,8 @@ def list_messages(
         response.append(
             {
                 "id": _message_ref(message.message_id),
-                "from": {"name": message.sender_name},
+                "from": {"name": _message_sender_display_name(message)},
                 "delivered_watch": _to_watch_stamp(message.delivery_day, message.delivery_watch),
-                "snippet": message.content[:120],
                 "is_read": message.is_read,
             }
         )
@@ -1036,7 +1063,7 @@ def get_message(
 
     return {
         "id": _message_ref(message.message_id),
-        "from": {"name": message.sender_name},
+        "from": {"name": _message_sender_display_name(message)},
         "content": message.content,
         "priority": message.priority,
         "sent_watch": _to_watch_stamp(message.sent_day, message.sent_watch),
