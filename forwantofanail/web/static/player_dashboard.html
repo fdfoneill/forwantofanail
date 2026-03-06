@@ -390,6 +390,21 @@
       els.statusLine.classList.toggle("error", !!isError);
     }
 
+    function armyStatusText(view) {
+      const watch = Number(view?.time?.watch);
+      if (watch === 0) {
+        return "Army Status: Encamped";
+      }
+      const kind = String(view?.current_action?.kind || "").trim().toLowerCase();
+      if (kind === "move") {
+        return "Army Status: Marching";
+      }
+      if (kind === "forage") {
+        return "Army Status: Foraging";
+      }
+      return "Army Status: Holding";
+    }
+
     function terrainKey(value) {
       return String(value || "unknown").trim().toLowerCase();
     }
@@ -928,7 +943,7 @@
       state.pinnedH3 = null;
       updateMetadata(view);
       renderMap();
-      setStatus(`Loaded ${view.environs.cells.length} cells for ${state.selectedCommander}`);
+      setStatus(armyStatusText(view));
     }
 
     async function refreshAllPanels() {
