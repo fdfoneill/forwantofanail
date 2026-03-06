@@ -91,6 +91,71 @@
       font-size: 13px;
       line-height: 1.5;
     }
+    .message-tools {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+    .message-box {
+      margin-top: 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      padding: 10px;
+    }
+    .message-box textarea {
+      width: 100%;
+      min-height: 92px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      resize: vertical;
+      font-family: inherit;
+      font-size: 13px;
+      margin-bottom: 8px;
+    }
+    .message-box[hidden] { display: none; }
+    .inbox-list {
+      margin: 10px 0 0;
+      padding: 0;
+      list-style: none;
+      max-height: 190px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+    }
+    .inbox-item {
+      border-bottom: 1px solid #eee7dd;
+    }
+    .inbox-item:last-child { border-bottom: none; }
+    .inbox-btn {
+      width: 100%;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--ink);
+      text-align: left;
+      padding: 8px 10px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .inbox-btn.unread {
+      font-weight: 700;
+      background: #f4f8ff;
+    }
+    .message-read {
+      margin-top: 8px;
+      font-size: 12px;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      padding: 8px 10px;
+      min-height: 88px;
+      white-space: pre-wrap;
+    }
     .map-panel {
       position: relative;
       min-height: 74vh;
@@ -133,22 +198,17 @@
       color: var(--muted);
       margin-bottom: 6px;
     }
+    .hover-title.stronghold {
+      font-weight: 700;
+      color: var(--ink);
+    }
     .hover-row {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: 1fr;
       gap: 8px;
       align-items: center;
     }
-    .hover-input {
-      width: 100%;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 7px 9px;
-      font-size: 12px;
-      font-family: "IBM Plex Mono", "SFMono-Regular", Menlo, Consolas, monospace;
-      background: #fff;
-    }
-    .hover-copy {
+    .hover-action {
       border: 1px solid transparent;
       border-radius: 8px;
       padding: 7px 10px;
@@ -182,6 +242,20 @@
       border: 1px solid rgba(0, 0, 0, 0.2);
       flex: 0 0 12px;
     }
+    .cell-poly {
+      stroke: transparent;
+      stroke-width: 0.9;
+      transition: stroke 120ms ease, stroke-width 120ms ease;
+    }
+    .cell-poly:hover {
+      stroke: #3f3b34;
+      stroke-width: 1.15;
+    }
+    .cell-poly.center-cell,
+    .cell-poly.center-cell:hover {
+      stroke: #ffffff;
+      stroke-width: 2.6;
+    }
     @media (max-width: 980px) {
       .shell { grid-template-columns: 1fr; }
       .map-panel { min-height: 62vh; }
@@ -197,7 +271,6 @@
       <select id="commanderSelect">
         <option value="">Select commander...</option>
       </select>
-      <button id="refreshBtn">Refresh View</button>
       <div class="status" id="statusLine"></div>
 
       <div class="meta">
@@ -211,16 +284,29 @@
         <div><strong>Daily Use:</strong> <span id="supplyDailyText">-</span></div>
         <div><strong>Days Remaining:</strong> <span id="supplyDaysText">-</span></div>
       </div>
+
+      <div class="message-tools">
+        <button id="composeToggleBtn" type="button">Send Letter</button>
+        <div class="message-box" id="composeBox" hidden>
+          <div class="label" style="margin-bottom:6px;">Recipient</div>
+          <select id="recipientSelect"></select>
+          <textarea id="letterInput" placeholder="Write your letter..."></textarea>
+          <button id="sendLetterBtn" type="button">Send</button>
+        </div>
+
+        <div class="label" style="margin-top:10px;">Received Letters</div>
+        <ul id="inboxList" class="inbox-list"></ul>
+        <div id="messageRead" class="message-read">Select a letter to read.</div>
+      </div>
     </section>
 
     <section class="panel map-panel" id="mapPanel">
       <svg id="mapCanvas" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet"></svg>
       <div class="legend" id="legend"></div>
       <div class="hover-card" id="hoverCard">
-        <div class="hover-title">Cell Index</div>
+        <div class="hover-title" id="hoverTitle">Cell Actions</div>
         <div class="hover-row">
-          <input id="hoverH3Input" class="hover-input" type="text" readonly />
-          <button id="copyH3Btn" class="hover-copy" type="button">Copy</button>
+          <button id="queueMoveBtn" class="hover-action" type="button">Queue Move</button>
         </div>
         <div class="hover-meta" id="hoverMeta"></div>
       </div>
@@ -238,6 +324,10 @@
       mapWidth: 1000,
       mapHeight: 700,
       pinnedH3: null,
+      hoverH3: null,
+      correspondents: [],
+      inbox: [],
+      openMessageId: null,
     };
 
     const TERRAIN_COLORS = {
@@ -269,7 +359,6 @@
 
     const els = {
       commanderSelect: document.getElementById("commanderSelect"),
-      refreshBtn: document.getElementById("refreshBtn"),
       statusLine: document.getElementById("statusLine"),
       timeText: document.getElementById("timeText"),
       centerText: document.getElementById("centerText"),
@@ -279,12 +368,19 @@
       supplyCapacityText: document.getElementById("supplyCapacityText"),
       supplyDailyText: document.getElementById("supplyDailyText"),
       supplyDaysText: document.getElementById("supplyDaysText"),
+      composeToggleBtn: document.getElementById("composeToggleBtn"),
+      composeBox: document.getElementById("composeBox"),
+      recipientSelect: document.getElementById("recipientSelect"),
+      letterInput: document.getElementById("letterInput"),
+      sendLetterBtn: document.getElementById("sendLetterBtn"),
+      inboxList: document.getElementById("inboxList"),
+      messageRead: document.getElementById("messageRead"),
       mapCanvas: document.getElementById("mapCanvas"),
       mapPanel: document.getElementById("mapPanel"),
       legend: document.getElementById("legend"),
       hoverCard: document.getElementById("hoverCard"),
-      hoverH3Input: document.getElementById("hoverH3Input"),
-      copyH3Btn: document.getElementById("copyH3Btn"),
+      hoverTitle: document.getElementById("hoverTitle"),
+      queueMoveBtn: document.getElementById("queueMoveBtn"),
       hoverMeta: document.getElementById("hoverMeta"),
     };
 
@@ -380,6 +476,75 @@
       });
       state.token = payload.token;
       state.selectedCommander = payload.commander.name;
+    }
+
+    function renderCorrespondents() {
+      if (!state.correspondents.length) {
+        els.recipientSelect.innerHTML = "<option value=\"\">No correspondents</option>";
+        return;
+      }
+      const rows = state.correspondents.map(
+        (c) => `<option value="${c.id}">${c.name} (${c.id})</option>`
+      );
+      els.recipientSelect.innerHTML = rows.join("");
+    }
+
+    async function refreshCorrespondents() {
+      if (!state.token) {
+        state.correspondents = [];
+        renderCorrespondents();
+        return;
+      }
+      state.correspondents = await api("/v1/correspondents", {}, true);
+      renderCorrespondents();
+    }
+
+    function renderInbox() {
+      if (!state.inbox.length) {
+        els.inboxList.innerHTML = "<li class=\"inbox-item\"><div class=\"inbox-btn\">No received letters yet.</div></li>";
+        return;
+      }
+      const rows = state.inbox.map((msg) => {
+        const unreadClass = msg.is_read ? "" : " unread";
+        const marker = msg.is_read ? "" : "[UNREAD] ";
+        return (
+          `<li class="inbox-item">` +
+          `<button class="inbox-btn${unreadClass}" data-msg-id="${msg.id}" type="button">` +
+          `${marker}${msg.from.name}: ${msg.snippet}` +
+          `</button>` +
+          `</li>`
+        );
+      });
+      els.inboxList.innerHTML = rows.join("");
+      els.inboxList.querySelectorAll(".inbox-btn[data-msg-id]").forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const messageId = btn.dataset.msgId;
+          try {
+            const message = await api(`/v1/me/messages/${messageId}`, {}, true);
+            state.openMessageId = message.id;
+            els.messageRead.textContent =
+              `From: ${message.from.name}\n` +
+              `Sent: day ${message.sent_watch.day}, watch ${message.sent_watch.watch}\n` +
+              `Delivered: day ${message.delivered_watch.day}, watch ${message.delivered_watch.watch}\n\n` +
+              `${message.content}`;
+            await refreshInbox();
+          } catch (err) {
+            setStatus(`Read failed: ${err.message}`, true);
+          }
+        });
+      });
+    }
+
+    async function refreshInbox() {
+      if (!state.token) {
+        state.inbox = [];
+        state.openMessageId = null;
+        els.messageRead.textContent = "Select a letter to read.";
+        renderInbox();
+        return;
+      }
+      state.inbox = await api("/v1/me/messages", {}, true);
+      renderInbox();
     }
 
     function renderLegend() {
@@ -519,7 +684,7 @@
           continue;
         }
         roadLines.push(
-          `<line x1="${c1.x.toFixed(1)}" y1="${c1.y.toFixed(1)}" x2="${c2.x.toFixed(1)}" y2="${c2.y.toFixed(1)}" stroke="#8b5a2b" stroke-width="3.2" stroke-linecap="round" opacity="0.9" />`
+          `<line x1="${c1.x.toFixed(1)}" y1="${c1.y.toFixed(1)}" x2="${c2.x.toFixed(1)}" y2="${c2.y.toFixed(1)}" stroke="#8b5a2b" stroke-width="3.2" stroke-linecap="round" opacity="0.9" pointer-events="none" />`
         );
       }
 
@@ -556,7 +721,7 @@
             continue;
           }
           roadLines.push(
-            `<line x1="${c1.x.toFixed(1)}" y1="${c1.y.toFixed(1)}" x2="${edgePoint.x.toFixed(1)}" y2="${edgePoint.y.toFixed(1)}" stroke="#8b5a2b" stroke-width="3.2" stroke-linecap="round" opacity="0.9" />`
+            `<line x1="${c1.x.toFixed(1)}" y1="${c1.y.toFixed(1)}" x2="${edgePoint.x.toFixed(1)}" y2="${edgePoint.y.toFixed(1)}" stroke="#8b5a2b" stroke-width="3.2" stroke-linecap="round" opacity="0.9" pointer-events="none" />`
           );
         }
       }
@@ -564,9 +729,8 @@
       for (const item of projected) {
         const points = item.poly.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
         const isCenter = item.cell.h3 === view.environs.center_h3;
-        const stroke = isCenter ? "#ffffff" : "#3f3b34";
-        const strokeWidth = isCenter ? "2.6" : "1.05";
-        const polygon = `<polygon class="cell-poly" data-h3="${item.cell.h3}" points="${points}" fill="${terrainColor(item.cell.terrain_type)}" stroke="${stroke}" stroke-width="${strokeWidth}" opacity="0.94" />`;
+        const polyClass = isCenter ? "cell-poly center-cell" : "cell-poly";
+        const polygon = `<polygon class="${polyClass}" data-h3="${item.cell.h3}" points="${points}" fill="${terrainColor(item.cell.terrain_type)}" opacity="0.94" />`;
         if (isCenter) {
           centerPolygon = polygon;
         } else {
@@ -602,6 +766,7 @@
     }
 
     function hideHoverCard() {
+      state.hoverH3 = null;
       els.hoverCard.style.display = "none";
     }
 
@@ -624,21 +789,42 @@
     }
 
     function showHoverCard(h3Index, clientX, clientY) {
-      els.hoverH3Input.value = h3Index;
+      state.hoverH3 = h3Index;
       const cell = state.view?.environs?.cells?.find((c) => c.h3 === h3Index);
       if (cell) {
         const terrain = cell.terrain_type || "unknown";
-        const roadText = cell.has_road ? "yes" : "no";
-        let strongholdText = "none";
-        if (cell.stronghold && cell.stronghold.name) {
-          const shType = cell.stronghold.type || "unknown";
-          strongholdText = `${cell.stronghold.name} (${shType})`;
+        const settlementText = cell.settlement == null ? "0" : String(cell.settlement);
+        const foragedText = cell.foraged_this_season ? "yes" : "no";
+        const hasStronghold = !!(cell.stronghold && cell.stronghold.name);
+        let strongholdTypeText = "none";
+        let strongholdFactionText = "none";
+        if (cell.stronghold && cell.stronghold.type) {
+          strongholdTypeText = String(cell.stronghold.type);
+        }
+        if (hasStronghold && cell.stronghold && cell.stronghold.faction) {
+          strongholdFactionText = String(cell.stronghold.faction);
+        } else if (!hasStronghold && cell.region_control) {
+          strongholdFactionText = String(cell.region_control);
+        }
+        if (hasStronghold) {
+          els.hoverTitle.textContent = cell.stronghold.name;
+          els.hoverTitle.classList.add("stronghold");
+        } else if (cell.has_road) {
+          els.hoverTitle.textContent = "Road";
+          els.hoverTitle.classList.remove("stronghold");
+        } else {
+          els.hoverTitle.textContent = terrain;
+          els.hoverTitle.classList.remove("stronghold");
         }
         els.hoverMeta.innerHTML =
           `<div><span class=\"k\">Terrain:</span>${terrain}</div>` +
-          `<div><span class=\"k\">Road:</span>${roadText}</div>` +
-          `<div><span class=\"k\">Stronghold:</span>${strongholdText}</div>`;
+          `<div><span class=\"k\">Stronghold Type:</span>${strongholdTypeText}</div>` +
+          `<div><span class=\"k\">Faction:</span>${strongholdFactionText}</div>` +
+          `<div><span class=\"k\">Settlement:</span>${settlementText}</div>` +
+          `<div><span class=\"k\">Foraged This Season:</span>${foragedText}</div>`;
       } else {
+        els.hoverTitle.textContent = "Cell";
+        els.hoverTitle.classList.remove("stronghold");
         els.hoverMeta.innerHTML = "";
       }
       els.hoverCard.style.display = "block";
@@ -729,34 +915,37 @@
       setStatus(`Loaded ${view.environs.cells.length} cells for ${state.selectedCommander}`);
     }
 
+    async function refreshAllPanels() {
+      await refreshView();
+      await refreshCorrespondents();
+      await refreshInbox();
+    }
+
     els.commanderSelect.addEventListener("change", async (event) => {
       const commanderName = event.target.value;
       if (!commanderName) {
         state.token = null;
         state.selectedCommander = null;
         state.view = null;
+        state.correspondents = [];
+        state.inbox = [];
+        state.openMessageId = null;
         updateMetadata(null);
         renderMap();
+        renderCorrespondents();
+        renderInbox();
+        els.composeBox.setAttribute("hidden", "");
+        els.composeToggleBtn.textContent = "Send Letter";
+        els.letterInput.value = "";
+        els.messageRead.textContent = "Select a letter to read.";
         setStatus("");
         return;
       }
       try {
         await loginCommander(commanderName);
-        await refreshView();
+        await refreshAllPanels();
       } catch (err) {
         setStatus(`Login/load error: ${err.message}`, true);
-      }
-    });
-
-    els.refreshBtn.addEventListener("click", async () => {
-      if (!state.token) {
-        setStatus("Select a commander first.", true);
-        return;
-      }
-      try {
-        await refreshView();
-      } catch (err) {
-        setStatus(`Refresh error: ${err.message}`, true);
       }
     });
 
@@ -768,21 +957,84 @@
     });
     resizeObserver.observe(els.mapPanel);
 
+    setInterval(async () => {
+      if (!state.token) {
+        return;
+      }
+      try {
+        await refreshAllPanels();
+      } catch (err) {
+        setStatus(`Auto-refresh error: ${err.message}`, true);
+      }
+    }, 10000);
+
     (async function init() {
       renderLegend();
-      els.copyH3Btn.addEventListener("click", async () => {
-        if (!els.hoverH3Input.value) {
+      els.queueMoveBtn.addEventListener("click", async () => {
+        if (!state.token) {
+          setStatus("Select a commander first.", true);
+          return;
+        }
+        if (!state.hoverH3) {
+          setStatus("No cell selected.", true);
           return;
         }
         try {
-          await navigator.clipboard.writeText(els.hoverH3Input.value);
-          setStatus(`Copied ${els.hoverH3Input.value}`);
+          const result = await api(
+            "/v1/me/actions",
+            {
+              method: "POST",
+              body: JSON.stringify({ kind: "move", destination_h3: state.hoverH3 }),
+            },
+            true
+          );
+          setStatus(`Queued ${result.action_id} -> ${state.hoverH3}`);
+          await refreshView();
         } catch (err) {
-          els.hoverH3Input.select();
-          setStatus("Clipboard blocked; index selected for manual copy.");
+          setStatus(`Queue failed: ${err.message}`, true);
         }
       });
-      els.hoverH3Input.addEventListener("focus", () => els.hoverH3Input.select());
+      els.composeToggleBtn.addEventListener("click", () => {
+        const isHidden = els.composeBox.hasAttribute("hidden");
+        if (isHidden) {
+          els.composeBox.removeAttribute("hidden");
+          els.composeToggleBtn.textContent = "Hide Composer";
+        } else {
+          els.composeBox.setAttribute("hidden", "");
+          els.composeToggleBtn.textContent = "Send Letter";
+        }
+      });
+      els.sendLetterBtn.addEventListener("click", async () => {
+        if (!state.token) {
+          setStatus("Select a commander first.", true);
+          return;
+        }
+        const recipientId = els.recipientSelect.value;
+        const content = els.letterInput.value.trim();
+        if (!recipientId) {
+          setStatus("Select a recipient.", true);
+          return;
+        }
+        if (!content) {
+          setStatus("Write a message before sending.", true);
+          return;
+        }
+        try {
+          await api(
+            "/v1/me/messages",
+            {
+              method: "POST",
+              body: JSON.stringify({ recipient_id: recipientId, content, priority: "normal" }),
+            },
+            true
+          );
+          els.letterInput.value = "";
+          setStatus(`Letter sent to ${recipientId}.`);
+          await refreshInbox();
+        } catch (err) {
+          setStatus(`Send failed: ${err.message}`, true);
+        }
+      });
       els.mapCanvas.addEventListener("mouseleave", () => {
         if (!state.pinnedH3) {
           hideHoverCard();
@@ -797,6 +1049,8 @@
       els.hoverCard.addEventListener("click", (event) => event.stopPropagation());
       try {
         await loadCommanders();
+        renderCorrespondents();
+        renderInbox();
         const rect = els.mapPanel.getBoundingClientRect();
         state.mapWidth = Math.max(600, Math.floor(rect.width - 2));
         state.mapHeight = Math.max(420, Math.floor(rect.height - 2));

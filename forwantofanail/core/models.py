@@ -58,9 +58,9 @@ class Commander(Base):
     actions = relationship("Action", back_populates="commander", cascade="all, delete-orphan")
     sent_messages = relationship(
         "Message",
-        back_populates="sender",
+        back_populates="sender_commander",
         cascade="all, delete-orphan",
-        foreign_keys="Message.sender_id",
+        foreign_keys="Message.sender_commander_id",
     )
     received_messages = relationship(
         "Message",
@@ -140,6 +140,11 @@ class Stronghold(Base):
     stronghold_threshold = Column(Integer, nullable=False, default=0)
 
     location = relationship("Location", back_populates="strongholds")
+    sent_messages = relationship(
+        "Message",
+        back_populates="sender_stronghold",
+        foreign_keys="Message.sender_stronghold_id",
+    )
 
 
 class Movement(Base):
@@ -196,7 +201,9 @@ class Message(Base):
     __tablename__ = "messages"
 
     message_id = Column(Integer, primary_key=True, autoincrement=True)
-    sender_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=False, index=True)
+    sender_commander_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=True, index=True)
+    sender_stronghold_id = Column(Integer, ForeignKey("strongholds.stronghold_id"), nullable=True, index=True)
+    sender_name = Column(String(100), nullable=False)
     recipient_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=False, index=True)
     content = Column(Text, nullable=False)
     priority = Column(String(20), nullable=False, default="normal")
@@ -204,9 +211,18 @@ class Message(Base):
     sent_watch = Column(Integer, nullable=False)
     delivery_day = Column(Integer, nullable=False)
     delivery_watch = Column(Integer, nullable=False)
-    status = Column(String(20), nullable=False, default="delivered")
+    status = Column(String(20), nullable=False, default="in_transit", index=True)
     is_read = Column(Boolean, nullable=False, default=False, index=True)
     created_at = Column(DateTime, nullable=False)
 
-    sender = relationship("Commander", back_populates="sent_messages", foreign_keys=[sender_id])
+    sender_commander = relationship(
+        "Commander",
+        back_populates="sent_messages",
+        foreign_keys=[sender_commander_id],
+    )
+    sender_stronghold = relationship(
+        "Stronghold",
+        back_populates="sent_messages",
+        foreign_keys=[sender_stronghold_id],
+    )
     recipient = relationship("Commander", back_populates="received_messages", foreign_keys=[recipient_id])

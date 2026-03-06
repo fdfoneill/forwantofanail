@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+import math
 import os
 import json
+import random
 import secrets
 from typing import Any
 
@@ -46,6 +48,7 @@ WATCH_LABELS = {
 }
 ACTIVE_ACTION_STATES = {"queued", "in_progress"}
 SCENARIO_EPOCH = date(2000, 1, 1)
+MESSAGE_LOSS_PROBABILITY = 0.0
 
 
 def _commander_ref(commander_id: int) -> str:
@@ -135,6 +138,82 @@ def _is_delivered_filter(day: int, watch: int):
         Message.delivery_day < day,
         and_(Message.delivery_day == day, Message.delivery_watch <= watch),
     )
+
+
+def _grid_distance(origin_h3: str, destination_h3: str) -> int:
+    try:
+        if hasattr(h3, "grid_distance"):
+            return int(h3.grid_distance(origin_h3, destination_h3))
+        if hasattr(h3, "h3_distance"):
+            return int(h3.h3_distance(origin_h3, destination_h3))
+    except Exception:
+        return 0
+    return 0
+
+
+def _message_travel_watches(origin_h3: str, destination_h3: str) -> int:
+    distance = max(0, _grid_distance(origin_h3, destination_h3))
+    return max(1, int(math.ceil(distance / 4.0)))
+
+
+def _commander_location_h3(session: Session, commander_id: int) -> str | None:
+    army = session.query(Army).filter(Army.commander_id == commander_id).first()
+    if army is None:
+        return None
+    return army.location_id
+
+
+def _create_message(
+    session: Session,
+    *,
+    sender_name: str,
+    sender_commander_id: int | None,
+    sender_stronghold_id: int | None,
+    recipient_id: int,
+    origin_h3: str,
+    destination_h3: str,
+    content: str,
+    priority: str,
+    sent_day: int,
+    sent_watch: int,
+) -> Message:
+    travel_watches = _message_travel_watches(origin_h3, destination_h3)
+    delivery_day, delivery_watch = _advance_day_watch(sent_day, sent_watch, travel_watches)
+    message = Message(
+        sender_name=sender_name,
+        sender_commander_id=sender_commander_id,
+        sender_stronghold_id=sender_stronghold_id,
+        recipient_id=recipient_id,
+        content=content,
+        priority=priority,
+        sent_day=sent_day,
+        sent_watch=sent_watch,
+        delivery_day=delivery_day,
+        delivery_watch=delivery_watch,
+        status="in_transit",
+        is_read=False,
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(message)
+    return message
+
+
+def _process_messages_tick(session: Session, clock: GameClock) -> dict[str, int]:
+    due_messages = (
+        session.query(Message)
+        .filter(Message.status == "in_transit", _is_delivered_filter(clock.day, clock.watch))
+        .all()
+    )
+    received = 0
+    lost = 0
+    for message in due_messages:
+        if random.random() < MESSAGE_LOSS_PROBABILITY:
+            message.status = "lost"
+            lost += 1
+        else:
+            message.status = "received"
+            received += 1
+    return {"received": received, "lost": lost}
 
 
 def _advance_day_watch(day: int, watch: int, steps: int = 1) -> tuple[int, int]:
@@ -374,6 +453,13 @@ def _serialize_environs(session: Session, center_h3: str, radius: int) -> dict[s
         sh.location_id: sh
         for sh in session.query(Stronghold).filter(Stronghold.location_id.in_(disk)).all()
     }
+    region_names = {loc.region for loc in locations if loc.region}
+    region_control_by_name = {}
+    if region_names:
+        region_control_by_name = {
+            sh.stronghold_name: sh.control
+            for sh in session.query(Stronghold).filter(Stronghold.stronghold_name.in_(region_names)).all()
+        }
 
     cells = []
     for location in locations:
@@ -384,6 +470,10 @@ def _serialize_environs(session: Session, center_h3: str, radius: int) -> dict[s
                 "h3": location.location_id,
                 "terrain_type": terrain.terrain_name if terrain else "unknown",
                 "has_road": location.is_road,
+                "region": location.region,
+                "region_control": region_control_by_name.get(location.region) if location.region else None,
+                "settlement": location.settlement,
+                "foraged_this_season": location.foraged_this_season,
                 "stronghold": (
                     {
                         "id": _stronghold_ref(stronghold.stronghold_id),
@@ -413,7 +503,7 @@ def _serialize_message_summary(messages: list[Message]) -> dict[str, Any]:
         latest.append(
             {
                 "id": _message_ref(message.message_id),
-                "from": {"name": message.sender.commander_name},
+                "from": {"name": message.sender_name},
                 "delivered_watch": _to_watch_stamp(message.delivery_day, message.delivery_watch),
                 "snippet": message.content[:120],
                 "is_read": message.is_read,
@@ -521,6 +611,7 @@ def advance_time_for_development(
         supply_result = None
         if clock.watch == int(Watch.NIGHT):
             supply_result = consume_supply_for_all_armies(session)
+        message_result = _process_messages_tick(session, clock)
         tick_result = {"started": 0, "completed": 0, "failed": 0}
         if payload.execute_actions:
             tick_result = _execute_action_tick(session, clock)
@@ -532,6 +623,11 @@ def advance_time_for_development(
                 "time": _clock_payload(clock),
                 "actions": tick_result,
                 "supply": supply_result,
+                "messages": {
+                    "generated": 0,
+                    "received": message_result["received"],
+                    "lost": message_result["lost"],
+                },
             }
         )
 
@@ -561,7 +657,11 @@ def get_my_view(
 
     delivered_messages = (
         session.query(Message)
-        .filter(Message.recipient_id == commander_id, _is_delivered_filter(clock.day, clock.watch))
+        .filter(
+            Message.recipient_id == commander_id,
+            Message.status == "received",
+            _is_delivered_filter(clock.day, clock.watch),
+        )
         .order_by(Message.delivery_day.desc(), Message.delivery_watch.desc(), Message.message_id.desc())
         .all()
     )
@@ -714,26 +814,34 @@ def send_message(
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
+    sender = session.get(Commander, commander_id)
+    if sender is None:
+        raise HTTPException(status_code=404, detail="Sender commander not found")
+
     recipient_id = _parse_commander_ref(payload.recipient_id)
     recipient = session.get(Commander, recipient_id)
     if recipient is None:
         raise HTTPException(status_code=404, detail="Recipient not found")
 
     clock = _get_or_create_clock(session)
-    message = Message(
-        sender_id=commander_id,
+    sender_h3 = _commander_location_h3(session, commander_id)
+    recipient_h3 = _commander_location_h3(session, recipient_id)
+    if sender_h3 is None or recipient_h3 is None:
+        raise HTTPException(status_code=422, detail="Sender or recipient has no mappable army location")
+
+    message = _create_message(
+        session,
+        sender_name=sender.commander_name,
+        sender_commander_id=commander_id,
+        sender_stronghold_id=None,
         recipient_id=recipient_id,
+        origin_h3=sender_h3,
+        destination_h3=recipient_h3,
         content=payload.content,
         priority=payload.priority,
         sent_day=clock.day,
         sent_watch=clock.watch,
-        delivery_day=clock.day,
-        delivery_watch=clock.watch,
-        status="delivered",
-        is_read=False,
-        created_at=datetime.now(timezone.utc),
     )
-    session.add(message)
     session.commit()
     session.refresh(message)
 
@@ -755,6 +863,7 @@ def list_messages(
     clock = _get_or_create_clock(session)
     query = session.query(Message).filter(
         Message.recipient_id == commander_id,
+        Message.status == "received",
         _is_delivered_filter(clock.day, clock.watch),
     )
     if unread_only:
@@ -767,7 +876,7 @@ def list_messages(
         response.append(
             {
                 "id": _message_ref(message.message_id),
-                "from": {"name": message.sender.commander_name},
+                "from": {"name": message.sender_name},
                 "delivered_watch": _to_watch_stamp(message.delivery_day, message.delivery_watch),
                 "snippet": message.content[:120],
                 "is_read": message.is_read,
@@ -786,6 +895,10 @@ def get_message(
     message = session.get(Message, message_pk)
     if message is None or message.recipient_id != commander_id:
         raise HTTPException(status_code=404, detail="Message not found")
+    if message.status != "received":
+        if message.status == "lost":
+            raise HTTPException(status_code=404, detail="Message was lost in transit")
+        raise HTTPException(status_code=404, detail="Message not delivered yet")
 
     clock = _get_or_create_clock(session)
     if (message.delivery_day > clock.day) or (
@@ -799,7 +912,7 @@ def get_message(
 
     return {
         "id": _message_ref(message.message_id),
-        "from": {"name": message.sender.commander_name},
+        "from": {"name": message.sender_name},
         "content": message.content,
         "priority": message.priority,
         "sent_watch": _to_watch_stamp(message.sent_day, message.sent_watch),
