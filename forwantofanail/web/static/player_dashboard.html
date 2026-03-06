@@ -357,6 +357,13 @@
       town: 0.0,
       fortress: 0.0,
     };
+    const WATCH_NAME_BY_INDEX = {
+      0: "Night",
+      1: "Matin",
+      2: "Prime",
+      3: "Midday",
+      4: "Vesper",
+    };
 
     const els = {
       commanderSelect: document.getElementById("commanderSelect"),
@@ -388,6 +395,15 @@
     function setStatus(message, isError = false) {
       els.statusLine.textContent = message || "";
       els.statusLine.classList.toggle("error", !!isError);
+    }
+
+    function watchDisplayName(value) {
+      const index = Number(value);
+      if (!Number.isFinite(index)) {
+        return "Unknown Watch";
+      }
+      const base = WATCH_NAME_BY_INDEX[index] || "Unknown";
+      return `${base} Watch`;
     }
 
     function armyStatusText(view) {
@@ -525,10 +541,12 @@
       const rows = state.inbox.map((msg) => {
         const unreadClass = msg.is_read ? "" : " unread";
         const marker = msg.is_read ? "" : "[UNREAD] ";
+        const sentDay = Number(msg?.sent_watch?.day);
+        const dayText = Number.isFinite(sentDay) ? `, day ${sentDay}` : "";
         return (
           `<li class="inbox-item">` +
           `<button class="inbox-btn${unreadClass}" data-msg-id="${msg.id}" type="button">` +
-          `${marker}${msg.from.name}` +
+          `${marker}${msg.from.name}${dayText}` +
           `</button>` +
           `</li>`
         );
@@ -540,10 +558,12 @@
           try {
             const message = await api(`/v1/me/messages/${messageId}`, {}, true);
             state.openMessageId = message.id;
+            const sentWatchName = watchDisplayName(message?.sent_watch?.watch);
+            const deliveredWatchName = watchDisplayName(message?.delivered_watch?.watch);
             els.messageRead.textContent =
               `From: ${message.from.name}\n` +
-              `Sent: day ${message.sent_watch.day}, watch ${message.sent_watch.watch}\n` +
-              `Delivered: day ${message.delivered_watch.day}, watch ${message.delivered_watch.watch}\n\n` +
+              `Sent: day ${message.sent_watch.day}, ${sentWatchName}\n` +
+              `Delivered: day ${message.delivered_watch.day}, ${deliveredWatchName}\n\n` +
               `${message.content}`;
             await refreshInbox();
           } catch (err) {
@@ -922,7 +942,7 @@
         els.supplyDaysText.textContent = "-";
         return;
       }
-      els.timeText.textContent = `Day ${view.time.day}, watch ${view.time.watch} (${view.time.watch_label})`;
+      els.timeText.textContent = `Day ${view.time.day}, ${watchDisplayName(view.time.watch)}`;
       els.centerText.textContent = view.environs.center_h3;
       els.radiusText.textContent = String(view.environs.radius);
       els.cellCountText.textContent = String(view.environs.cells.length);

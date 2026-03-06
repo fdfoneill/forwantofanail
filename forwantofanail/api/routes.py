@@ -1029,6 +1029,7 @@ def list_messages(
             {
                 "id": _message_ref(message.message_id),
                 "from": {"name": _message_sender_display_name(message)},
+                "sent_watch": _to_watch_stamp(message.sent_day, message.sent_watch),
                 "delivered_watch": _to_watch_stamp(message.delivery_day, message.delivery_watch),
                 "is_read": message.is_read,
             }
