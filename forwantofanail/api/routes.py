@@ -12,7 +12,7 @@ from typing import Any
 import h3
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from sqlalchemy import and_, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from forwantofanail.api.schemas import (
     ActionCreateRequest,
@@ -500,16 +500,42 @@ def _serialize_environs(
             for sh in session.query(Stronghold).filter(Stronghold.stronghold_name.in_(region_names)).all()
         }
     other_armies_by_location: dict[str, list[dict[str, Any]]] = {}
-    other_armies_query = session.query(Army).filter(Army.location_id.in_(disk), Army.is_garrison.is_(False))
+    other_armies_query = (
+        session.query(Army)
+        .options(joinedload(Army.detachments), joinedload(Army.commander))
+        .filter(Army.location_id.in_(disk), Army.is_garrison.is_(False))
+    )
     if exclude_army_id is not None:
         other_armies_query = other_armies_query.filter(Army.army_id != exclude_army_id)
     for other_army in other_armies_query.all():
         location_bucket = other_armies_by_location.setdefault(other_army.location_id, [])
+        infantry = sum(det.warrior_count for det in other_army.detachments if not det.is_cavalry)
+        cavalry = sum(det.warrior_count for det in other_army.detachments if det.is_cavalry)
+        total_strength = infantry + cavalry
+        distance = max(0, _grid_distance(center_h3, other_army.location_id))
+        intel: dict[str, Any] = {
+            "faction": other_army.army_faction,
+            "distance_cells": distance,
+        }
+        if distance <= 1:
+            intel.update(
+                {
+                    "name": other_army.army_name,
+                    "commander": (
+                        other_army.commander.commander_name
+                        if other_army.commander is not None
+                        else None
+                    ),
+                    "infantry": infantry,
+                    "cavalry": cavalry,
+                }
+            )
+        elif distance <= 3:
+            intel["strength_rounded"] = int(((total_strength + 500) // 1000) * 1000)
         location_bucket.append(
             {
                 "army_id": _army_ref(other_army.army_id),
-                "name": other_army.army_name,
-                "faction": other_army.army_faction,
+                **intel,
             }
         )
 
