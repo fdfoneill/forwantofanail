@@ -1,5 +1,5 @@
 ﻿army_id,location_id,army_name,army_faction,commander_id,army_supply,army_morale,is_embarked,is_garrison,noncombattant_count
 0,8f6889082ccbba4,Boonan General Levy,Boonan,0,603170,9,FALSE,FALSE,2303
-1,8f6889082cc8cdb,Delisgrene Royal Host,Delisgar,1,439895,9,FALSE,FALSE,1668
+1,8f6889082cc8448,Delisgrene Royal Host,Delisgar,1,439895,9,FALSE,FALSE,1668
 2,8f6889082ccc6ab,Allakian Expeditionary Force,Allakia,2,276620,9,FALSE,FALSE,1033
 3,8f6889082cc9170,Dinn 1st Army,Dinn,3,709000,9,FALSE,FALSE,2600
