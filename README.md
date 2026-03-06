@@ -181,7 +181,9 @@ Table: actions
 
 Table: messages
 - message_id INT PRIMARY KEY
-- sender_id INT FOREIGN KEY REFERENCES commanders(commander_id)
+- sender_commander_id INT NULL FOREIGN KEY REFERENCES commanders(commander_id)
+- sender_stronghold_id INT NULL FOREIGN KEY REFERENCES strongholds(stronghold_id)
+- sender_name VARCHAR(100)
 - recipient_id INT FOREIGN KEY REFERENCES commanders(commander_id)
 - content TEXT
 - priority VARCHAR(20)
@@ -189,7 +191,7 @@ Table: messages
 - sent_watch INT
 - delivery_day INT
 - delivery_watch INT
-- status VARCHAR(20)
+- status VARCHAR(20)  # in_transit | received | lost
 - is_read BOOL
 - created_at DATETIME
 
