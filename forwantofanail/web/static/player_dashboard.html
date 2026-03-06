@@ -481,7 +481,8 @@
       const commanders = await api("/v1/commanders");
       const options = ["<option value=''>Select commander...</option>"];
       for (const cmd of commanders) {
-        options.push(`<option value="${cmd.name}">${cmd.name}</option>`);
+        const label = cmd.display_name || cmd.name;
+        options.push(`<option value="${cmd.name}">${label}</option>`);
       }
       els.commanderSelect.innerHTML = options.join("");
     }
@@ -501,7 +502,7 @@
         return;
       }
       const rows = state.correspondents.map(
-        (c) => `<option value="${c.id}">${c.name} (${c.id})</option>`
+        (c) => `<option value="${c.id}">${c.display_name || c.name}</option>`
       );
       els.recipientSelect.innerHTML = rows.join("");
     }
@@ -527,7 +528,7 @@
         return (
           `<li class="inbox-item">` +
           `<button class="inbox-btn${unreadClass}" data-msg-id="${msg.id}" type="button">` +
-          `${marker}${msg.from.name}: ${msg.snippet}` +
+          `${marker}${msg.from.name}` +
           `</button>` +
           `</li>`
         );
