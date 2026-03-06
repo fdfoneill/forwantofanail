@@ -146,7 +146,12 @@
         <option value="">Select commander...</option>
       </select>
 
-      <label for="moveDestination">Queue Move Action (destination H3)</label>
+      <label for="actionKind">Queue Action</label>
+      <select id="actionKind">
+        <option value="move">Move</option>
+        <option value="forage">Forage</option>
+      </select>
+      <label for="moveDestination">Destination H3 (move only)</label>
       <div class="inline">
         <input id="moveDestination" type="text" placeholder="8f6889082cc8cdb" />
         <button id="moveButton" style="width:auto;">Queue</button>
@@ -178,6 +183,7 @@
 
     const els = {
       commanderSelect: document.getElementById("commanderSelect"),
+      actionKind: document.getElementById("actionKind"),
       moveDestination: document.getElementById("moveDestination"),
       moveButton: document.getElementById("moveButton"),
       viewOutput: document.getElementById("viewOutput"),
@@ -261,6 +267,13 @@
       await refreshPlayerView();
     }
 
+    function updateActionInputs() {
+      const kind = (els.actionKind.value || "move").trim().toLowerCase();
+      const isMove = kind === "move";
+      els.moveDestination.disabled = !isMove;
+      els.moveDestination.placeholder = isMove ? "8f6889082cc8cdb" : "Not used for forage";
+    }
+
     els.commanderSelect.addEventListener("change", async (event) => {
       const commanderName = event.target.value;
       if (!commanderName) {
@@ -278,26 +291,34 @@
       }
     });
 
+    els.actionKind.addEventListener("change", updateActionInputs);
+
     els.moveButton.addEventListener("click", async () => {
       if (!state.token) {
         setStatus(els.playerStatus, "Select a commander first.", true);
         return;
       }
+      const kind = (els.actionKind.value || "move").trim().toLowerCase();
       const destination = els.moveDestination.value.trim();
-      if (!destination) {
+      if (kind === "move" && !destination) {
         setStatus(els.playerStatus, "Enter a destination H3 index.", true);
         return;
       }
       try {
+        const payload = kind === "move"
+          ? { kind: "move", destination_h3: destination }
+          : { kind: "forage" };
         const result = await api("/v1/me/actions", {
           method: "POST",
-          body: JSON.stringify({ kind: "move", destination_h3: destination }),
+          body: JSON.stringify(payload),
         }, true);
-        setStatus(els.playerStatus, `Action queued: ${result.action_id}`);
-        els.moveDestination.value = "";
+        setStatus(els.playerStatus, `Action queued: ${result.action_id} (${result.kind})`);
+        if (kind === "move") {
+          els.moveDestination.value = "";
+        }
         await refreshPlayerView();
       } catch (err) {
-        setStatus(els.playerStatus, `Move error: ${err.message}`, true);
+        setStatus(els.playerStatus, `Action error: ${err.message}`, true);
       }
     });
 
@@ -336,6 +357,7 @@
 
     (async function init() {
       try {
+        updateActionInputs();
         await loadCommanders();
         await refreshClock();
       } catch (err) {
