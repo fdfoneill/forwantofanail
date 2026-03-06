@@ -391,18 +391,19 @@
     }
 
     function armyStatusText(view) {
+      const armyName = String(view?.army?.name || "Army").trim() || "Army";
       const watch = Number(view?.time?.watch);
       if (watch === 0) {
-        return "Army Status: Encamped";
+        return `${armyName}: Encamped`;
       }
       const kind = String(view?.current_action?.kind || "").trim().toLowerCase();
       if (kind === "move") {
-        return "Army Status: Marching";
+        return `${armyName}: Marching`;
       }
       if (kind === "forage") {
-        return "Army Status: Foraging";
+        return `${armyName}: Foraging`;
       }
-      return "Army Status: Holding";
+      return `${armyName}: Holding`;
     }
 
     function terrainKey(value) {
