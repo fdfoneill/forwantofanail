@@ -14,6 +14,11 @@ class ActionCreateRequest(BaseModel):
     destination_h3: str | None = None
 
 
+class ActionPlanRequest(BaseModel):
+    kind: Literal["march", "forage"]
+    path: list[str] = []
+
+
 class MessageCreateRequest(BaseModel):
     recipient_id: str
     content: str

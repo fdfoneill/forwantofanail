@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from forwantofanail.api.schemas import (
     ActionCreateRequest,
+    ActionPlanRequest,
     LoginRequest,
     MessageCreateRequest,
     TimeAdvanceRequest,
@@ -253,6 +254,13 @@ def _advance_active_watches(day: int, watch: int, steps: int) -> tuple[int, int]
 
 def _watch_is_at_or_after(day: int, watch: int, other_day: int, other_watch: int) -> bool:
     return (day, watch) >= (other_day, other_watch)
+
+
+def _remaining_active_watches_today(watch: int) -> int:
+    # Night watch starts a new day cycle for daytime movement planning.
+    if watch <= int(Watch.NIGHT):
+        return 4
+    return max(0, 4 - int(watch))
 
 
 def _scenario_date_for_day(day: int) -> date:
@@ -902,6 +910,96 @@ def create_action(
         "kind": action.kind,
         "state": action.state,
         "accepted_at": action.accepted_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+    }
+
+
+@router.post("/me/actions/plan")
+def plan_actions(
+    payload: ActionPlanRequest,
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    army = _find_commander_army(session, commander_id)
+    clock = _get_or_create_clock(session)
+
+    # Replace semantics: cancel queued actions first.
+    queued_actions = (
+        session.query(Action)
+        .filter(Action.commander_id == commander_id, Action.state == "queued")
+        .order_by(Action.accepted_at.asc(), Action.action_id.asc())
+        .all()
+    )
+    for existing in queued_actions:
+        existing.state = "cancelled"
+
+    created_actions: list[Action] = []
+    now = datetime.now(timezone.utc)
+
+    if payload.kind == "forage":
+        if clock.watch != int(Watch.NIGHT):
+            raise HTTPException(status_code=400, detail="Forage orders may only be submitted during Night watch")
+        action = Action(
+            commander_id=commander_id,
+            kind="forage",
+            state="queued",
+            parameters_json=json.dumps({}),
+            accepted_at=now,
+        )
+        session.add(action)
+        created_actions.append(action)
+    else:
+        path = [str(cell).strip() for cell in payload.path if str(cell).strip()]
+        if not path:
+            raise HTTPException(status_code=400, detail="March orders require a non-empty path")
+        max_steps = _remaining_active_watches_today(int(clock.watch))
+        if len(path) > max_steps:
+            raise HTTPException(
+                status_code=400,
+                detail=f"March path too long for current watch: max {max_steps} cells, got {len(path)}",
+            )
+        for destination_h3 in path:
+            if session.get(Location, destination_h3) is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": "Unknown move destination_h3",
+                        "destination_h3": destination_h3,
+                    },
+                )
+            action = Action(
+                commander_id=commander_id,
+                kind="move",
+                state="queued",
+                parameters_json=json.dumps({"destination_h3": destination_h3}),
+                accepted_at=now,
+            )
+            session.add(action)
+            created_actions.append(action)
+
+    in_progress_exists = (
+        session.query(Action)
+        .filter(Action.commander_id == commander_id, Action.state == "in_progress")
+        .first()
+        is not None
+    )
+    if created_actions and not in_progress_exists:
+        _start_action_now_if_valid(session, created_actions[0], army, clock)
+
+    session.commit()
+    for action in created_actions:
+        session.refresh(action)
+
+    return {
+        "kind": payload.kind,
+        "cancelled_queued_count": len(queued_actions),
+        "created": [
+            {
+                "action_id": _action_ref(action.action_id),
+                "kind": action.kind,
+                "state": action.state,
+            }
+            for action in created_actions
+        ],
     }
 
 
