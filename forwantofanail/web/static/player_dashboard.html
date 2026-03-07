@@ -96,6 +96,54 @@
       padding-top: 12px;
       border-top: 1px solid var(--line);
     }
+    .orders-tools {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
+    .orders-note {
+      font-size: 12px;
+      color: var(--muted);
+      margin: 4px 0 8px;
+      line-height: 1.4;
+    }
+    .staged-list {
+      margin: 8px 0 0;
+      padding: 0;
+      list-style: none;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      max-height: 170px;
+      overflow: auto;
+    }
+    .staged-item {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 8px;
+      align-items: center;
+      padding: 6px 8px;
+      border-bottom: 1px solid #eee7dd;
+      font-size: 12px;
+    }
+    .staged-item:last-child { border-bottom: none; }
+    .staged-remove {
+      width: auto;
+      margin: 0;
+      padding: 4px 8px;
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .staged-empty {
+      padding: 8px 10px;
+      color: var(--muted);
+      font-size: 12px;
+    }
     .message-box {
       margin-top: 10px;
       border: 1px solid var(--line);
@@ -285,6 +333,17 @@
         <div><strong>Days Remaining:</strong> <span id="supplyDaysText">-</span></div>
       </div>
 
+      <div class="orders-tools">
+        <div class="label">Orders</div>
+        <select id="orderModeSelect">
+          <option value="march">March</option>
+          <option value="forage">Forage</option>
+        </select>
+        <div class="orders-note" id="ordersNote">Plan up to 4 march cells this day.</div>
+        <button id="submitOrdersBtn" type="button">Submit Orders</button>
+        <ul id="stagedPathList" class="staged-list"></ul>
+      </div>
+
       <div class="message-tools">
         <button id="composeToggleBtn" type="button">Send Letter</button>
         <div class="message-box" id="composeBox" hidden>
@@ -306,7 +365,7 @@
       <div class="hover-card" id="hoverCard">
         <div class="hover-title" id="hoverTitle">Cell Actions</div>
         <div class="hover-row">
-          <button id="queueMoveBtn" class="hover-action" type="button">Queue Move</button>
+          <button id="queueMoveBtn" class="hover-action" type="button">Stage Move</button>
         </div>
         <div class="hover-meta" id="hoverMeta"></div>
       </div>
@@ -328,6 +387,8 @@
       correspondents: [],
       inbox: [],
       openMessageId: null,
+      orderMode: "march",
+      stagedPath: [],
     };
 
     const TERRAIN_COLORS = {
@@ -376,6 +437,10 @@
       supplyCapacityText: document.getElementById("supplyCapacityText"),
       supplyDailyText: document.getElementById("supplyDailyText"),
       supplyDaysText: document.getElementById("supplyDaysText"),
+      orderModeSelect: document.getElementById("orderModeSelect"),
+      ordersNote: document.getElementById("ordersNote"),
+      submitOrdersBtn: document.getElementById("submitOrdersBtn"),
+      stagedPathList: document.getElementById("stagedPathList"),
       composeToggleBtn: document.getElementById("composeToggleBtn"),
       composeBox: document.getElementById("composeBox"),
       recipientSelect: document.getElementById("recipientSelect"),
@@ -420,6 +485,101 @@
         return `${armyName}: Foraging`;
       }
       return `${armyName}: Holding`;
+    }
+
+    function currentWatchIndex() {
+      return Number(state.view?.time?.watch);
+    }
+
+    function maxMarchSteps() {
+      const watch = currentWatchIndex();
+      if (!Number.isFinite(watch)) {
+        return 0;
+      }
+      if (watch <= 0) {
+        return 4;
+      }
+      return Math.max(0, 4 - watch);
+    }
+
+    function isNightWatch() {
+      return currentWatchIndex() === 0;
+    }
+
+    function renderStagedPathList() {
+      if (!state.stagedPath.length) {
+        els.stagedPathList.innerHTML = "<li class=\"staged-empty\">No staged march cells.</li>";
+        return;
+      }
+      const rows = state.stagedPath.map((h3Index, idx) => (
+        `<li class="staged-item">` +
+        `<span>${idx + 1}. ${h3Index}</span>` +
+        `<button class="staged-remove" data-stage-idx="${idx}" type="button">Remove</button>` +
+        `</li>`
+      ));
+      els.stagedPathList.innerHTML = rows.join("");
+      els.stagedPathList.querySelectorAll("button[data-stage-idx]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const idx = Number(btn.dataset.stageIdx);
+          if (!Number.isFinite(idx) || idx < 0 || idx >= state.stagedPath.length) {
+            return;
+          }
+          state.stagedPath.splice(idx, 1);
+          renderStagedPathList();
+          renderMap();
+        });
+      });
+    }
+
+    function renderOrdersPanel() {
+      const maxSteps = maxMarchSteps();
+      const isMarch = state.orderMode === "march";
+      els.orderModeSelect.value = state.orderMode;
+      els.queueMoveBtn.disabled = !isMarch;
+      if (isMarch) {
+        els.ordersNote.textContent = `March orders: up to ${maxSteps} staged cells this day.`;
+      } else if (isNightWatch()) {
+        els.ordersNote.textContent = "Forage available this Night Watch. Submitting will replace queued actions.";
+      } else {
+        els.ordersNote.textContent = "Forage unavailable outside Night Watch.";
+      }
+      const forageOption = els.orderModeSelect.querySelector("option[value=\"forage\"]");
+      if (forageOption) {
+        forageOption.disabled = !isNightWatch();
+      }
+      if (state.orderMode === "forage" && !isNightWatch()) {
+        state.orderMode = "march";
+        els.orderModeSelect.value = "march";
+      }
+      if (state.stagedPath.length > maxSteps) {
+        state.stagedPath = state.stagedPath.slice(0, maxSteps);
+      }
+      renderStagedPathList();
+    }
+
+    function canStageMove(targetH3) {
+      if (!state.view || !targetH3) {
+        return { ok: false, reason: "No active view loaded." };
+      }
+      if (state.orderMode !== "march") {
+        return { ok: false, reason: "Set orders to March to stage movement." };
+      }
+      const maxSteps = maxMarchSteps();
+      if (maxSteps < 1) {
+        return { ok: false, reason: "No march watches remain this day." };
+      }
+      if (state.stagedPath.length >= maxSteps) {
+        return { ok: false, reason: `You can stage at most ${maxSteps} cells right now.` };
+      }
+      const visible = new Set((state.view?.environs?.cells || []).map((c) => c.h3));
+      if (!visible.has(targetH3)) {
+        return { ok: false, reason: "Cell is outside your current view." };
+      }
+      const last = state.stagedPath.length ? state.stagedPath[state.stagedPath.length - 1] : state.view.environs.center_h3;
+      if (!areNeighborCells(last, targetH3)) {
+        return { ok: false, reason: "Each staged cell must be adjacent to the previous step." };
+      }
+      return { ok: true, reason: "" };
     }
 
     function terrainKey(value) {
@@ -689,10 +849,13 @@
 
       const polygons = [];
       let centerPolygon = "";
+      const stagedOverlays = [];
+      const stagedLabels = [];
       const roadLines = [];
       const strongholdIcons = [];
       const otherArmyIcons = [];
       const centerByH3 = new Map();
+      const stagedIndexByH3 = new Map(state.stagedPath.map((h3Index, idx) => [h3Index, idx + 1]));
 
       for (const item of projected) {
         centerByH3.set(item.cell.h3, item.center);
@@ -809,12 +972,29 @@
             `<image href="${OTHER_ARMY_ICON}" x="${iconX.toFixed(1)}" y="${iconY.toFixed(1)}" width="${iconSize.toFixed(1)}" height="${iconSize.toFixed(1)}" preserveAspectRatio="xMidYMid meet" pointer-events="none" />`
           );
         }
+
+        const stagedNumber = stagedIndexByH3.get(item.cell.h3);
+        if (stagedNumber) {
+          const stagedPoints = item.poly.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+          stagedOverlays.push(
+            `<polygon points="${stagedPoints}" fill="none" stroke="#d7891f" stroke-width="2.4" stroke-linejoin="round" opacity="0.95" pointer-events="none" />`
+          );
+          stagedLabels.push(
+            `<text x="${item.center.x.toFixed(1)}" y="${(item.center.y + 4).toFixed(1)}" text-anchor="middle" font-size="15" font-weight="700" fill="#2f2212" stroke="#fdf6e8" stroke-width="2.2" paint-order="stroke" pointer-events="none">${stagedNumber}</text>`
+          );
+        }
       }
 
       if (centerPolygon) {
         polygons.push(centerPolygon);
       }
-      els.mapCanvas.innerHTML = `<g>${polygons.join("")}</g><g>${roadLines.join("")}</g><g>${strongholdIcons.join("")}</g><g>${otherArmyIcons.join("")}</g>`;
+      els.mapCanvas.innerHTML =
+        `<g>${polygons.join("")}</g>` +
+        `<g>${roadLines.join("")}</g>` +
+        `<g>${strongholdIcons.join("")}</g>` +
+        `<g>${otherArmyIcons.join("")}</g>` +
+        `<g>${stagedOverlays.join("")}</g>` +
+        `<g>${stagedLabels.join("")}</g>`;
       bindHoverHandlers();
     }
 
@@ -964,6 +1144,7 @@
       state.borderRoadNeighbors = new Set((borderRoads.roads || []).map((value) => String(value)));
       state.pinnedH3 = null;
       updateMetadata(view);
+      renderOrdersPanel();
       renderMap();
       setStatus(armyStatusText(view));
     }
@@ -983,8 +1164,11 @@
         state.correspondents = [];
         state.inbox = [];
         state.openMessageId = null;
+        state.orderMode = "march";
+        state.stagedPath = [];
         updateMetadata(null);
         renderMap();
+        renderOrdersPanel();
         renderCorrespondents();
         renderInbox();
         els.composeBox.setAttribute("hidden", "");
@@ -996,6 +1180,8 @@
       }
       try {
         await loginCommander(commanderName);
+        state.orderMode = "march";
+        state.stagedPath = [];
         await refreshAllPanels();
       } catch (err) {
         setStatus(`Login/load error: ${err.message}`, true);
@@ -1023,6 +1209,7 @@
 
     (async function init() {
       renderLegend();
+      renderOrdersPanel();
       els.queueMoveBtn.addEventListener("click", async () => {
         if (!state.token) {
           setStatus("Select a commander first.", true);
@@ -1032,19 +1219,65 @@
           setStatus("No cell selected.", true);
           return;
         }
+        const check = canStageMove(state.hoverH3);
+        if (!check.ok) {
+          setStatus(check.reason, true);
+          return;
+        }
+        state.stagedPath.push(state.hoverH3);
+        renderStagedPathList();
+        renderMap();
+        setStatus(`Staged step ${state.stagedPath.length}: ${state.hoverH3}`);
+      });
+      els.orderModeSelect.addEventListener("change", () => {
+        const nextMode = String(els.orderModeSelect.value || "march").trim().toLowerCase();
+        if (nextMode === "forage" && !isNightWatch()) {
+          state.orderMode = "march";
+          renderOrdersPanel();
+          setStatus("Forage can only be planned during Night Watch.", true);
+          return;
+        }
+        state.orderMode = nextMode === "forage" ? "forage" : "march";
+        if (state.orderMode === "forage") {
+          state.stagedPath = [];
+          renderMap();
+        }
+        renderOrdersPanel();
+      });
+      els.submitOrdersBtn.addEventListener("click", async () => {
+        if (!state.token) {
+          setStatus("Select a commander first.", true);
+          return;
+        }
         try {
+          let payload;
+          if (state.orderMode === "forage") {
+            if (!isNightWatch()) {
+              setStatus("Forage can only be submitted during Night Watch.", true);
+              return;
+            }
+            payload = { kind: "forage", path: [] };
+          } else {
+            if (!state.stagedPath.length) {
+              setStatus("Stage at least one destination for march orders.", true);
+              return;
+            }
+            payload = { kind: "march", path: state.stagedPath.slice() };
+          }
           const result = await api(
-            "/v1/me/actions",
+            "/v1/me/actions/plan",
             {
               method: "POST",
-              body: JSON.stringify({ kind: "move", destination_h3: state.hoverH3 }),
+              body: JSON.stringify(payload),
             },
             true
           );
-          setStatus(`Queued ${result.action_id} -> ${state.hoverH3}`);
+          state.stagedPath = [];
+          renderOrdersPanel();
           await refreshView();
+          setStatus(`Orders submitted. Replaced ${result.cancelled_queued_count} queued action(s).`);
         } catch (err) {
-          setStatus(`Queue failed: ${err.message}`, true);
+          setStatus(`Order submit failed: ${err.message}`, true);
         }
       });
       els.composeToggleBtn.addEventListener("click", () => {
