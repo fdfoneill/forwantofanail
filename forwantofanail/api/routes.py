@@ -288,9 +288,6 @@ def _forage_supply_gain_for_army(session: Session, army: Army) -> tuple[int, lis
 
 def _start_action_now_if_valid(session: Session, action: Action, army: Army, clock: GameClock) -> bool:
     if action.kind == "move":
-        if clock.watch == int(Watch.NIGHT):
-            # No movement starts at night; keep queued for next active watch.
-            return False
         destination_h3 = _get_destination_h3(action)
         if destination_h3 is None:
             action.state = "failed"
@@ -624,6 +621,28 @@ def _serialize_action(action: Action) -> dict[str, Any]:
     return payload
 
 
+def _serialize_remaining_itinerary(session: Session, commander_id: int) -> dict[str, Any]:
+    actions = (
+        session.query(Action)
+        .filter(
+            Action.commander_id == commander_id,
+            Action.state.in_(ACTIVE_ACTION_STATES),
+        )
+        .order_by(Action.accepted_at.asc(), Action.action_id.asc())
+        .all()
+    )
+    remaining_moves: list[str] = []
+    for action in actions:
+        if action.kind != "move":
+            continue
+        destination_h3 = _get_destination_h3(action)
+        if destination_h3:
+            remaining_moves.append(destination_h3)
+    return {
+        "remaining_moves": remaining_moves,
+    }
+
+
 def _environs_radius_for_army(army: Army) -> int:
     return 4 if any(detachment.is_cavalry for detachment in army.detachments) else 2
 
@@ -786,6 +805,7 @@ def get_my_view(
         ),
         "messages": _serialize_message_summary(delivered_messages),
         "current_action": _serialize_action(current_action) if current_action else None,
+        "itinerary": _serialize_remaining_itinerary(session, commander_id),
     }
 
 
