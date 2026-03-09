@@ -389,6 +389,7 @@
       openMessageId: null,
       orderMode: "march",
       stagedPath: [],
+      remainingItinerary: [],
     };
 
     const TERRAIN_COLORS = {
@@ -851,11 +852,18 @@
       let centerPolygon = "";
       const stagedOverlays = [];
       const stagedLabels = [];
+      const itineraryOverlays = [];
+      const itineraryLabels = [];
       const roadLines = [];
       const strongholdIcons = [];
       const otherArmyIcons = [];
       const centerByH3 = new Map();
       const stagedIndexByH3 = new Map(state.stagedPath.map((h3Index, idx) => [h3Index, idx + 1]));
+      const itineraryIndexByH3 = new Map(
+        state.remainingItinerary
+          .filter((h3Index) => !stagedIndexByH3.has(h3Index))
+          .map((h3Index, idx) => [h3Index, idx + 1])
+      );
 
       for (const item of projected) {
         centerByH3.set(item.cell.h3, item.center);
@@ -983,6 +991,17 @@
             `<text x="${item.center.x.toFixed(1)}" y="${(item.center.y + 4).toFixed(1)}" text-anchor="middle" font-size="15" font-weight="700" fill="#2f2212" stroke="#fdf6e8" stroke-width="2.2" paint-order="stroke" pointer-events="none">${stagedNumber}</text>`
           );
         }
+
+        const itineraryNumber = itineraryIndexByH3.get(item.cell.h3);
+        if (itineraryNumber) {
+          const itineraryPoints = item.poly.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+          itineraryOverlays.push(
+            `<polygon points="${itineraryPoints}" fill="none" stroke="#2a6ea8" stroke-width="2.0" stroke-dasharray="6 4" stroke-linejoin="round" opacity="0.9" pointer-events="none" />`
+          );
+          itineraryLabels.push(
+            `<text x="${item.center.x.toFixed(1)}" y="${(item.center.y + 4).toFixed(1)}" text-anchor="middle" font-size="14" font-weight="700" fill="#163652" stroke="#eef6ff" stroke-width="2" paint-order="stroke" pointer-events="none">${itineraryNumber}</text>`
+          );
+        }
       }
 
       if (centerPolygon) {
@@ -993,6 +1012,8 @@
         `<g>${roadLines.join("")}</g>` +
         `<g>${strongholdIcons.join("")}</g>` +
         `<g>${otherArmyIcons.join("")}</g>` +
+        `<g>${itineraryOverlays.join("")}</g>` +
+        `<g>${itineraryLabels.join("")}</g>` +
         `<g>${stagedOverlays.join("")}</g>` +
         `<g>${stagedLabels.join("")}</g>`;
       bindHoverHandlers();
@@ -1141,6 +1162,7 @@
       const cellsParam = encodeURIComponent(view.environs.cells.map((cell) => cell.h3).join(","));
       const borderRoads = await api(`/v1/me/roads/border?cells=${cellsParam}`, {}, true);
       state.view = view;
+      state.remainingItinerary = Array.isArray(view?.itinerary?.remaining_moves) ? view.itinerary.remaining_moves.map(String) : [];
       state.borderRoadNeighbors = new Set((borderRoads.roads || []).map((value) => String(value)));
       state.pinnedH3 = null;
       updateMetadata(view);
@@ -1166,6 +1188,7 @@
         state.openMessageId = null;
         state.orderMode = "march";
         state.stagedPath = [];
+        state.remainingItinerary = [];
         updateMetadata(null);
         renderMap();
         renderOrdersPanel();
@@ -1182,6 +1205,7 @@
         await loginCommander(commanderName);
         state.orderMode = "march";
         state.stagedPath = [];
+        state.remainingItinerary = [];
         await refreshAllPanels();
       } catch (err) {
         setStatus(`Login/load error: ${err.message}`, true);
