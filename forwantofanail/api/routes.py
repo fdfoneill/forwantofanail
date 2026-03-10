@@ -948,14 +948,14 @@ def plan_actions(
     army = _find_commander_army(session, commander_id)
     clock = _get_or_create_clock(session)
 
-    # Replace semantics: cancel queued actions first.
-    queued_actions = (
+    # Replace semantics: cancel all active actions first (queued and in-progress).
+    active_actions = (
         session.query(Action)
-        .filter(Action.commander_id == commander_id, Action.state == "queued")
+        .filter(Action.commander_id == commander_id, Action.state.in_(ACTIVE_ACTION_STATES))
         .order_by(Action.accepted_at.asc(), Action.action_id.asc())
         .all()
     )
-    for existing in queued_actions:
+    for existing in active_actions:
         existing.state = "cancelled"
 
     created_actions: list[Action] = []
@@ -974,38 +974,39 @@ def plan_actions(
         session.add(action)
         created_actions.append(action)
     else:
-        if clock.watch == int(Watch.NIGHT):
-            raise HTTPException(
-                status_code=400,
-                detail="March orders cannot be submitted during Night watch (you may stage moves and submit at Matin)",
-            )
         path = [str(cell).strip() for cell in payload.path if str(cell).strip()]
-        if not path:
-            raise HTTPException(status_code=400, detail="March orders require a non-empty path")
-        max_steps = _remaining_march_steps_for_watch(int(clock.watch))
-        if len(path) > max_steps:
-            raise HTTPException(
-                status_code=400,
-                detail=f"March path too long for current watch: max {max_steps} cells, got {len(path)}",
-            )
-        for destination_h3 in path:
-            if session.get(Location, destination_h3) is None:
+        # Empty march path is interpreted as an explicit hold order:
+        # cancel active/queued actions and create no new actions.
+        if path:
+            if clock.watch == int(Watch.NIGHT):
                 raise HTTPException(
                     status_code=400,
-                    detail={
-                        "message": "Unknown move destination_h3",
-                        "destination_h3": destination_h3,
-                    },
+                    detail="March orders cannot be submitted during Night watch (you may stage moves and submit at Matin)",
                 )
-            action = Action(
-                commander_id=commander_id,
-                kind="move",
-                state="queued",
-                parameters_json=json.dumps({"destination_h3": destination_h3}),
-                accepted_at=now,
-            )
-            session.add(action)
-            created_actions.append(action)
+            max_steps = _remaining_march_steps_for_watch(int(clock.watch))
+            if len(path) > max_steps:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"March path too long for current watch: max {max_steps} cells, got {len(path)}",
+                )
+            for destination_h3 in path:
+                if session.get(Location, destination_h3) is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "message": "Unknown move destination_h3",
+                            "destination_h3": destination_h3,
+                        },
+                    )
+                action = Action(
+                    commander_id=commander_id,
+                    kind="move",
+                    state="queued",
+                    parameters_json=json.dumps({"destination_h3": destination_h3}),
+                    accepted_at=now,
+                )
+                session.add(action)
+                created_actions.append(action)
 
     in_progress_exists = (
         session.query(Action)
@@ -1022,7 +1023,9 @@ def plan_actions(
 
     return {
         "kind": payload.kind,
-        "cancelled_queued_count": len(queued_actions),
+        "hold": payload.kind == "march" and len(created_actions) == 0,
+        "cancelled_count": len(active_actions),
+        "cancelled_queued_count": len(active_actions),
         "created": [
             {
                 "action_id": _action_ref(action.action_id),

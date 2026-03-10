@@ -1286,12 +1286,8 @@
             }
             payload = { kind: "forage", path: [] };
           } else {
-            if (isNightWatch()) {
+            if (isNightWatch() && state.stagedPath.length > 0) {
               setStatus("March orders cannot be submitted during Night Watch. Stage now and submit at Matin.", true);
-              return;
-            }
-            if (!state.stagedPath.length) {
-              setStatus("Stage at least one destination for march orders.", true);
               return;
             }
             payload = { kind: "march", path: state.stagedPath.slice() };
@@ -1307,7 +1303,11 @@
           state.stagedPath = [];
           renderOrdersPanel();
           await refreshView();
-          setStatus(`Orders submitted. Replaced ${result.cancelled_queued_count} queued action(s).`);
+          if (result.hold) {
+            setStatus(`Hold order submitted. Cancelled ${result.cancelled_count ?? result.cancelled_queued_count ?? 0} active action(s).`);
+          } else {
+            setStatus(`Orders submitted. Replaced ${result.cancelled_count ?? result.cancelled_queued_count ?? 0} active action(s).`);
+          }
         } catch (err) {
           setStatus(`Order submit failed: ${err.message}`, true);
         }
