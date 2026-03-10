@@ -256,11 +256,14 @@ def _watch_is_at_or_after(day: int, watch: int, other_day: int, other_watch: int
     return (day, watch) >= (other_day, other_watch)
 
 
-def _remaining_active_watches_today(watch: int) -> int:
-    # Night watch starts a new day cycle for daytime movement planning.
-    if watch <= int(Watch.NIGHT):
+def _remaining_march_steps_for_watch(watch: int) -> int:
+    # March actions can complete at night but not in the same watch they are set.
+    # Thus:
+    # watch 1 -> 4 possible completions (2,3,4,0), watch 2 -> 3, watch 3 -> 2, watch 4 -> 1.
+    # Night staging is allowed in UI, but submission/start is blocked at night.
+    if watch <= int(Watch.MATIN):
         return 4
-    return max(0, 4 - int(watch))
+    return max(0, 5 - int(watch))
 
 
 def _scenario_date_for_day(day: int) -> date:
@@ -288,6 +291,9 @@ def _forage_supply_gain_for_army(session: Session, army: Army) -> tuple[int, lis
 
 def _start_action_now_if_valid(session: Session, action: Action, army: Army, clock: GameClock) -> bool:
     if action.kind == "move":
+        if clock.watch == int(Watch.NIGHT):
+            # Movement does not start at night.
+            return False
         destination_h3 = _get_destination_h3(action)
         if destination_h3 is None:
             action.state = "failed"
@@ -300,7 +306,7 @@ def _start_action_now_if_valid(session: Session, action: Action, army: Army, clo
         action.started_day = clock.day
         action.started_watch = clock.watch
         action.state = "in_progress"
-        action.eta_day, action.eta_watch = _advance_active_watches(clock.day, clock.watch, watches_needed)
+        action.eta_day, action.eta_watch = _advance_day_watch(clock.day, clock.watch, watches_needed)
         return True
 
     if action.kind == "forage":
@@ -351,8 +357,6 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
         if action.eta_day is None or action.eta_watch is None:
             action.state = "failed"
             failed += 1
-            continue
-        if action.kind == "move" and clock.watch == int(Watch.NIGHT):
             continue
         if _watch_is_at_or_after(clock.day, clock.watch, action.eta_day, action.eta_watch):
             if action.kind == "move":
@@ -851,6 +855,8 @@ def create_action(
     clock = _get_or_create_clock(session)
     action_params: dict[str, Any] = {}
     if payload.kind == "move":
+        if clock.watch == int(Watch.NIGHT):
+            raise HTTPException(status_code=400, detail="Move actions cannot be submitted during Night watch")
         destination_h3 = payload.destination_h3
         if not destination_h3:
             raise HTTPException(status_code=400, detail="destination_h3 is required for move actions")
@@ -968,10 +974,15 @@ def plan_actions(
         session.add(action)
         created_actions.append(action)
     else:
+        if clock.watch == int(Watch.NIGHT):
+            raise HTTPException(
+                status_code=400,
+                detail="March orders cannot be submitted during Night watch (you may stage moves and submit at Matin)",
+            )
         path = [str(cell).strip() for cell in payload.path if str(cell).strip()]
         if not path:
             raise HTTPException(status_code=400, detail="March orders require a non-empty path")
-        max_steps = _remaining_active_watches_today(int(clock.watch))
+        max_steps = _remaining_march_steps_for_watch(int(clock.watch))
         if len(path) > max_steps:
             raise HTTPException(
                 status_code=400,
