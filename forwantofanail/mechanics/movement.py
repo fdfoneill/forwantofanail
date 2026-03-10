@@ -60,11 +60,16 @@ def _is_river(terrain: TerrainType) -> bool:
 
 
 def _movement_cost(session: Session, army: Army, origin: Location, destination: Location) -> int:
-    on_road = origin.is_road and destination.is_road
     origin_is_stronghold = _is_stronghold_location(session, origin.location_id)
     destination_is_stronghold = _is_stronghold_location(session, destination.location_id)
-    stronghold_transition = origin_is_stronghold or destination_is_stronghold
-    effective_on_road = on_road or stronghold_transition
+    on_road = origin.is_road and destination.is_road
+
+    # Movement into a stronghold is always permitted, even if the stronghold cell itself
+    # is not marked as road. Moving out of a stronghold only gets "road-like" treatment
+    # when stepping onto an actual road cell.
+    moving_into_stronghold = destination_is_stronghold
+    moving_out_stronghold_to_road = origin_is_stronghold and destination.is_road
+    effective_on_road = on_road or moving_into_stronghold or moving_out_stronghold_to_road
 
     has_wagons = _has_wagons(army)
     if not effective_on_road and has_wagons:
@@ -185,6 +190,32 @@ def list_valid_destinations(session: Session, army_id: int) -> list[str]:
     origin = army.location
     if origin is None:
         raise ValueError(f"Army {army_id} has no current location.")
+
+    neighbor_ids = _neighbors(origin.location_id)
+    candidates = (
+        session.query(Location)
+        .filter(Location.location_id.in_(neighbor_ids))
+        .all()
+    )
+
+    valid = []
+    for destination in candidates:
+        try:
+            _movement_cost(session, army, origin, destination)
+        except ValueError:
+            continue
+        valid.append(destination.location_id)
+    return valid
+
+
+def list_valid_destinations_from_origin(session: Session, army_id: int, origin_id: str) -> list[str]:
+    army = session.get(Army, army_id)
+    if army is None:
+        raise ValueError(f"Unknown army_id {army_id}")
+
+    origin = session.get(Location, origin_id)
+    if origin is None:
+        raise ValueError(f"Unknown origin {origin_id}")
 
     neighbor_ids = _neighbors(origin.location_id)
     candidates = (

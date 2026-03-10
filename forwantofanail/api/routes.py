@@ -34,7 +34,11 @@ from forwantofanail.core.models import (
     Stronghold,
     TerrainType,
 )
-from forwantofanail.mechanics.movement import calculate_move_watches, list_valid_destinations
+from forwantofanail.mechanics.movement import (
+    calculate_move_watches,
+    list_valid_destinations,
+    list_valid_destinations_from_origin,
+)
 from forwantofanail.mechanics.supply import consume_supply_for_all_armies, supply_stats
 from forwantofanail.mechanics.time import Watch
 
@@ -843,6 +847,34 @@ def get_border_road_neighbors(
         .all()
     )
     return {"roads": [row[0] for row in road_neighbors]}
+
+
+@router.get("/me/actions/valid-next")
+def get_valid_next_destinations(
+    origin_h3: str | None = Query(default=None, description="Origin H3 to validate next movement from"),
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    army = _find_commander_army(session, commander_id)
+    origin = (origin_h3 or army.location_id or "").strip()
+    if not origin:
+        raise HTTPException(status_code=400, detail="No origin location available")
+
+    if session.get(Location, origin) is None:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Unknown origin_h3",
+                "origin_h3": origin,
+            },
+        )
+
+    try:
+        valid = list_valid_destinations_from_origin(session, army.army_id, origin)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {"origin_h3": origin, "valid_destinations": sorted(valid)}
 
 
 @router.post("/me/actions")
