@@ -390,6 +390,7 @@
       orderMode: "march",
       stagedPath: [],
       remainingItinerary: [],
+      validNextMoves: new Set(),
     };
 
     const TERRAIN_COLORS = {
@@ -513,10 +514,18 @@
         return;
       }
       const rows = state.stagedPath.map((h3Index, idx) => (
+        (() => {
+          const isLast = idx === state.stagedPath.length - 1;
+          const removeControl = isLast
+            ? `<button class="staged-remove" data-stage-idx="${idx}" type="button">Remove</button>`
+            : `<span></span>`;
+          return (
         `<li class="staged-item">` +
         `<span>${idx + 1}. ${h3Index}</span>` +
-        `<button class="staged-remove" data-stage-idx="${idx}" type="button">Remove</button>` +
+        `${removeControl}` +
         `</li>`
+          );
+        })()
       ));
       els.stagedPathList.innerHTML = rows.join("");
       els.stagedPathList.querySelectorAll("button[data-stage-idx]").forEach((btn) => {
@@ -527,7 +536,11 @@
           }
           state.stagedPath.splice(idx, 1);
           renderStagedPathList();
-          renderMap();
+          refreshValidNextMoves()
+            .catch(() => {})
+            .finally(() => {
+              renderMap();
+            });
         });
       });
     }
@@ -562,6 +575,22 @@
       renderStagedPathList();
     }
 
+    async function refreshValidNextMoves() {
+      state.validNextMoves = new Set();
+      if (!state.token || !state.view || state.orderMode !== "march") {
+        return;
+      }
+      const origin = state.stagedPath.length
+        ? state.stagedPath[state.stagedPath.length - 1]
+        : state.view.environs.center_h3;
+      if (!origin) {
+        return;
+      }
+      const payload = await api(`/v1/me/actions/valid-next?origin_h3=${encodeURIComponent(origin)}`, {}, true);
+      const valid = Array.isArray(payload.valid_destinations) ? payload.valid_destinations : [];
+      state.validNextMoves = new Set(valid.map((value) => String(value)));
+    }
+
     function canStageMove(targetH3) {
       if (!state.view || !targetH3) {
         return { ok: false, reason: "No active view loaded." };
@@ -579,6 +608,9 @@
       const visible = new Set((state.view?.environs?.cells || []).map((c) => c.h3));
       if (!visible.has(targetH3)) {
         return { ok: false, reason: "Cell is outside your current view." };
+      }
+      if (!state.validNextMoves.has(targetH3)) {
+        return { ok: false, reason: "Cell is not a valid move destination for this army." };
       }
       const last = state.stagedPath.length ? state.stagedPath[state.stagedPath.length - 1] : state.view.environs.center_h3;
       if (!areNeighborCells(last, targetH3)) {
@@ -1171,6 +1203,7 @@
       state.pinnedH3 = null;
       updateMetadata(view);
       renderOrdersPanel();
+      await refreshValidNextMoves();
       renderMap();
       setStatus(armyStatusText(view));
     }
@@ -1193,6 +1226,7 @@
         state.orderMode = "march";
         state.stagedPath = [];
         state.remainingItinerary = [];
+        state.validNextMoves = new Set();
         updateMetadata(null);
         renderMap();
         renderOrdersPanel();
@@ -1210,6 +1244,7 @@
         state.orderMode = "march";
         state.stagedPath = [];
         state.remainingItinerary = [];
+        state.validNextMoves = new Set();
         await refreshAllPanels();
       } catch (err) {
         setStatus(`Login/load error: ${err.message}`, true);
@@ -1254,10 +1289,11 @@
         }
         state.stagedPath.push(state.hoverH3);
         renderStagedPathList();
+        await refreshValidNextMoves();
         renderMap();
         setStatus(`Staged step ${state.stagedPath.length}: ${state.hoverH3}`);
       });
-      els.orderModeSelect.addEventListener("change", () => {
+      els.orderModeSelect.addEventListener("change", async () => {
         const nextMode = String(els.orderModeSelect.value || "march").trim().toLowerCase();
         if (nextMode === "forage" && !isNightWatch()) {
           state.orderMode = "march";
@@ -1268,9 +1304,11 @@
         state.orderMode = nextMode === "forage" ? "forage" : "march";
         if (state.orderMode === "forage") {
           state.stagedPath = [];
+          state.validNextMoves = new Set();
           renderMap();
         }
         renderOrdersPanel();
+        await refreshValidNextMoves();
       });
       els.submitOrdersBtn.addEventListener("click", async () => {
         if (!state.token) {
@@ -1301,6 +1339,7 @@
             true
           );
           state.stagedPath = [];
+          state.validNextMoves = new Set();
           renderOrdersPanel();
           await refreshView();
           if (result.hold) {
