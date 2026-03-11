@@ -1102,14 +1102,10 @@
         } else if (!hasStronghold && cell.region_control) {
           strongholdFactionText = String(cell.region_control);
         }
+        els.hoverTitle.textContent = String(cell.cell_title || terrain);
         if (hasStronghold) {
-          els.hoverTitle.textContent = cell.stronghold.name;
           els.hoverTitle.classList.add("stronghold");
-        } else if (cell.has_road) {
-          els.hoverTitle.textContent = "Road";
-          els.hoverTitle.classList.remove("stronghold");
         } else {
-          els.hoverTitle.textContent = terrain;
           els.hoverTitle.classList.remove("stronghold");
         }
         els.hoverMeta.innerHTML =

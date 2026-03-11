@@ -119,6 +119,41 @@ def _message_sender_display_name(message: Message) -> str:
     return message.sender_name
 
 
+def _cell_army_display_name(army_info: dict[str, Any]) -> str:
+    # Use the best available identifier from serialized /view intel.
+    name = str(army_info.get("name") or "").strip()
+    if name:
+        return name
+    commander = str(army_info.get("commander") or "").strip()
+    if commander:
+        return f"{commander}'s army"
+    faction = str(army_info.get("faction") or "").strip()
+    if faction:
+        return f"{faction} army"
+    return "unknown army"
+
+
+def _cell_title(
+    *,
+    terrain_type: str,
+    has_road: bool,
+    stronghold_name: str | None,
+    other_armies: list[dict[str, Any]],
+) -> str:
+    first_army = other_armies[0] if other_armies else None
+    if first_army and stronghold_name:
+        return f"{_cell_army_display_name(first_army)} occupying {stronghold_name}"
+    if first_army:
+        return _cell_army_display_name(first_army)
+    if stronghold_name:
+        return stronghold_name
+    if terrain_type.strip().lower() == "river" and has_road:
+        return "bridge"
+    if has_road:
+        return "road"
+    return terrain_type
+
+
 def _get_session():
     session = create_session()
     try:
@@ -529,6 +564,7 @@ def _serialize_environs(
         session.query(Army)
         .options(joinedload(Army.detachments), joinedload(Army.commander))
         .filter(Army.location_id.in_(disk), Army.is_garrison.is_(False))
+        .order_by(Army.army_id.asc())
     )
     if exclude_army_id is not None:
         other_armies_query = other_armies_query.filter(Army.army_id != exclude_army_id)
@@ -569,11 +605,19 @@ def _serialize_environs(
         terrain = terrains.get(location.terrain_id)
         stronghold = strongholds.get(location.location_id)
         other_armies = other_armies_by_location.get(location.location_id, [])
+        stronghold_name = stronghold.stronghold_name if stronghold else None
+        terrain_type = terrain.terrain_name if terrain else "unknown"
         cells.append(
             {
                 "h3": location.location_id,
-                "terrain_type": terrain.terrain_name if terrain else "unknown",
+                "terrain_type": terrain_type,
                 "has_road": location.is_road,
+                "cell_title": _cell_title(
+                    terrain_type=terrain_type,
+                    has_road=bool(location.is_road),
+                    stronghold_name=stronghold_name,
+                    other_armies=other_armies,
+                ),
                 "region": location.region,
                 "region_control": region_control_by_name.get(location.region) if location.region else None,
                 "settlement": location.settlement,
