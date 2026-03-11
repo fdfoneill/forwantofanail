@@ -513,15 +513,18 @@
         els.stagedPathList.innerHTML = "<li class=\"staged-empty\">No staged march cells.</li>";
         return;
       }
+      const cellByH3 = new Map((state.view?.environs?.cells || []).map((cell) => [cell.h3, cell]));
       const rows = state.stagedPath.map((h3Index, idx) => (
         (() => {
           const isLast = idx === state.stagedPath.length - 1;
+          const cell = cellByH3.get(h3Index);
+          const title = String(cell?.cell_title || h3Index);
           const removeControl = isLast
             ? `<button class="staged-remove" data-stage-idx="${idx}" type="button">Remove</button>`
             : `<span></span>`;
           return (
         `<li class="staged-item">` +
-        `<span>${idx + 1}. ${h3Index}</span>` +
+        `<span>${idx + 1}. ${title}</span>` +
         `${removeControl}` +
         `</li>`
           );
