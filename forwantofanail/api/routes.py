@@ -523,6 +523,7 @@ def _serialize_army(army: Army) -> dict[str, Any]:
     return {
         "army_id": _army_ref(army.army_id),
         "name": army.army_name,
+        "faction": army.army_faction,
         "location": {"h3": army.location_id},
         "composition": {
             "detachments": [

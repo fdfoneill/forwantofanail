@@ -391,7 +391,7 @@
     <section class="panel map-panel" id="mapPanel">
       <svg id="mapCanvas" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet"></svg>
       <aside class="alerts-pane" id="alertPane">
-        <div class="alerts-title">Activity Log</div>
+        <div class="alerts-title">Reports</div>
         <ul class="alerts-list" id="alertList"></ul>
       </aside>
       <div class="hover-card" id="hoverCard">
@@ -426,6 +426,8 @@
       alerts: [],
       inboxInitialized: false,
       seenMessageIds: new Set(),
+      lastWatchAlertKey: null,
+      previousSupplyCurrent: null,
     };
 
     const TERRAIN_COLORS = {
@@ -521,6 +523,67 @@
       renderAlerts();
     }
 
+    function processWatchAlerts(view) {
+      if (!view) {
+        return;
+      }
+      const day = Number(view?.time?.day);
+      const watch = Number(view?.time?.watch);
+      if (!Number.isFinite(day) || !Number.isFinite(watch)) {
+        return;
+      }
+      const watchKey = `${day}:${watch}`;
+      const didWatchAdvance = state.lastWatchAlertKey !== watchKey;
+      const supplyCurrent = Number(view?.army?.supply?.current);
+      const previousSupply = Number(state.previousSupplyCurrent);
+      const consumedSupply =
+        didWatchAdvance &&
+        Number.isFinite(supplyCurrent) &&
+        Number.isFinite(previousSupply) &&
+        supplyCurrent < previousSupply;
+      if (consumedSupply) {
+        if (supplyCurrent <= 0) {
+          addAlert("No supplies: troops going hungry!");
+        } else {
+          const daysEstimate = Number(view?.army?.supply?.days_estimate);
+          const daysRemaining = Number.isFinite(daysEstimate) ? Math.max(0, Math.floor(daysEstimate)) : null;
+          if (daysRemaining != null && daysRemaining <= 7) {
+            addAlert(`Supplies low: ${daysRemaining} days remaining`);
+          }
+        }
+      }
+      if (didWatchAdvance) {
+        const ownFaction = String(view?.army?.faction || "").trim().toLowerCase();
+        const nearestByFaction = new Map();
+        const cells = Array.isArray(view?.environs?.cells) ? view.environs.cells : [];
+        for (const cell of cells) {
+          const otherArmies = Array.isArray(cell?.other_armies) ? cell.other_armies : [];
+          for (const intel of otherArmies) {
+            const factionName = String(intel?.faction || "").trim();
+            if (!factionName) {
+              continue;
+            }
+            if (ownFaction && factionName.toLowerCase() === ownFaction) {
+              continue;
+            }
+            const distance = Number(intel?.distance_cells);
+            if (!Number.isFinite(distance)) {
+              continue;
+            }
+            const prior = nearestByFaction.get(factionName);
+            if (prior == null || distance < prior) {
+              nearestByFaction.set(factionName, distance);
+            }
+          }
+        }
+        for (const [factionName, distance] of nearestByFaction.entries()) {
+          addAlert(`${factionName} army ${distance} leagues away`);
+        }
+      }
+      state.lastWatchAlertKey = watchKey;
+      state.previousSupplyCurrent = Number.isFinite(supplyCurrent) ? supplyCurrent : null;
+    }
+
     function watchDisplayName(value) {
       const index = Number(value);
       if (!Number.isFinite(index)) {
@@ -575,18 +638,28 @@
         els.stagedPathList.innerHTML = "<li class=\"staged-empty\">No staged march cells.</li>";
         return;
       }
+      const currentWatch = Number(state.view?.time?.watch);
+      const startWatch = currentWatch === 0 ? 1 : currentWatch;
+      const watchLabelForStage = (idx) => {
+        const watchIndex = startWatch + idx;
+        if (!Number.isFinite(watchIndex) || watchIndex < 0 || watchIndex > 4) {
+          return `Step ${idx + 1}`;
+        }
+        return WATCH_NAME_BY_INDEX[watchIndex] || `Step ${idx + 1}`;
+      };
       const cellByH3 = new Map((state.view?.environs?.cells || []).map((cell) => [cell.h3, cell]));
       const rows = state.stagedPath.map((h3Index, idx) => (
         (() => {
           const isLast = idx === state.stagedPath.length - 1;
           const cell = cellByH3.get(h3Index);
           const title = String(cell?.cell_title || h3Index);
+          const watchLabel = watchLabelForStage(idx);
           const removeControl = isLast
             ? `<button class="staged-remove" data-stage-idx="${idx}" type="button">Remove</button>`
             : `<span></span>`;
           return (
         `<li class="staged-item">` +
-        `<span>${idx + 1}. ${title}</span>` +
+        `<span>${watchLabel}: ${title}</span>` +
         `${removeControl}` +
         `</li>`
           );
@@ -617,7 +690,7 @@
       els.orderModeSelect.value = state.orderMode;
       els.queueMoveBtn.disabled = !isMarch;
       if (isMarch && isNightWatch()) {
-        els.ordersNote.textContent = "Night march: submit exactly 4 staged moves (or empty for Hold).";
+        els.ordersNote.textContent = "Night march: submit exactly 4 staged moves (or empty for Halt).";
       } else if (isMarch) {
         els.ordersNote.textContent = `March orders: up to ${maxSteps} leagues this day.`;
       } else if (isForage && isNightOrMatinWatch()) {
@@ -1360,6 +1433,7 @@
       state.remainingItinerary = Array.isArray(view?.itinerary?.remaining_moves) ? view.itinerary.remaining_moves.map(String) : [];
       state.borderRoadNeighbors = new Set((borderRoads.roads || []).map((value) => String(value)));
       state.pinnedH3 = null;
+      processWatchAlerts(view);
       updateMetadata(view);
       renderOrdersPanel();
       await refreshValidNextMoves();
@@ -1379,11 +1453,14 @@
         state.token = null;
         state.selectedCommander = null;
         state.view = null;
+        state.alerts = [];
         state.correspondents = [];
         state.inbox = [];
         state.openMessageId = null;
         state.inboxInitialized = false;
         state.seenMessageIds = new Set();
+        state.lastWatchAlertKey = null;
+        state.previousSupplyCurrent = null;
         state.orderMode = "march";
         state.stagedPath = [];
         state.remainingItinerary = [];
@@ -1391,6 +1468,7 @@
         updateMetadata(null);
         renderMap();
         renderOrdersPanel();
+        renderAlerts();
         renderCorrespondents();
         renderInbox();
         els.composeBox.setAttribute("hidden", "");
@@ -1403,11 +1481,15 @@
       try {
         state.openMessageId = null;
         els.messageRead.textContent = "Select a letter to read.";
+        state.alerts = [];
+        renderAlerts();
         await loginCommander(commanderName);
         state.orderMode = "march";
         state.stagedPath = [];
         state.remainingItinerary = [];
         state.validNextMoves = new Set();
+        state.lastWatchAlertKey = null;
+        state.previousSupplyCurrent = null;
         await refreshAllPanels();
       } catch (err) {
         setStatus(`Login/load error: ${err.message}`, true);
@@ -1479,14 +1561,16 @@
         try {
           const previousKind = String(state.view?.current_action?.kind || "").trim().toLowerCase();
           let payload;
+          let plannedLeagues = 0;
           if (state.orderMode === "forage") {
             payload = { kind: "forage", path: [] };
           } else {
             if (isNightWatch() && state.stagedPath.length > 0 && state.stagedPath.length !== 4) {
-              setStatus("Night march requires exactly 4 staged moves (or none for Hold).", true);
+              setStatus("Night march requires exactly 4 staged moves (or none for Halt).", true);
               return;
             }
             payload = { kind: "march", path: state.stagedPath.slice() };
+            plannedLeagues = payload.path.length;
           }
           const result = await api(
             "/v1/me/actions/plan",
@@ -1502,22 +1586,23 @@
           await refreshView();
           const cancelled = Number(result.cancelled_count ?? result.cancelled_queued_count ?? 0);
           if (result.hold) {
-            addAlert(`Hold order submitted. ${cancelled} active action(s) cancelled.`);
+            addAlert(cancelled > 0 ? `Halt ordered. ${cancelled} active action(s) cancelled.` : "Halt ordered.");
           } else if (state.orderMode === "forage") {
             if (cancelled > 0 && previousKind === "forage") {
-              addAlert("Forage order submitted, previous forage interrupted.");
+              addAlert("Forage ordered, previous forage interrupted.");
             } else if (cancelled > 0) {
-              addAlert(`Forage order submitted, ${cancelled} active action(s) interrupted.`);
+              addAlert(`Forage ordered, ${cancelled} active action(s) interrupted.`);
             } else {
-              addAlert("Forage order submitted.");
+              addAlert("Forage ordered.");
             }
           } else {
+            const marchText = `${plannedLeagues}-league march ordered`;
             if (cancelled > 0 && previousKind === "forage") {
-              addAlert("March order submitted, forage interrupted.");
+              addAlert(`${marchText}, forage interrupted.`);
             } else if (cancelled > 0) {
-              addAlert(`March order submitted, ${cancelled} active action(s) interrupted.`);
+              addAlert(`${marchText}, ${cancelled} active action(s) interrupted.`);
             } else {
-              addAlert("March order submitted.");
+              addAlert(`${marchText}.`);
             }
           }
         } catch (err) {
