@@ -573,22 +573,26 @@
         state.stagedPath = state.stagedPath.slice(0, maxSteps);
       }
       renderStagedPathList();
+      updateStageMoveButtonVisibility(state.hoverH3);
     }
 
     async function refreshValidNextMoves() {
       state.validNextMoves = new Set();
       if (!state.token || !state.view || state.orderMode !== "march") {
+        updateStageMoveButtonVisibility(state.hoverH3);
         return;
       }
       const origin = state.stagedPath.length
         ? state.stagedPath[state.stagedPath.length - 1]
         : state.view.environs.center_h3;
       if (!origin) {
+        updateStageMoveButtonVisibility(state.hoverH3);
         return;
       }
       const payload = await api(`/v1/me/actions/valid-next?origin_h3=${encodeURIComponent(origin)}`, {}, true);
       const valid = Array.isArray(payload.valid_destinations) ? payload.valid_destinations : [];
       state.validNextMoves = new Set(valid.map((value) => String(value)));
+      updateStageMoveButtonVisibility(state.hoverH3);
     }
 
     function canStageMove(targetH3) {
@@ -617,6 +621,11 @@
         return { ok: false, reason: "Each staged cell must be adjacent to the previous step." };
       }
       return { ok: true, reason: "" };
+    }
+
+    function updateStageMoveButtonVisibility(h3Index) {
+      const shouldShow = !!h3Index && canStageMove(h3Index).ok;
+      els.queueMoveBtn.style.display = shouldShow ? "" : "none";
     }
 
     function terrainKey(value) {
@@ -1116,10 +1125,12 @@
           `<div><span class=\"k\">Faction:</span>${strongholdFactionText}</div>` +
           `<div><span class=\"k\">Settlement:</span>${settlementText}</div>` +
           `<div><span class=\"k\">Foraged This Season:</span>${foragedText}</div>`;
+        updateStageMoveButtonVisibility(h3Index);
       } else {
         els.hoverTitle.textContent = "Cell";
         els.hoverTitle.classList.remove("stronghold");
         els.hoverMeta.innerHTML = "";
+        updateStageMoveButtonVisibility(null);
       }
       els.hoverCard.style.display = "block";
       positionHoverCard(clientX, clientY);
