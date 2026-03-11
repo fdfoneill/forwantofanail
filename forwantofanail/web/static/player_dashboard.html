@@ -931,6 +931,14 @@
 
       const roadCells = cells.filter((cell) => cell.has_road).map((cell) => cell.h3);
       const uniqueRoadPairs = new Set();
+      const adjacency = new Map();
+      const addNeighbor = (a, b) => {
+        if (!adjacency.has(a)) {
+          adjacency.set(a, new Set());
+        }
+        adjacency.get(a).add(b);
+      };
+      const edgeKey = (a, b) => (a < b ? `${a}|${b}` : `${b}|${a}`);
       for (let i = 0; i < roadCells.length; i += 1) {
         for (let j = i + 1; j < roadCells.length; j += 1) {
           const a = roadCells[i];
@@ -938,11 +946,79 @@
           if (!areNeighborCells(a, b)) {
             continue;
           }
-          const pair = a < b ? `${a}|${b}` : `${b}|${a}`;
+          const pair = edgeKey(a, b);
           uniqueRoadPairs.add(pair);
+          addNeighbor(a, b);
+          addNeighbor(b, a);
         }
       }
+
+      // Build centerline-style Y junctions for triangle artifacts where 3 adjacent road cells
+      // share a common polygon corner. Those triangle edges are suppressed.
+      const triangleEdgesToSkip = new Set();
+      const triangleSpokes = [];
+      const triangleSpokeKeys = new Set();
+      const findCommonVertex = (polyA, polyB, polyC, tolerance = 1.4) => {
+        for (const va of polyA || []) {
+          for (const vb of polyB || []) {
+            if (Math.hypot(va.x - vb.x, va.y - vb.y) > tolerance) {
+              continue;
+            }
+            for (const vc of polyC || []) {
+              if (Math.hypot(va.x - vc.x, va.y - vc.y) <= tolerance && Math.hypot(vb.x - vc.x, vb.y - vc.y) <= tolerance) {
+                return {
+                  x: (va.x + vb.x + vc.x) / 3,
+                  y: (va.y + vb.y + vc.y) / 3,
+                };
+              }
+            }
+          }
+        }
+        return null;
+      };
+
+      const sortedRoadCells = [...roadCells].sort();
+      for (let i = 0; i < sortedRoadCells.length; i += 1) {
+        const a = sortedRoadCells[i];
+        const na = adjacency.get(a) || new Set();
+        for (let j = i + 1; j < sortedRoadCells.length; j += 1) {
+          const b = sortedRoadCells[j];
+          if (!na.has(b)) {
+            continue;
+          }
+          const nb = adjacency.get(b) || new Set();
+          for (let k = j + 1; k < sortedRoadCells.length; k += 1) {
+            const c = sortedRoadCells[k];
+            if (!na.has(c) || !nb.has(c)) {
+              continue;
+            }
+            const common = findCommonVertex(polyByH3.get(a), polyByH3.get(b), polyByH3.get(c));
+            if (!common) {
+              continue;
+            }
+            triangleEdgesToSkip.add(edgeKey(a, b));
+            triangleEdgesToSkip.add(edgeKey(a, c));
+            triangleEdgesToSkip.add(edgeKey(b, c));
+            for (const node of [a, b, c]) {
+              const center = centerByH3.get(node);
+              if (!center) {
+                continue;
+              }
+              const key = `${Math.round(center.x)}:${Math.round(center.y)}:${Math.round(common.x)}:${Math.round(common.y)}`;
+              if (triangleSpokeKeys.has(key)) {
+                continue;
+              }
+              triangleSpokeKeys.add(key);
+              triangleSpokes.push({ from: center, to: common });
+            }
+          }
+        }
+      }
+
       for (const pair of uniqueRoadPairs) {
+        if (triangleEdgesToSkip.has(pair)) {
+          continue;
+        }
         const [a, b] = pair.split("|");
         const c1 = centerByH3.get(a);
         const c2 = centerByH3.get(b);
@@ -951,6 +1027,11 @@
         }
         roadLines.push(
           `<line x1="${c1.x.toFixed(1)}" y1="${c1.y.toFixed(1)}" x2="${c2.x.toFixed(1)}" y2="${c2.y.toFixed(1)}" stroke="#8b5a2b" stroke-width="3.2" stroke-linecap="round" opacity="0.9" pointer-events="none" />`
+        );
+      }
+      for (const spoke of triangleSpokes) {
+        roadLines.push(
+          `<line x1="${spoke.from.x.toFixed(1)}" y1="${spoke.from.y.toFixed(1)}" x2="${spoke.to.x.toFixed(1)}" y2="${spoke.to.y.toFixed(1)}" stroke="#8b5a2b" stroke-width="3.2" stroke-linecap="round" opacity="0.9" pointer-events="none" />`
         );
       }
 
