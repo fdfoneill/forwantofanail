@@ -292,14 +292,25 @@ def _advance_active_watches(day: int, watch: int, steps: int) -> tuple[int, int]
 
 
 def _watch_is_at_or_after(day: int, watch: int, other_day: int, other_watch: int) -> bool:
-    return (day, watch) >= (other_day, other_watch)
+    # Timeline ordering within a day is 1,2,3,4,0 (night comes last).
+    watch_rank = {
+        int(Watch.MATIN): 0,
+        int(Watch.PRIME): 1,
+        int(Watch.NOON): 2,
+        int(Watch.VESPER): 3,
+        int(Watch.NIGHT): 4,
+    }
+    return (day, watch_rank.get(int(watch), int(watch))) >= (
+        other_day,
+        watch_rank.get(int(other_watch), int(other_watch)),
+    )
 
 
 def _remaining_march_steps_for_watch(watch: int) -> int:
     # March actions can complete at night but not in the same watch they are set.
     # Thus:
     # watch 1 -> 4 possible completions (2,3,4,0), watch 2 -> 3, watch 3 -> 2, watch 4 -> 1.
-    # Night staging is allowed in UI, but submission/start is blocked at night.
+    # Night submissions are allowed only for full 4-step march plans.
     if watch <= int(Watch.MATIN):
         return 4
     return max(0, 5 - int(watch))
@@ -349,14 +360,16 @@ def _start_action_now_if_valid(session: Session, action: Action, army: Army, clo
         return True
 
     if action.kind == "forage":
-        if clock.watch != int(Watch.NIGHT):
-            # Forage starts only at night; keep queued until watch 0.
+        if clock.watch == int(Watch.NIGHT):
+            # Night submissions remain queued until at least Matin.
             return False
+        # If execution skipped over Matin for any reason, start forage as-if at Matin.
+        effective_start_watch = int(Watch.MATIN)
         action.started_day = clock.day
-        action.started_watch = clock.watch
+        action.started_watch = effective_start_watch
         action.state = "in_progress"
-        # Forage duration is exactly 4 watches, ending at watch 4 the same day.
-        action.eta_day, action.eta_watch = _advance_day_watch(clock.day, clock.watch, 4)
+        # Forage duration is exactly 4 watch transitions from Matin start.
+        action.eta_day, action.eta_watch = _advance_day_watch(clock.day, effective_start_watch, 4)
         return True
 
     action.state = "failed"
@@ -947,8 +960,8 @@ def create_action(
             )
         action_params["destination_h3"] = destination_h3
     elif payload.kind == "forage":
-        # Forage can only be issued at Night (watch 0).
-        if clock.watch != int(Watch.NIGHT):
+        # Forage orders may be issued at Night or Matin; they only start at Matin.
+        if clock.watch not in {int(Watch.NIGHT), int(Watch.MATIN)}:
             action = Action(
                 commander_id=commander_id,
                 kind=payload.kind,
@@ -989,7 +1002,7 @@ def create_action(
 
     # Immediate start: if commander has no in-progress action, this action becomes active now.
     if payload.kind == "forage":
-        if not _start_action_now_if_valid(session, action, army, clock):
+        if not _start_action_now_if_valid(session, action, army, clock) and clock.watch != int(Watch.NIGHT):
             action.state = "failed"
     else:
         in_progress_exists = (
@@ -1038,8 +1051,8 @@ def plan_actions(
     now = datetime.now(timezone.utc)
 
     if payload.kind == "forage":
-        if clock.watch != int(Watch.NIGHT):
-            raise HTTPException(status_code=400, detail="Forage orders may only be submitted during Night watch")
+        if clock.watch not in {int(Watch.NIGHT), int(Watch.MATIN)}:
+            raise HTTPException(status_code=400, detail="Forage orders may only be submitted during Night or Matin watch")
         action = Action(
             commander_id=commander_id,
             kind="forage",
@@ -1054,10 +1067,10 @@ def plan_actions(
         # Empty march path is interpreted as an explicit hold order:
         # cancel active/queued actions and create no new actions.
         if path:
-            if clock.watch == int(Watch.NIGHT):
+            if clock.watch == int(Watch.NIGHT) and len(path) != 4:
                 raise HTTPException(
                     status_code=400,
-                    detail="March orders cannot be submitted during Night watch (you may stage moves and submit at Matin)",
+                    detail="Night march submissions must contain exactly 4 staged moves (or be empty for Hold)",
                 )
             max_steps = _remaining_march_steps_for_watch(int(clock.watch))
             if len(path) > max_steps:
