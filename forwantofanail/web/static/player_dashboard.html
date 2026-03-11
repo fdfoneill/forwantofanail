@@ -1392,6 +1392,8 @@
             true
           );
           els.letterInput.value = "";
+          els.composeBox.setAttribute("hidden", "");
+          els.composeToggleBtn.textContent = "Send Letter";
           setStatus(`Letter sent to ${recipientId}.`);
           await refreshInbox();
         } catch (err) {
