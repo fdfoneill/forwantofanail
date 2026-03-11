@@ -710,6 +710,7 @@
     }
 
     function renderCorrespondents() {
+      const previousValue = els.recipientSelect.value;
       if (!state.correspondents.length) {
         els.recipientSelect.innerHTML = "<option value=\"\">No correspondents</option>";
         return;
@@ -718,6 +719,9 @@
         (c) => `<option value="${c.id}">${c.display_name || c.name}</option>`
       );
       els.recipientSelect.innerHTML = rows.join("");
+      if (previousValue && state.correspondents.some((c) => c.id === previousValue)) {
+        els.recipientSelect.value = previousValue;
+      }
     }
 
     async function refreshCorrespondents() {
