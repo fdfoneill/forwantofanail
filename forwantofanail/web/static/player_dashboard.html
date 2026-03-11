@@ -215,17 +215,46 @@
       height: 100%;
       display: block;
     }
-    .legend {
+    .alerts-pane {
       position: absolute;
       right: 12px;
       top: 12px;
-      background: rgba(255, 250, 241, 0.92);
+      bottom: 12px;
+      width: 300px;
+      background: rgba(255, 250, 241, 0.95);
       border: 1px solid var(--line);
       border-radius: 10px;
       padding: 10px;
       font-size: 12px;
       color: var(--muted);
-      max-width: 180px;
+      overflow: auto;
+      z-index: 3;
+    }
+    .alerts-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+    .alerts-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 6px;
+    }
+    .alerts-item {
+      border: 1px solid #e6dccf;
+      border-radius: 8px;
+      background: #fff;
+      padding: 7px 8px;
+      color: var(--ink);
+      line-height: 1.35;
+    }
+    .alerts-empty {
+      color: var(--muted);
+      font-size: 12px;
     }
     .hover-card {
       position: absolute;
@@ -362,7 +391,10 @@
 
     <section class="panel map-panel" id="mapPanel">
       <svg id="mapCanvas" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet"></svg>
-      <div class="legend" id="legend"></div>
+      <aside class="alerts-pane" id="alertPane">
+        <div class="alerts-title">Activity Log</div>
+        <ul class="alerts-list" id="alertList"></ul>
+      </aside>
       <div class="hover-card" id="hoverCard">
         <div class="hover-title" id="hoverTitle">Cell Actions</div>
         <div class="hover-row">
@@ -392,6 +424,9 @@
       stagedPath: [],
       remainingItinerary: [],
       validNextMoves: new Set(),
+      alerts: [],
+      inboxInitialized: false,
+      seenMessageIds: new Set(),
     };
 
     const TERRAIN_COLORS = {
@@ -454,7 +489,8 @@
       messageRead: document.getElementById("messageRead"),
       mapCanvas: document.getElementById("mapCanvas"),
       mapPanel: document.getElementById("mapPanel"),
-      legend: document.getElementById("legend"),
+      alertPane: document.getElementById("alertPane"),
+      alertList: document.getElementById("alertList"),
       hoverCard: document.getElementById("hoverCard"),
       hoverTitle: document.getElementById("hoverTitle"),
       queueMoveBtn: document.getElementById("queueMoveBtn"),
@@ -464,6 +500,27 @@
     function setStatus(message, isError = false) {
       els.statusLine.textContent = message || "";
       els.statusLine.classList.toggle("error", !!isError);
+    }
+
+    function renderAlerts() {
+      if (!state.alerts.length) {
+        els.alertList.innerHTML = "<li class=\"alerts-empty\">No recent alerts.</li>";
+        return;
+      }
+      const rows = state.alerts.map((message) => `<li class="alerts-item">${message}</li>`);
+      els.alertList.innerHTML = rows.join("");
+    }
+
+    function addAlert(message) {
+      const text = String(message || "").trim();
+      if (!text) {
+        return;
+      }
+      state.alerts.unshift(text);
+      if (state.alerts.length > 25) {
+        state.alerts = state.alerts.slice(0, 25);
+      }
+      renderAlerts();
     }
 
     function watchDisplayName(value) {
@@ -564,7 +621,7 @@
       if (isMarch && isNightWatch()) {
         els.ordersNote.textContent = "Night march: submit exactly 4 staged moves (or empty for Hold).";
       } else if (isMarch) {
-        els.ordersNote.textContent = `March orders: up to ${maxSteps} staged cells this day.`;
+        els.ordersNote.textContent = `March orders: up to ${maxSteps} leagues this day.`;
       } else if (isForage && isNightOrMatinWatch()) {
         els.ordersNote.textContent = "Forage available this watch. Execution begins at Matin.";
       } else if (isForage) {
@@ -798,22 +855,26 @@
       if (!state.token) {
         state.inbox = [];
         state.openMessageId = null;
+        state.inboxInitialized = false;
+        state.seenMessageIds = new Set();
         els.messageRead.textContent = "Select a letter to read.";
         renderInbox();
         return;
       }
-      state.inbox = await api("/v1/me/messages", {}, true);
-      renderInbox();
-    }
-
-    function renderLegend() {
-      const rows = ["<div><strong>Terrain</strong></div>"];
-      for (const key of TERRAIN_ORDER) {
-        rows.push(`<div class=\"legend-row\"><span class=\"swatch\" style=\"background:${terrainColor(key)}\"></span>${key}</div>`);
+      const nextInbox = await api("/v1/me/messages", {}, true);
+      if (state.inboxInitialized) {
+        for (const msg of nextInbox) {
+          const id = String(msg.id || "");
+          if (!id || state.seenMessageIds.has(id)) {
+            continue;
+          }
+          addAlert(`Letter received from ${msg?.from?.name || "unknown sender"}.`);
+        }
       }
-      rows.push('<div style="margin-top:6px;">Roads: brown links between adjacent road cells</div>');
-      rows.push('<div>Strongholds: icon by type</div>');
-      els.legend.innerHTML = rows.join("");
+      state.seenMessageIds = new Set(nextInbox.map((msg) => String(msg.id || "")).filter(Boolean));
+      state.inboxInitialized = true;
+      state.inbox = nextInbox;
+      renderInbox();
     }
 
     function projectCells(cells, width, height) {
@@ -1226,7 +1287,6 @@
     function pinCard(h3Index, clientX, clientY) {
       state.pinnedH3 = h3Index;
       showHoverCard(h3Index, clientX, clientY);
-      setStatus(`Pinned ${h3Index}. Click map background to unpin.`);
     }
 
     function clearPin() {
@@ -1325,6 +1385,8 @@
         state.correspondents = [];
         state.inbox = [];
         state.openMessageId = null;
+        state.inboxInitialized = false;
+        state.seenMessageIds = new Set();
         state.orderMode = "march";
         state.stagedPath = [];
         state.remainingItinerary = [];
@@ -1375,7 +1437,7 @@
     }, 10000);
 
     (async function init() {
-      renderLegend();
+      renderAlerts();
       renderOrdersPanel();
       els.queueMoveBtn.addEventListener("click", async () => {
         if (!state.token) {
@@ -1395,7 +1457,6 @@
         renderStagedPathList();
         await refreshValidNextMoves();
         renderMap();
-        setStatus(`Staged step ${state.stagedPath.length}: ${state.hoverH3}`);
       });
       els.orderModeSelect.addEventListener("change", async () => {
         const nextMode = String(els.orderModeSelect.value || "march").trim().toLowerCase();
@@ -1419,6 +1480,7 @@
           return;
         }
         try {
+          const previousKind = String(state.view?.current_action?.kind || "").trim().toLowerCase();
           let payload;
           if (state.orderMode === "forage") {
             payload = { kind: "forage", path: [] };
@@ -1441,10 +1503,25 @@
           state.validNextMoves = new Set();
           renderOrdersPanel();
           await refreshView();
+          const cancelled = Number(result.cancelled_count ?? result.cancelled_queued_count ?? 0);
           if (result.hold) {
-            setStatus(`Hold order submitted. Cancelled ${result.cancelled_count ?? result.cancelled_queued_count ?? 0} active action(s).`);
+            addAlert(`Hold order submitted. ${cancelled} active action(s) cancelled.`);
+          } else if (state.orderMode === "forage") {
+            if (cancelled > 0 && previousKind === "forage") {
+              addAlert("Forage order submitted, previous forage interrupted.");
+            } else if (cancelled > 0) {
+              addAlert(`Forage order submitted, ${cancelled} active action(s) interrupted.`);
+            } else {
+              addAlert("Forage order submitted.");
+            }
           } else {
-            setStatus(`Orders submitted. Replaced ${result.cancelled_count ?? result.cancelled_queued_count ?? 0} active action(s).`);
+            if (cancelled > 0 && previousKind === "forage") {
+              addAlert("March order submitted, forage interrupted.");
+            } else if (cancelled > 0) {
+              addAlert(`March order submitted, ${cancelled} active action(s) interrupted.`);
+            } else {
+              addAlert("March order submitted.");
+            }
           }
         } catch (err) {
           setStatus(`Order submit failed: ${err.message}`, true);
@@ -1476,6 +1553,7 @@
           return;
         }
         try {
+          const recipientName = els.recipientSelect.options[els.recipientSelect.selectedIndex]?.textContent || recipientId;
           await api(
             "/v1/me/messages",
             {
@@ -1487,7 +1565,7 @@
           els.letterInput.value = "";
           els.composeBox.setAttribute("hidden", "");
           els.composeToggleBtn.textContent = "Send Letter";
-          setStatus(`Letter sent to ${recipientId}.`);
+          addAlert(`Letter sent to ${recipientName}.`);
           await refreshInbox();
         } catch (err) {
           setStatus(`Send failed: ${err.message}`, true);
@@ -1501,7 +1579,6 @@
       els.mapCanvas.addEventListener("click", () => {
         if (state.pinnedH3) {
           clearPin();
-          setStatus("Unpinned cell.");
         }
       });
       els.hoverCard.addEventListener("click", (event) => event.stopPropagation());
