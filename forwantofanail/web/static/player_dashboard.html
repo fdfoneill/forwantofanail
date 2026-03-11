@@ -616,6 +616,9 @@
       if (!state.validNextMoves.has(targetH3)) {
         return { ok: false, reason: "Cell is not a valid move destination for this army." };
       }
+      if (state.stagedPath.includes(targetH3)) {
+        return { ok: false, reason: "Cell is already staged." };
+      }
       const last = state.stagedPath.length ? state.stagedPath[state.stagedPath.length - 1] : state.view.environs.center_h3;
       if (!areNeighborCells(last, targetH3)) {
         return { ok: false, reason: "Each staged cell must be adjacent to the previous step." };
@@ -900,9 +903,7 @@
       const polygons = [];
       let centerPolygon = "";
       const stagedOverlays = [];
-      const stagedLabels = [];
       const itineraryOverlays = [];
-      const itineraryLabels = [];
       const roadLines = [];
       const strongholdIcons = [];
       const otherArmyIcons = [];
@@ -1036,9 +1037,6 @@
           stagedOverlays.push(
             `<polygon points="${stagedPoints}" fill="none" stroke="#d7891f" stroke-width="2.4" stroke-linejoin="round" opacity="0.95" pointer-events="none" />`
           );
-          stagedLabels.push(
-            `<text x="${item.center.x.toFixed(1)}" y="${(item.center.y + 4).toFixed(1)}" text-anchor="middle" font-size="15" font-weight="700" fill="#2f2212" stroke="#fdf6e8" stroke-width="2.2" paint-order="stroke" pointer-events="none">${stagedNumber}</text>`
-          );
         }
 
         const itineraryNumber = itineraryIndexByH3.get(item.cell.h3);
@@ -1046,9 +1044,6 @@
           const itineraryPoints = item.poly.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
           itineraryOverlays.push(
             `<polygon points="${itineraryPoints}" fill="none" stroke="#2a6ea8" stroke-width="2.0" stroke-dasharray="6 4" stroke-linejoin="round" opacity="0.9" pointer-events="none" />`
-          );
-          itineraryLabels.push(
-            `<text x="${item.center.x.toFixed(1)}" y="${(item.center.y + 4).toFixed(1)}" text-anchor="middle" font-size="14" font-weight="700" fill="#163652" stroke="#eef6ff" stroke-width="2" paint-order="stroke" pointer-events="none">${itineraryNumber}</text>`
           );
         }
       }
@@ -1062,9 +1057,7 @@
         `<g>${strongholdIcons.join("")}</g>` +
         `<g>${otherArmyIcons.join("")}</g>` +
         `<g>${itineraryOverlays.join("")}</g>` +
-        `<g>${itineraryLabels.join("")}</g>` +
-        `<g>${stagedOverlays.join("")}</g>` +
-        `<g>${stagedLabels.join("")}</g>`;
+        `<g>${stagedOverlays.join("")}</g>`;
       bindHoverHandlers();
     }
 
