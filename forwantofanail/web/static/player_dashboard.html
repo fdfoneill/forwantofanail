@@ -92,22 +92,23 @@
       font-size: 13px;
       line-height: 1.5;
     }
+    .section-divider {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid var(--line);
+    }
     .message-tools {
       margin-top: 14px;
       padding-top: 12px;
       border-top: 1px solid var(--line);
     }
     .orders-tools {
-      margin-top: 14px;
-      padding-top: 12px;
-      border-top: 1px solid var(--line);
+      margin-top: 10px;
     }
-    .orders-note {
-      font-size: 12px;
-      color: var(--muted);
-      margin: 4px 0 8px;
-      line-height: 1.4;
+    .orders-tools #submitOrdersBtn {
+      margin-top: 10px;
     }
+    .orders-tools[hidden] { display: none; }
     .staged-list {
       margin: 8px 0 0;
       padding: 0;
@@ -361,16 +362,18 @@
         <div><strong>Daily Use:</strong> <span id="supplyDailyText">-</span></div>
         <div><strong>Days Remaining:</strong> <span id="supplyDaysText">-</span></div>
       </div>
+      <div class="section-divider"></div>
 
-      <div class="orders-tools">
-        <div class="label">Orders</div>
+      <button id="orderToggleBtn" type="button">Issue Order</button>
+
+      <div class="orders-tools" id="ordersBox" hidden>
+        <button id="hideOrdersBtn" type="button">Hide Orders</button>
         <select id="orderModeSelect">
           <option value="march">March</option>
           <option value="forage">Forage</option>
         </select>
-        <div class="orders-note" id="ordersNote">Plan up to 4 march cells this day.</div>
-        <button id="submitOrdersBtn" type="button">Submit Orders</button>
         <ul id="stagedPathList" class="staged-list"></ul>
+        <button id="submitOrdersBtn" type="button">Submit Orders</button>
       </div>
 
       <div class="message-tools">
@@ -476,9 +479,11 @@
       supplyCapacityText: document.getElementById("supplyCapacityText"),
       supplyDailyText: document.getElementById("supplyDailyText"),
       supplyDaysText: document.getElementById("supplyDaysText"),
+      orderToggleBtn: document.getElementById("orderToggleBtn"),
+      ordersBox: document.getElementById("ordersBox"),
       orderModeSelect: document.getElementById("orderModeSelect"),
-      ordersNote: document.getElementById("ordersNote"),
       submitOrdersBtn: document.getElementById("submitOrdersBtn"),
+      hideOrdersBtn: document.getElementById("hideOrdersBtn"),
       stagedPathList: document.getElementById("stagedPathList"),
       composeToggleBtn: document.getElementById("composeToggleBtn"),
       composeBox: document.getElementById("composeBox"),
@@ -689,17 +694,6 @@
       const isForage = state.orderMode === "forage";
       els.orderModeSelect.value = state.orderMode;
       els.queueMoveBtn.disabled = !isMarch;
-      if (isMarch && isNightWatch()) {
-        els.ordersNote.textContent = "Night march: submit exactly 4 staged moves (or empty for Halt).";
-      } else if (isMarch) {
-        els.ordersNote.textContent = `March orders: up to ${maxSteps} leagues this day.`;
-      } else if (isForage && isNightOrMatinWatch()) {
-        els.ordersNote.textContent = "Forage available this watch. Execution begins at Matin.";
-      } else if (isForage) {
-        els.ordersNote.textContent = "Forage mode selected. Submission opens at Night/Matin.";
-      } else {
-        els.ordersNote.textContent = "Forage unavailable outside Night/Matin.";
-      }
       els.submitOrdersBtn.disabled = isForage && !isNightOrMatinWatch();
       const forageOption = els.orderModeSelect.querySelector("option[value=\"forage\"]");
       if (forageOption) {
@@ -1468,6 +1462,8 @@
         updateMetadata(null);
         renderMap();
         renderOrdersPanel();
+        els.ordersBox.setAttribute("hidden", "");
+        els.orderToggleBtn.removeAttribute("hidden");
         renderAlerts();
         renderCorrespondents();
         renderInbox();
@@ -1483,6 +1479,8 @@
         els.messageRead.textContent = "Select a letter to read.";
         state.alerts = [];
         renderAlerts();
+        els.ordersBox.setAttribute("hidden", "");
+        els.orderToggleBtn.removeAttribute("hidden");
         await loginCommander(commanderName);
         state.orderMode = "march";
         state.stagedPath = [];
@@ -1518,6 +1516,14 @@
     (async function init() {
       renderAlerts();
       renderOrdersPanel();
+      els.orderToggleBtn.addEventListener("click", () => {
+        els.ordersBox.removeAttribute("hidden");
+        els.orderToggleBtn.setAttribute("hidden", "");
+      });
+      els.hideOrdersBtn.addEventListener("click", () => {
+        els.ordersBox.setAttribute("hidden", "");
+        els.orderToggleBtn.removeAttribute("hidden");
+      });
       els.queueMoveBtn.addEventListener("click", async () => {
         if (!state.token) {
           setStatus("Select a commander first.", true);
