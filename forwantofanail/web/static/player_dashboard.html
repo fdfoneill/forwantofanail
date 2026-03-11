@@ -508,6 +508,11 @@
       return currentWatchIndex() === 0;
     }
 
+    function isNightOrMatinWatch() {
+      const watch = currentWatchIndex();
+      return watch === 0 || watch === 1;
+    }
+
     function renderStagedPathList() {
       if (!state.stagedPath.length) {
         els.stagedPathList.innerHTML = "<li class=\"staged-empty\">No staged march cells.</li>";
@@ -551,26 +556,24 @@
     function renderOrdersPanel() {
       const maxSteps = maxMarchSteps();
       const isMarch = state.orderMode === "march";
+      const isForage = state.orderMode === "forage";
       els.orderModeSelect.value = state.orderMode;
       els.queueMoveBtn.disabled = !isMarch;
       if (isMarch && isNightWatch()) {
-        els.ordersNote.textContent = `March orders: up to ${maxSteps} cells may be staged now; submit at Matin Watch.`;
+        els.ordersNote.textContent = "Night march: submit exactly 4 staged moves (or empty for Hold).";
       } else if (isMarch) {
         els.ordersNote.textContent = `March orders: up to ${maxSteps} staged cells this day.`;
-      } else if (isNightWatch()) {
-        els.ordersNote.textContent = "Forage available this Night Watch. Submitting will replace queued actions.";
+      } else if (isForage && isNightOrMatinWatch()) {
+        els.ordersNote.textContent = "Forage available this watch. Execution begins at Matin.";
+      } else if (isForage) {
+        els.ordersNote.textContent = "Forage mode selected. Submission opens at Night/Matin.";
       } else {
-        els.ordersNote.textContent = "Forage unavailable outside Night Watch.";
+        els.ordersNote.textContent = "Forage unavailable outside Night/Matin.";
       }
-      const canSubmitMarch = !(isMarch && isNightWatch());
-      els.submitOrdersBtn.disabled = !canSubmitMarch;
+      els.submitOrdersBtn.disabled = isForage && !isNightOrMatinWatch();
       const forageOption = els.orderModeSelect.querySelector("option[value=\"forage\"]");
       if (forageOption) {
-        forageOption.disabled = !isNightWatch();
-      }
-      if (state.orderMode === "forage" && !isNightWatch()) {
-        state.orderMode = "march";
-        els.orderModeSelect.value = "march";
+        forageOption.disabled = !isNightOrMatinWatch();
       }
       if (state.stagedPath.length > maxSteps) {
         state.stagedPath = state.stagedPath.slice(0, maxSteps);
@@ -1304,10 +1307,9 @@
       });
       els.orderModeSelect.addEventListener("change", async () => {
         const nextMode = String(els.orderModeSelect.value || "march").trim().toLowerCase();
-        if (nextMode === "forage" && !isNightWatch()) {
+        if (nextMode === "forage" && !isNightOrMatinWatch()) {
           state.orderMode = "march";
           renderOrdersPanel();
-          setStatus("Forage can only be planned during Night Watch.", true);
           return;
         }
         state.orderMode = nextMode === "forage" ? "forage" : "march";
@@ -1327,14 +1329,10 @@
         try {
           let payload;
           if (state.orderMode === "forage") {
-            if (!isNightWatch()) {
-              setStatus("Forage can only be submitted during Night Watch.", true);
-              return;
-            }
             payload = { kind: "forage", path: [] };
           } else {
-            if (isNightWatch() && state.stagedPath.length > 0) {
-              setStatus("March orders cannot be submitted during Night Watch. Stage now and submit at Matin.", true);
+            if (isNightWatch() && state.stagedPath.length > 0 && state.stagedPath.length !== 4) {
+              setStatus("Night march requires exactly 4 staged moves (or none for Hold).", true);
               return;
             }
             payload = { kind: "march", path: state.stagedPath.slice() };
