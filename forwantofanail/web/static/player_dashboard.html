@@ -1244,6 +1244,8 @@
         return;
       }
       try {
+        state.openMessageId = null;
+        els.messageRead.textContent = "Select a letter to read.";
         await loginCommander(commanderName);
         state.orderMode = "march";
         state.stagedPath = [];
