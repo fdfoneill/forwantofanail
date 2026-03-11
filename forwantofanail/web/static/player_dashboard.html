@@ -353,9 +353,8 @@
 
       <div class="meta">
         <div><strong>Time:</strong> <span id="timeText">-</span></div>
-        <div><strong>Center Cell:</strong> <span id="centerText">-</span></div>
-        <div><strong>Radius:</strong> <span id="radiusText">-</span></div>
-        <div><strong>Visible Cells:</strong> <span id="cellCountText">0</span></div>
+        <div><strong>Current Location:</strong> <span id="centerText">-</span></div>
+        <div><strong>Scouting Radius:</strong> <span id="radiusText">-</span></div>
         <div style="margin-top:10px;"><strong>Supply</strong></div>
         <div><strong>Current:</strong> <span id="supplyCurrentText">-</span></div>
         <div><strong>Capacity:</strong> <span id="supplyCapacityText">-</span></div>
@@ -471,7 +470,6 @@
       timeText: document.getElementById("timeText"),
       centerText: document.getElementById("centerText"),
       radiusText: document.getElementById("radiusText"),
-      cellCountText: document.getElementById("cellCountText"),
       supplyCurrentText: document.getElementById("supplyCurrentText"),
       supplyCapacityText: document.getElementById("supplyCapacityText"),
       supplyDailyText: document.getElementById("supplyDailyText"),
@@ -1334,7 +1332,6 @@
         els.timeText.textContent = "-";
         els.centerText.textContent = "-";
         els.radiusText.textContent = "-";
-        els.cellCountText.textContent = "0";
         els.supplyCurrentText.textContent = "-";
         els.supplyCapacityText.textContent = "-";
         els.supplyDailyText.textContent = "-";
@@ -1342,9 +1339,9 @@
         return;
       }
       els.timeText.textContent = `Day ${view.time.day}, ${watchDisplayName(view.time.watch)}`;
-      els.centerText.textContent = view.environs.center_h3;
-      els.radiusText.textContent = String(view.environs.radius);
-      els.cellCountText.textContent = String(view.environs.cells.length);
+      const centerCell = (view.environs.cells || []).find((cell) => cell.h3 === view.environs.center_h3);
+      els.centerText.textContent = String(centerCell?.cell_title || view.environs.center_h3 || "-");
+      els.radiusText.textContent = `${view.environs.radius} leagues`;
       const supply = view.army?.supply || {};
       els.supplyCurrentText.textContent = String(supply.current ?? "-");
       els.supplyCapacityText.textContent = String(supply.capacity ?? "-");
