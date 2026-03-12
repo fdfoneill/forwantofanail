@@ -637,6 +637,10 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
                 disable=True,
             )
             continue
+        standing.last_report = "March planned according to standing orders"
+        standing.last_report_day = clock.day
+        standing.last_report_watch = clock.watch
+        standing.updated_at = datetime.now(timezone.utc)
         if stop_reason:
             # Crossroads should disable only when the army actually enters the junction.
             # If a partial path was staged up to a crossroads, keep standing order enabled
