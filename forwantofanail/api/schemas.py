@@ -34,3 +34,7 @@ class TimePayload(BaseModel):
     day: int
     watch: int
     watch_label: str
+
+
+class StandingFollowRoadUpdateRequest(BaseModel):
+    enabled: bool
