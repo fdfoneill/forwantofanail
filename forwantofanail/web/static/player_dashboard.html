@@ -482,7 +482,6 @@
       borderRoadNeighbors: new Set(),
       mapWidth: 1000,
       mapHeight: 700,
-      pinnedH3: null,
       hoverH3: null,
       correspondents: [],
       inbox: [],
@@ -798,6 +797,7 @@
       const isForage = state.orderMode === "forage";
       els.orderModeSelect.value = state.orderMode;
       els.queueMoveBtn.disabled = !isMarch;
+      els.stagedPathList.style.display = isMarch ? "" : "none";
       els.submitOrdersBtn.disabled = isForage && !isNightOrMatinWatch();
       const forageOption = els.orderModeSelect.querySelector("option[value=\"forage\"]");
       if (forageOption) {
@@ -866,6 +866,40 @@
     function updateStageMoveButtonVisibility(h3Index) {
       const shouldShow = !!h3Index && canStageMove(h3Index).ok;
       els.queueMoveBtn.style.display = shouldShow ? "" : "none";
+    }
+
+    function canClickStageMode() {
+      if (!state.token || !state.view) {
+        return false;
+      }
+      if (state.orderMode !== "march") {
+        return false;
+      }
+      if (els.ordersBox.hasAttribute("hidden")) {
+        return false;
+      }
+      return true;
+    }
+
+    async function stageMoveToCell(h3Index, { silent = false } = {}) {
+      if (!h3Index) {
+        if (!silent) {
+          setStatus("No cell selected.", true);
+        }
+        return false;
+      }
+      const check = canStageMove(h3Index);
+      if (!check.ok) {
+        if (!silent) {
+          setStatus(check.reason, true);
+        }
+        return false;
+      }
+      state.stagedPath.push(h3Index);
+      renderStagedPathList();
+      await refreshValidNextMoves();
+      renderMap();
+      return true;
     }
 
     function terrainKey(value) {
@@ -1456,53 +1490,33 @@
       positionHoverCard(clientX, clientY);
     }
 
-    function pinCard(h3Index, clientX, clientY) {
-      state.pinnedH3 = h3Index;
-      showHoverCard(h3Index, clientX, clientY);
-    }
-
-    function clearPin() {
-      state.pinnedH3 = null;
-      hideHoverCard();
-    }
-
     function bindHoverHandlers() {
       const polys = els.mapCanvas.querySelectorAll(".cell-poly");
       polys.forEach((poly) => {
         poly.addEventListener("mouseenter", (event) => {
-          if (state.pinnedH3) {
-            return;
-          }
           showHoverCard(poly.dataset.h3 || "", event.clientX, event.clientY);
         });
         poly.addEventListener("mousemove", (event) => {
-          if (state.pinnedH3) {
-            return;
-          }
           if (els.hoverCard.style.display === "block") {
             positionHoverCard(event.clientX, event.clientY);
           }
         });
         poly.addEventListener("mouseleave", () => {
-          if (!state.pinnedH3) {
-            hideHoverCard();
-          }
+          hideHoverCard();
         });
-        poly.addEventListener("click", (event) => {
+        poly.addEventListener("click", async (event) => {
           event.stopPropagation();
-          const h3Index = poly.dataset.h3 || "";
-          if (state.pinnedH3 === h3Index) {
-            clearPin();
+          if (!canClickStageMode()) {
             return;
           }
-          pinCard(h3Index, event.clientX, event.clientY);
+          const h3Index = poly.dataset.h3 || "";
+          await stageMoveToCell(h3Index, { silent: true });
         });
       });
     }
 
     function updateMetadata(view) {
       if (!view) {
-        clearPin();
         els.timeText.textContent = "-";
         els.centerText.textContent = "-";
         els.radiusText.textContent = "-";
@@ -1533,7 +1547,6 @@
       state.view = view;
       state.remainingItinerary = Array.isArray(view?.itinerary?.remaining_moves) ? view.itinerary.remaining_moves.map(String) : [];
       state.borderRoadNeighbors = new Set((borderRoads.roads || []).map((value) => String(value)));
-      state.pinnedH3 = null;
       processWatchAlerts(view);
       processStandingOrderReports(view);
       updateMetadata(view);
@@ -1666,19 +1679,7 @@
           setStatus("Select a commander first.", true);
           return;
         }
-        if (!state.hoverH3) {
-          setStatus("No cell selected.", true);
-          return;
-        }
-        const check = canStageMove(state.hoverH3);
-        if (!check.ok) {
-          setStatus(check.reason, true);
-          return;
-        }
-        state.stagedPath.push(state.hoverH3);
-        renderStagedPathList();
-        await refreshValidNextMoves();
-        renderMap();
+        await stageMoveToCell(state.hoverH3);
       });
       els.orderModeSelect.addEventListener("change", async () => {
         const nextMode = String(els.orderModeSelect.value || "march").trim().toLowerCase();
@@ -1797,14 +1798,7 @@
         }
       });
       els.mapCanvas.addEventListener("mouseleave", () => {
-        if (!state.pinnedH3) {
-          hideHoverCard();
-        }
-      });
-      els.mapCanvas.addEventListener("click", () => {
-        if (state.pinnedH3) {
-          clearPin();
-        }
+        hideHoverCard();
       });
       els.hoverCard.addEventListener("click", (event) => event.stopPropagation());
       try {
