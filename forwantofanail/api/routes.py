@@ -558,7 +558,12 @@ def _apply_plan(
     if created_actions and not in_progress_exists:
         _start_action_now_if_valid(session, created_actions[0], army, clock)
 
-    return created_actions, len(active_actions)
+    cancelled_by_kind: dict[str, int] = {}
+    for existing in active_actions:
+        kind = (existing.kind or "unknown").strip().lower()
+        cancelled_by_kind[kind] = cancelled_by_kind.get(kind, 0) + 1
+
+    return created_actions, len(active_actions), cancelled_by_kind
 
 
 def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
@@ -1374,7 +1379,7 @@ def plan_actions(
     army = _find_commander_army(session, commander_id)
     clock = _get_or_create_clock(session)
     path = [str(cell).strip() for cell in payload.path if str(cell).strip()]
-    created_actions, cancelled_count = _apply_plan(
+    created_actions, cancelled_count, cancelled_by_kind = _apply_plan(
         session,
         commander_id=commander_id,
         army=army,
@@ -1394,6 +1399,7 @@ def plan_actions(
         "hold": payload.kind == "march" and len(created_actions) == 0,
         "cancelled_count": cancelled_count,
         "cancelled_queued_count": cancelled_count,
+        "cancelled_by_kind": cancelled_by_kind,
         "created": [
             {
                 "action_id": _action_ref(action.action_id),
