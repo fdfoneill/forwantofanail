@@ -196,7 +196,6 @@ GET /v1/me/view
         "id": "msg_501",
         "from": { "name": "Baron Soman" },
         "delivered_watch": { "day": 14, "watch": 1 },
-        "snippet": "Unexpected resistance at Jumba...",
         "is_read": false
       }
     ]
@@ -206,9 +205,7 @@ GET /v1/me/view
     "action_id": "act_880",
     "kind": "move",
     "state": "in_progress",
-    "started": { "day": 14, "watch": 1 },
-    "eta": { "day": 15, "watch": 0 },
-    "summary": "Marching toward Ormo via road"
+    "eta": { "day": 15, "watch": 0 }
   }
 }
 ```
@@ -228,7 +225,7 @@ GET /v1/me/view
 
 An action represents the commander's chosen intent.
 
-Only one active action is allowed at a time in v0.1.
+Current implementation allows one `in_progress` action plus FIFO queued follow-on actions.
 
 ---
 
@@ -393,15 +390,18 @@ The API maps directly to:
 * `detachments`
 * `commanders`
 * `messages`
-* `movement_history`
-* `landscape`
+* `movements`
+* `locations`
 * `strongholds`
 
 As defined in the project structure .
 
-No additional tables are required for v0.1 beyond possibly:
+Runtime/controller tables in current implementation:
 
 * `actions`
+* `game_clock`
+* `auth_tokens`
+* `standing_orders`
 
 ---
 
@@ -410,15 +410,23 @@ No additional tables are required for v0.1 beyond possibly:
 | Method | Endpoint                   | Purpose                   |
 | ------ | -------------------------- | ------------------------- |
 | POST   | /v1/auth/login             | Authenticate as commander |
+| GET    | /v1/commanders             | List available commanders |
 | GET    | /v1/me/view                | Combined dashboard        |
 | POST   | /v1/me/actions             | Create new action         |
+| POST   | /v1/me/actions/plan        | Replace queue with plan   |
+| GET    | /v1/me/actions/valid-next  | Valid next move cells     |
 | GET    | /v1/me/actions/current     | View active action        |
 | POST   | /v1/me/actions/{id}/cancel | Cancel action             |
 | POST   | /v1/me/messages            | Send letter               |
 | GET    | /v1/me/messages            | List delivered letters    |
 | GET    | /v1/me/messages/{id}       | Read letter               |
 | GET    | /v1/correspondents         | Valid message recipients  |
+| GET    | /v1/me/roads/border        | Border road neighbors     |
+| GET    | /v1/me/orders/standing     | Read standing orders      |
+| POST   | /v1/me/orders/standing/follow-road | Toggle follow-road standing order |
+| GET    | /v1/me/alerts              | List delivered alerts     |
 | GET    | /v1/time                   | Get current day/watch     |
+| POST   | /v1/admin/time/advance     | Advance dev clock         |
 
 ---
 
@@ -434,6 +442,8 @@ The codebase now includes:
 * `auth_tokens` (bearer token -> commander mapping)
 * `actions` (queued/in-progress/cancelled action intents)
 * `messages` (sender/recipient/content/read status + delivery watch)
+* `standing_orders` (standing-order state + reports)
+* `alerts` (commander/global delivered alert stream with type/category/importance tags)
 
 ## 9.2 Endpoint Persistence Status
 
@@ -446,12 +456,17 @@ The following endpoints are DB-backed (no in-memory fallback):
 * `GET /v1/me/view`
 * `GET /v1/me/roads/border`
 * `POST /v1/me/actions`
+* `POST /v1/me/actions/plan`
+* `GET /v1/me/actions/valid-next`
 * `GET /v1/me/actions/current`
 * `POST /v1/me/actions/{id}/cancel`
 * `POST /v1/me/messages`
 * `GET /v1/me/messages`
 * `GET /v1/me/messages/{id}`
 * `GET /v1/correspondents`
+* `GET /v1/me/orders/standing`
+* `POST /v1/me/orders/standing/follow-road`
+* `GET /v1/me/alerts`
 
 ## 9.3 Contract Deltas from v0.1
 
@@ -460,11 +475,14 @@ Current API behavior differs from the original examples in these ways:
 * IDs are `cmd_<int>`, `army_<int>`, `det_<int>`, `sh_<int>`, `act_<int>`, `msg_<int>`.
 * `army.supply` includes `current`, `capacity`, `daily_consumption`, and `days_estimate`.
 * `current_action.eta` is populated when an action is `in_progress`; queued actions may have `eta = null`.
-* Messages are persisted and delivery-gated by `(delivery_day, delivery_watch)`, but currently created as immediately delivered.
+* Messages are persisted and delivery-gated by `(delivery_day, delivery_watch)`. Delivery ETA is based on map distance.
 * Environs radius is computed server-side: `2` normally, `4` when any detachment is cavalry.
 * Action creation accepts `{\"kind\":\"move\", \"destination_h3\": \"...\"}`.
 * Actions are queued FIFO per commander (multiple queued, one in-progress).
-* Movement actions do not start or resolve in watch `0` (Night), and Night does not count toward movement ETA progress.
+* `POST /v1/me/actions/plan` supports staged marches, forage, and empty-path halt behavior.
+* Movement actions do not start in watch `0` (Night), but in-progress movement can resolve at Night.
+* Standing follow-road orders can auto-create nightly march plans.
+* Follow-road cannot be enabled while the army is holding (no active action).
 
 ## 9.4 Validation Added for Move Actions
 
