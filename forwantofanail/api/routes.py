@@ -1419,6 +1419,13 @@ def set_follow_road_standing_order(
     session: Session = Depends(_get_session),
 ):
     standing = _get_or_create_standing_order(session, commander_id)
+    if payload.enabled and not standing.follow_road_enabled:
+        current_action = _get_current_action_row(session, commander_id)
+        if current_action is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Follow Road cannot be enabled while army is holding",
+            )
     standing.follow_road_enabled = bool(payload.enabled)
     if payload.enabled:
         standing.last_report = "Standing order active: follow road."
