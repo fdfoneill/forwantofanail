@@ -5,8 +5,10 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from forwantofanail.api.routes import router
+from forwantofanail.core.migrate_runtime_tables import migrate_runtime_tables
 
 app = FastAPI(title="For Want of a Nail API", version="0.1.1")
+migrate_runtime_tables()
 app.include_router(router)
 static_dir = Path(__file__).resolve().parents[1] / "web" / "static"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")

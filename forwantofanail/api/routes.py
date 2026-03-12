@@ -19,6 +19,7 @@ from forwantofanail.api.schemas import (
     ActionPlanRequest,
     LoginRequest,
     MessageCreateRequest,
+    StandingFollowRoadUpdateRequest,
     TimeAdvanceRequest,
 )
 from forwantofanail.core.database import create_session
@@ -31,6 +32,7 @@ from forwantofanail.core.models import (
     Location,
     Message,
     Movement,
+    StandingOrder,
     Stronghold,
     TerrainType,
 )
@@ -54,6 +56,7 @@ WATCH_LABELS = {
 ACTIVE_ACTION_STATES = {"queued", "in_progress"}
 SCENARIO_EPOCH = date(2000, 1, 1)
 MESSAGE_LOSS_PROBABILITY = 0.0
+MAX_FOLLOW_ROAD_STEPS = 4
 
 
 def _commander_ref(commander_id: int) -> str:
@@ -339,6 +342,316 @@ def _forage_supply_gain_for_army(session: Session, army: Army) -> tuple[int, lis
     return gain, locations
 
 
+def _serialize_standing_orders(standing: StandingOrder | None) -> dict[str, Any]:
+    if standing is None:
+        return {
+            "follow_road": {
+                "enabled": False,
+                "last_report": None,
+                "last_report_day": None,
+                "last_report_watch": None,
+            }
+        }
+    return {
+        "follow_road": {
+            "enabled": bool(standing.follow_road_enabled),
+            "last_report": standing.last_report,
+            "last_report_day": standing.last_report_day,
+            "last_report_watch": standing.last_report_watch,
+        }
+    }
+
+
+def _get_or_create_standing_order(session: Session, commander_id: int) -> StandingOrder:
+    standing = session.get(StandingOrder, commander_id)
+    if standing is not None:
+        return standing
+    standing = StandingOrder(
+        commander_id=commander_id,
+        follow_road_enabled=False,
+        last_report=None,
+        last_report_day=None,
+        last_report_watch=None,
+        updated_at=datetime.now(timezone.utc),
+    )
+    session.add(standing)
+    session.flush()
+    return standing
+
+
+def _set_standing_order_report(
+    standing: StandingOrder,
+    *,
+    clock: GameClock,
+    message: str,
+    disable: bool,
+) -> None:
+    standing.last_report = message
+    standing.last_report_day = clock.day
+    standing.last_report_watch = clock.watch
+    standing.updated_at = datetime.now(timezone.utc)
+    if disable:
+        standing.follow_road_enabled = False
+
+
+def _latest_previous_location_for_army(session: Session, army: Army) -> str | None:
+    rows = (
+        session.query(Movement.location_id)
+        .filter(Movement.army_id == army.army_id)
+        .order_by(Movement.date.desc(), Movement.watch.desc())
+        .limit(24)
+        .all()
+    )
+    current_h3 = army.location_id
+    for (location_id,) in rows:
+        if location_id != current_h3:
+            return str(location_id)
+    return None
+
+
+def _next_road_cell(
+    session: Session,
+    army: Army,
+    *,
+    current_h3: str,
+    last_h3: str,
+) -> tuple[str | None, str | None, str | None]:
+    try:
+        adjacent = set(h3.grid_ring(current_h3, 1))
+    except Exception:
+        return None, "error", "Road march halted: unable to inspect adjacent cells."
+
+    if not adjacent:
+        return None, "dead_end", "Road march halted: no adjacent cells."
+
+    road_adjacent = {
+        row[0]
+        for row in session.query(Location.location_id)
+        .filter(Location.location_id.in_(adjacent), Location.is_road.is_(True))
+        .all()
+    }
+    valid_from_current = set(list_valid_destinations_from_origin(session, army.army_id, current_h3))
+    candidates = sorted(
+        cell_h3
+        for cell_h3 in road_adjacent
+        if cell_h3 != last_h3 and cell_h3 in valid_from_current
+    )
+    if len(candidates) == 1:
+        return candidates[0], None, None
+    if len(candidates) == 0:
+        return None, "dead_end", "Road march halted: no onward road; new orders needed."
+    return None, "crossroads", "Crossroads reached, new orders needed."
+
+
+def _maybe_disable_follow_road_on_crossroads_entry(
+    session: Session,
+    *,
+    army: Army,
+    origin_h3: str,
+    destination_h3: str,
+    clock: GameClock,
+) -> None:
+    if army.commander_id is None:
+        return
+    standing = session.get(StandingOrder, army.commander_id)
+    if standing is None or not standing.follow_road_enabled:
+        return
+
+    _, reason_code, reason_message = _next_road_cell(
+        session,
+        army,
+        current_h3=destination_h3,
+        last_h3=origin_h3,
+    )
+    if reason_code == "crossroads":
+        _set_standing_order_report(
+            standing,
+            clock=clock,
+            message=reason_message or "Crossroads reached, new orders needed.",
+            disable=True,
+        )
+
+
+def _apply_plan(
+    session: Session,
+    *,
+    commander_id: int,
+    army: Army,
+    clock: GameClock,
+    kind: str,
+    path: list[str],
+    now: datetime,
+    allow_partial_night_march: bool = False,
+    disable_follow_road: bool = False,
+) -> tuple[list[Action], int]:
+    if disable_follow_road:
+        standing = _get_or_create_standing_order(session, commander_id)
+        if standing.follow_road_enabled:
+            standing.follow_road_enabled = False
+            standing.last_report = "Standing order cancelled: follow road."
+            standing.last_report_day = clock.day
+            standing.last_report_watch = clock.watch
+            standing.updated_at = datetime.now(timezone.utc)
+
+    active_actions = (
+        session.query(Action)
+        .filter(Action.commander_id == commander_id, Action.state.in_(ACTIVE_ACTION_STATES))
+        .order_by(Action.accepted_at.asc(), Action.action_id.asc())
+        .all()
+    )
+    for existing in active_actions:
+        existing.state = "cancelled"
+
+    created_actions: list[Action] = []
+    if kind == "forage":
+        if clock.watch not in {int(Watch.NIGHT), int(Watch.MATIN)}:
+            raise HTTPException(status_code=400, detail="Forage orders may only be submitted during Night or Matin watch")
+        action = Action(
+            commander_id=commander_id,
+            kind="forage",
+            state="queued",
+            parameters_json=json.dumps({}),
+            accepted_at=now,
+        )
+        session.add(action)
+        created_actions.append(action)
+    elif kind == "march":
+        if path:
+            if clock.watch == int(Watch.NIGHT) and len(path) != MAX_FOLLOW_ROAD_STEPS and not allow_partial_night_march:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Night march submissions must contain exactly 4 staged moves (or be empty for Halt)",
+                )
+            max_steps = _remaining_march_steps_for_watch(int(clock.watch))
+            if len(path) > max_steps:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"March path too long for current watch: max {max_steps} cells, got {len(path)}",
+                )
+            for destination_h3 in path:
+                if session.get(Location, destination_h3) is None:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "message": "Unknown move destination_h3",
+                            "destination_h3": destination_h3,
+                        },
+                    )
+                action = Action(
+                    commander_id=commander_id,
+                    kind="move",
+                    state="queued",
+                    parameters_json=json.dumps({"destination_h3": destination_h3}),
+                    accepted_at=now,
+                )
+                session.add(action)
+                created_actions.append(action)
+    else:
+        raise HTTPException(status_code=400, detail=f"Unsupported plan kind: {kind}")
+
+    in_progress_exists = (
+        session.query(Action)
+        .filter(Action.commander_id == commander_id, Action.state == "in_progress")
+        .first()
+        is not None
+    )
+    if created_actions and not in_progress_exists:
+        _start_action_now_if_valid(session, created_actions[0], army, clock)
+
+    return created_actions, len(active_actions)
+
+
+def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
+    if clock.watch != int(Watch.NIGHT):
+        return
+    standing_rows = (
+        session.query(StandingOrder)
+        .filter(StandingOrder.follow_road_enabled.is_(True))
+        .all()
+    )
+    for standing in standing_rows:
+        army = session.query(Army).filter(Army.commander_id == standing.commander_id).first()
+        if army is None:
+            _set_standing_order_report(
+                standing,
+                clock=clock,
+                message="Road march halted: no field army available for this commander.",
+                disable=True,
+            )
+            continue
+
+        previous_h3 = _latest_previous_location_for_army(session, army)
+        if not previous_h3:
+            _set_standing_order_report(
+                standing,
+                clock=clock,
+                message="Road march halted: previous position unknown; new orders needed.",
+                disable=True,
+            )
+            continue
+
+        path: list[str] = []
+        current_h3 = army.location_id
+        last_h3 = previous_h3
+        stop_reason: str | None = None
+        stop_reason_code: str | None = None
+        for _ in range(MAX_FOLLOW_ROAD_STEPS):
+            next_h3, reason_code, reason = _next_road_cell(
+                session,
+                army,
+                current_h3=current_h3,
+                last_h3=last_h3,
+            )
+            if next_h3 is None:
+                stop_reason_code = reason_code
+                stop_reason = reason or "Road march halted: unable to continue."
+                break
+            path.append(next_h3)
+            last_h3, current_h3 = current_h3, next_h3
+
+        if not path:
+            _set_standing_order_report(
+                standing,
+                clock=clock,
+                message=stop_reason or "Road march halted: unable to continue.",
+                disable=True,
+            )
+            continue
+
+        try:
+            _apply_plan(
+                session,
+                commander_id=standing.commander_id,
+                army=army,
+                clock=clock,
+                kind="march",
+                path=path,
+                now=datetime.now(timezone.utc),
+                allow_partial_night_march=True,
+            )
+        except HTTPException as exc:
+            _set_standing_order_report(
+                standing,
+                clock=clock,
+                message=f"Road march halted: {exc.detail}",
+                disable=True,
+            )
+            continue
+        if stop_reason:
+            # Crossroads should disable only when the army actually enters the junction.
+            # If a partial path was staged up to a crossroads, keep standing order enabled
+            # for now; completion tick will disable/report on entry.
+            if not (stop_reason_code == "crossroads" and path):
+                _set_standing_order_report(
+                    standing,
+                    clock=clock,
+                    message=stop_reason,
+                    disable=True,
+                )
+        else:
+            standing.updated_at = datetime.now(timezone.utc)
+
+
 def _start_action_now_if_valid(session: Session, action: Action, army: Army, clock: GameClock) -> bool:
     if action.kind == "move":
         if clock.watch == int(Watch.NIGHT):
@@ -427,7 +740,9 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
                     failed += 1
                     continue
                 # Keep FK and relationship state consistent for follow-on queued actions in the same tick.
+                origin_h3 = army.location_id
                 army.location = destination_location
+                army.location_id = destination_h3
                 session.add(
                     Movement(
                         army_id=army.army_id,
@@ -435,6 +750,13 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
                         date=_scenario_date_for_day(clock.day),
                         watch=clock.watch,
                     )
+                )
+                _maybe_disable_follow_road_on_crossroads_entry(
+                    session,
+                    army=army,
+                    origin_h3=origin_h3,
+                    destination_h3=destination_h3,
+                    clock=clock,
                 )
                 action.state = "completed"
                 completed += 1
@@ -807,6 +1129,7 @@ def advance_time_for_development(
         tick_result = {"started": 0, "completed": 0, "failed": 0}
         if payload.execute_actions:
             tick_result = _execute_action_tick(session, clock)
+            _auto_apply_follow_road_orders(session, clock)
             actions_started += tick_result["started"]
             actions_completed += tick_result["completed"]
             actions_failed += tick_result["failed"]
@@ -859,6 +1182,7 @@ def get_my_view(
     )
 
     current_action = _get_current_action_row(session, commander_id)
+    standing_order = session.get(StandingOrder, commander_id)
 
     return {
         "time": _clock_payload(clock),
@@ -872,6 +1196,7 @@ def get_my_view(
         "messages": _serialize_message_summary(delivered_messages),
         "current_action": _serialize_action(current_action) if current_action else None,
         "itinerary": _serialize_remaining_itinerary(session, commander_id),
+        "standing_orders": _serialize_standing_orders(standing_order),
     }
 
 
@@ -943,6 +1268,13 @@ def create_action(
 ):
     army = _find_commander_army(session, commander_id)
     clock = _get_or_create_clock(session)
+    standing = _get_or_create_standing_order(session, commander_id)
+    if standing.follow_road_enabled:
+        standing.follow_road_enabled = False
+        standing.last_report = "Standing order cancelled: follow road."
+        standing.last_report_day = clock.day
+        standing.last_report_watch = clock.watch
+        standing.updated_at = datetime.now(timezone.utc)
     action_params: dict[str, Any] = {}
     if payload.kind == "move":
         if clock.watch == int(Watch.NIGHT):
@@ -1037,75 +1369,17 @@ def plan_actions(
 ):
     army = _find_commander_army(session, commander_id)
     clock = _get_or_create_clock(session)
-
-    # Replace semantics: cancel all active actions first (queued and in-progress).
-    active_actions = (
-        session.query(Action)
-        .filter(Action.commander_id == commander_id, Action.state.in_(ACTIVE_ACTION_STATES))
-        .order_by(Action.accepted_at.asc(), Action.action_id.asc())
-        .all()
+    path = [str(cell).strip() for cell in payload.path if str(cell).strip()]
+    created_actions, cancelled_count = _apply_plan(
+        session,
+        commander_id=commander_id,
+        army=army,
+        clock=clock,
+        kind=payload.kind,
+        path=path,
+        now=datetime.now(timezone.utc),
+        disable_follow_road=True,
     )
-    for existing in active_actions:
-        existing.state = "cancelled"
-
-    created_actions: list[Action] = []
-    now = datetime.now(timezone.utc)
-
-    if payload.kind == "forage":
-        if clock.watch not in {int(Watch.NIGHT), int(Watch.MATIN)}:
-            raise HTTPException(status_code=400, detail="Forage orders may only be submitted during Night or Matin watch")
-        action = Action(
-            commander_id=commander_id,
-            kind="forage",
-            state="queued",
-            parameters_json=json.dumps({}),
-            accepted_at=now,
-        )
-        session.add(action)
-        created_actions.append(action)
-    else:
-        path = [str(cell).strip() for cell in payload.path if str(cell).strip()]
-        # Empty march path is interpreted as an explicit hold order:
-        # cancel active/queued actions and create no new actions.
-        if path:
-            if clock.watch == int(Watch.NIGHT) and len(path) != 4:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Night march submissions must contain exactly 4 staged moves (or be empty for Hold)",
-                )
-            max_steps = _remaining_march_steps_for_watch(int(clock.watch))
-            if len(path) > max_steps:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"March path too long for current watch: max {max_steps} cells, got {len(path)}",
-                )
-            for destination_h3 in path:
-                if session.get(Location, destination_h3) is None:
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "message": "Unknown move destination_h3",
-                            "destination_h3": destination_h3,
-                        },
-                    )
-                action = Action(
-                    commander_id=commander_id,
-                    kind="move",
-                    state="queued",
-                    parameters_json=json.dumps({"destination_h3": destination_h3}),
-                    accepted_at=now,
-                )
-                session.add(action)
-                created_actions.append(action)
-
-    in_progress_exists = (
-        session.query(Action)
-        .filter(Action.commander_id == commander_id, Action.state == "in_progress")
-        .first()
-        is not None
-    )
-    if created_actions and not in_progress_exists:
-        _start_action_now_if_valid(session, created_actions[0], army, clock)
 
     session.commit()
     for action in created_actions:
@@ -1114,8 +1388,8 @@ def plan_actions(
     return {
         "kind": payload.kind,
         "hold": payload.kind == "march" and len(created_actions) == 0,
-        "cancelled_count": len(active_actions),
-        "cancelled_queued_count": len(active_actions),
+        "cancelled_count": cancelled_count,
+        "cancelled_queued_count": cancelled_count,
         "created": [
             {
                 "action_id": _action_ref(action.action_id),
@@ -1125,6 +1399,47 @@ def plan_actions(
             for action in created_actions
         ],
     }
+
+
+@router.get("/me/orders/standing")
+def get_my_standing_orders(
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    standing = _get_or_create_standing_order(session, commander_id)
+    session.commit()
+    session.refresh(standing)
+    return _serialize_standing_orders(standing)
+
+
+@router.post("/me/orders/standing/follow-road")
+def set_follow_road_standing_order(
+    payload: StandingFollowRoadUpdateRequest,
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    standing = _get_or_create_standing_order(session, commander_id)
+    if payload.enabled and not standing.follow_road_enabled:
+        current_action = _get_current_action_row(session, commander_id)
+        if current_action is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Follow Road cannot be enabled while army is holding",
+            )
+    standing.follow_road_enabled = bool(payload.enabled)
+    if payload.enabled:
+        standing.last_report = "Standing order active: follow road."
+        standing.last_report_day = None
+        standing.last_report_watch = None
+    else:
+        standing.last_report = "Standing order cancelled: follow road."
+        clock = _get_or_create_clock(session)
+        standing.last_report_day = clock.day
+        standing.last_report_watch = clock.watch
+    standing.updated_at = datetime.now(timezone.utc)
+    session.commit()
+    session.refresh(standing)
+    return _serialize_standing_orders(standing)
 
 
 @router.get("/correspondents")

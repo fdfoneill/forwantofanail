@@ -108,6 +108,63 @@
     .orders-tools #submitOrdersBtn {
       margin-top: 10px;
     }
+    .standing-order {
+      margin-top: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      font-size: 13px;
+      color: var(--ink);
+    }
+    .switch {
+      position: relative;
+      display: inline-block;
+      width: 44px;
+      height: 24px;
+      flex: 0 0 auto;
+    }
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+      margin: 0;
+      position: absolute;
+    }
+    .switch-slider {
+      position: absolute;
+      inset: 0;
+      cursor: pointer;
+      background: #c8c0b3;
+      border-radius: 999px;
+      transition: background 160ms ease;
+    }
+    .switch-slider:before {
+      content: "";
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      left: 3px;
+      top: 3px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 160ms ease;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+    }
+    .switch input:checked + .switch-slider {
+      background: var(--accent);
+    }
+    .switch input:checked + .switch-slider:before {
+      transform: translateX(20px);
+    }
+    .switch input:disabled + .switch-slider {
+      cursor: not-allowed;
+      opacity: 0.6;
+    }
     .orders-tools[hidden] { display: none; }
     .staged-list {
       margin: 8px 0 0;
@@ -364,6 +421,14 @@
       </div>
       <div class="section-divider"></div>
 
+      <div class="standing-order">
+        <span>Standing Order: Follow Road</span>
+        <label class="switch" for="followRoadToggleInput">
+          <input id="followRoadToggleInput" type="checkbox" />
+          <span class="switch-slider"></span>
+        </label>
+      </div>
+
       <button id="orderToggleBtn" type="button">Issue Order</button>
 
       <div class="orders-tools" id="ordersBox" hidden>
@@ -431,6 +496,8 @@
       seenMessageIds: new Set(),
       lastWatchAlertKey: null,
       previousSupplyCurrent: null,
+      followRoadEnabled: false,
+      lastStandingReportKey: null,
     };
 
     const TERRAIN_COLORS = {
@@ -479,6 +546,7 @@
       supplyCapacityText: document.getElementById("supplyCapacityText"),
       supplyDailyText: document.getElementById("supplyDailyText"),
       supplyDaysText: document.getElementById("supplyDaysText"),
+      followRoadToggleInput: document.getElementById("followRoadToggleInput"),
       orderToggleBtn: document.getElementById("orderToggleBtn"),
       ordersBox: document.getElementById("ordersBox"),
       orderModeSelect: document.getElementById("orderModeSelect"),
@@ -526,6 +594,42 @@
         state.alerts = state.alerts.slice(0, 25);
       }
       renderAlerts();
+    }
+
+    function renderStandingOrderToggle() {
+      const enabled = !!state.followRoadEnabled;
+      els.followRoadToggleInput.checked = enabled;
+      const hasCurrentAction = !!state.view?.current_action;
+      const canEnableFromOff = hasCurrentAction;
+      els.followRoadToggleInput.disabled = !state.token || (!enabled && !canEnableFromOff);
+    }
+
+    function processStandingOrderReports(view) {
+      const followRoad = view?.standing_orders?.follow_road || {};
+      const nextEnabled = !!followRoad.enabled;
+      const wasEnabled = !!state.followRoadEnabled;
+      state.followRoadEnabled = nextEnabled;
+      if (nextEnabled && state.stagedPath.length > 0) {
+        state.stagedPath = [];
+        state.validNextMoves = new Set();
+        renderStagedPathList();
+      } else if (wasEnabled && !nextEnabled) {
+        refreshValidNextMoves().catch(() => {});
+      }
+      renderStandingOrderToggle();
+
+      const reportText = String(followRoad.last_report || "").trim();
+      if (!reportText) {
+        return;
+      }
+      const reportDay = Number(followRoad.last_report_day);
+      const reportWatch = Number(followRoad.last_report_watch);
+      const key = `${Number.isFinite(reportDay) ? reportDay : "x"}:${Number.isFinite(reportWatch) ? reportWatch : "x"}:${reportText}`;
+      if (state.lastStandingReportKey === key) {
+        return;
+      }
+      state.lastStandingReportKey = key;
+      addAlert(reportText);
     }
 
     function processWatchAlerts(view) {
@@ -728,6 +832,9 @@
     function canStageMove(targetH3) {
       if (!state.view || !targetH3) {
         return { ok: false, reason: "No active view loaded." };
+      }
+      if (state.followRoadEnabled) {
+        return { ok: false, reason: "Disable Follow Road standing order to stage manual march." };
       }
       if (state.orderMode !== "march") {
         return { ok: false, reason: "Set orders to March to stage movement." };
@@ -1428,6 +1535,7 @@
       state.borderRoadNeighbors = new Set((borderRoads.roads || []).map((value) => String(value)));
       state.pinnedH3 = null;
       processWatchAlerts(view);
+      processStandingOrderReports(view);
       updateMetadata(view);
       renderOrdersPanel();
       await refreshValidNextMoves();
@@ -1455,6 +1563,8 @@
         state.seenMessageIds = new Set();
         state.lastWatchAlertKey = null;
         state.previousSupplyCurrent = null;
+        state.followRoadEnabled = false;
+        state.lastStandingReportKey = null;
         state.orderMode = "march";
         state.stagedPath = [];
         state.remainingItinerary = [];
@@ -1462,6 +1572,7 @@
         updateMetadata(null);
         renderMap();
         renderOrdersPanel();
+        renderStandingOrderToggle();
         els.ordersBox.setAttribute("hidden", "");
         els.orderToggleBtn.removeAttribute("hidden");
         renderAlerts();
@@ -1488,6 +1599,8 @@
         state.validNextMoves = new Set();
         state.lastWatchAlertKey = null;
         state.previousSupplyCurrent = null;
+        state.followRoadEnabled = false;
+        state.lastStandingReportKey = null;
         await refreshAllPanels();
       } catch (err) {
         setStatus(`Login/load error: ${err.message}`, true);
@@ -1516,6 +1629,7 @@
     (async function init() {
       renderAlerts();
       renderOrdersPanel();
+      renderStandingOrderToggle();
       els.orderToggleBtn.addEventListener("click", () => {
         els.ordersBox.removeAttribute("hidden");
         els.orderToggleBtn.setAttribute("hidden", "");
@@ -1523,6 +1637,29 @@
       els.hideOrdersBtn.addEventListener("click", () => {
         els.ordersBox.setAttribute("hidden", "");
         els.orderToggleBtn.removeAttribute("hidden");
+      });
+      els.followRoadToggleInput.addEventListener("change", async () => {
+        if (!state.token) {
+          setStatus("Select a commander first.", true);
+          els.followRoadToggleInput.checked = false;
+          return;
+        }
+        try {
+          const nextEnabled = !!els.followRoadToggleInput.checked;
+          const payload = await api(
+            "/v1/me/orders/standing/follow-road",
+            {
+              method: "POST",
+              body: JSON.stringify({ enabled: nextEnabled }),
+            },
+            true
+          );
+          state.followRoadEnabled = !!payload?.follow_road?.enabled;
+          renderStandingOrderToggle();
+        } catch (err) {
+          renderStandingOrderToggle();
+          setStatus(`Standing order update failed: ${err.message}`, true);
+        }
       });
       els.queueMoveBtn.addEventListener("click", async () => {
         if (!state.token) {
