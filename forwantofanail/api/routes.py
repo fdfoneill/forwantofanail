@@ -25,6 +25,7 @@ from forwantofanail.api.schemas import (
 from forwantofanail.core.database import create_session
 from forwantofanail.core.models import (
     Action,
+    Alert,
     Army,
     AuthToken,
     Commander,
@@ -57,6 +58,7 @@ ACTIVE_ACTION_STATES = {"queued", "in_progress"}
 SCENARIO_EPOCH = date(2000, 1, 1)
 MESSAGE_LOSS_PROBABILITY = 0.0
 MAX_FOLLOW_ROAD_STEPS = 4
+ALERT_TYPES = {"world event", "action", "report", "violence"}
 
 
 def _commander_ref(commander_id: int) -> str:
@@ -120,6 +122,10 @@ def _message_sender_display_name(message: Message) -> str:
     if message.sender_commander is not None:
         return _commander_display_name(message.sender_commander)
     return message.sender_name
+
+
+def _alert_ref(alert_id: int) -> str:
+    return f"alt_{alert_id}"
 
 
 def _cell_army_display_name(army_info: dict[str, Any]) -> str:
@@ -253,6 +259,154 @@ def _create_message(
     return message
 
 
+def _create_alert(
+    session: Session,
+    *,
+    recipient_commander_id: int | None,
+    alert_type: str,
+    message: str,
+    created_day: int,
+    created_watch: int,
+    delivered_day: int | None = None,
+    delivered_watch: int | None = None,
+    category: str = "general",
+    importance: str = "normal",
+    payload: dict[str, Any] | None = None,
+) -> Alert:
+    normalized_type = alert_type.strip().lower()
+    if normalized_type not in ALERT_TYPES:
+        normalized_type = "report"
+    alert = Alert(
+        recipient_commander_id=recipient_commander_id,
+        alert_type=normalized_type,
+        category=(category or "general").strip().lower(),
+        importance=(importance or "normal").strip().lower(),
+        message=message,
+        payload_json=json.dumps(payload or {}),
+        created_day=created_day,
+        created_watch=created_watch,
+        delivered_day=delivered_day if delivered_day is not None else created_day,
+        delivered_watch=delivered_watch if delivered_watch is not None else created_watch,
+        is_read=False,
+        created_at=datetime.now(timezone.utc),
+    )
+    session.add(alert)
+    return alert
+
+
+def _serialize_alert(alert: Alert) -> dict[str, Any]:
+    try:
+        payload = json.loads(alert.payload_json or "{}")
+    except json.JSONDecodeError:
+        payload = {}
+    return {
+        "id": _alert_ref(alert.alert_id),
+        "type": alert.alert_type,
+        "category": alert.category,
+        "importance": alert.importance,
+        "message": alert.message,
+        "created_watch": _to_watch_stamp(alert.created_day, alert.created_watch),
+        "delivered_watch": _to_watch_stamp(alert.delivered_day, alert.delivered_watch),
+        "is_read": alert.is_read,
+        "payload": payload,
+    }
+
+
+def _cancellation_narrative(cancelled_by_kind: dict[str, int]) -> str:
+    parts: list[str] = []
+    move_count = int(cancelled_by_kind.get("move", 0))
+    forage_count = int(cancelled_by_kind.get("forage", 0))
+    other_count = sum(
+        int(count)
+        for kind, count in cancelled_by_kind.items()
+        if kind not in {"move", "forage"}
+    )
+    if move_count > 0:
+        parts.append("planned march cancelled" if move_count == 1 else f"{move_count} planned marches cancelled")
+    if forage_count > 0:
+        parts.append("forage cancelled" if forage_count == 1 else f"{forage_count} forage actions cancelled")
+    if other_count > 0:
+        parts.append("active order cancelled" if other_count == 1 else f"{other_count} active orders cancelled")
+    if not parts:
+        return ""
+    if len(parts) == 1:
+        return parts[0]
+    if len(parts) == 2:
+        return f"{parts[0]} and {parts[1]}"
+    return f"{parts[0]}, {parts[1]}, and {parts[2]}"
+
+
+def _emit_supply_alerts_after_consumption(session: Session, clock: GameClock) -> None:
+    armies = session.query(Army).filter(Army.commander_id.is_not(None)).all()
+    for army in armies:
+        if army.commander_id is None:
+            continue
+        stats = supply_stats(army)
+        if army.army_supply <= 0:
+            _create_alert(
+                session,
+                recipient_commander_id=army.commander_id,
+                alert_type="report",
+                category="supply",
+                importance="high",
+                message="No supplies: troops going hungry!",
+                created_day=clock.day,
+                created_watch=clock.watch,
+            )
+            continue
+        days_estimate = stats.days_estimate
+        if days_estimate is None:
+            continue
+        days_remaining = max(0, int(math.floor(days_estimate)))
+        if days_remaining <= 7:
+            _create_alert(
+                session,
+                recipient_commander_id=army.commander_id,
+                alert_type="report",
+                category="supply",
+                importance="high" if days_remaining <= 2 else "normal",
+                message=f"Supplies low: {days_remaining} days remaining",
+                created_day=clock.day,
+                created_watch=clock.watch,
+            )
+
+
+def _emit_enemy_proximity_alerts(session: Session, clock: GameClock) -> None:
+    armies = session.query(Army).filter(Army.commander_id.is_not(None), Army.is_garrison.is_(False)).all()
+    for army in armies:
+        if army.commander_id is None:
+            continue
+        radius = _environs_radius_for_army(army)
+        disk = set(h3.grid_disk(army.location_id, radius))
+        visible_enemies = (
+            session.query(Army)
+            .filter(
+                Army.location_id.in_(disk),
+                Army.army_id != army.army_id,
+                Army.army_faction != army.army_faction,
+                Army.is_garrison.is_(False),
+            )
+            .all()
+        )
+        nearest_by_faction: dict[str, int] = {}
+        for enemy in visible_enemies:
+            distance = max(0, _grid_distance(army.location_id, enemy.location_id))
+            prior = nearest_by_faction.get(enemy.army_faction)
+            if prior is None or distance < prior:
+                nearest_by_faction[enemy.army_faction] = distance
+        for faction_name, distance in nearest_by_faction.items():
+            _create_alert(
+                session,
+                recipient_commander_id=army.commander_id,
+                alert_type="report",
+                category="contact",
+                importance="normal",
+                message=f"{faction_name} army {distance} leagues away",
+                created_day=clock.day,
+                created_watch=clock.watch,
+            )
+
+
 def _process_messages_tick(session: Session, clock: GameClock) -> dict[str, int]:
     due_messages = (
         session.query(Message)
@@ -267,6 +421,16 @@ def _process_messages_tick(session: Session, clock: GameClock) -> dict[str, int]
             lost += 1
         else:
             message.status = "received"
+            _create_alert(
+                session,
+                recipient_commander_id=message.recipient_id,
+                alert_type="report",
+                category="messages",
+                importance="normal",
+                message=f"Letter received from {_message_sender_display_name(message)}.",
+                created_day=clock.day,
+                created_watch=clock.watch,
+            )
             received += 1
     return {"received": received, "lost": lost}
 
@@ -380,6 +544,7 @@ def _get_or_create_standing_order(session: Session, commander_id: int) -> Standi
 
 
 def _set_standing_order_report(
+    session: Session,
     standing: StandingOrder,
     *,
     clock: GameClock,
@@ -392,6 +557,16 @@ def _set_standing_order_report(
     standing.updated_at = datetime.now(timezone.utc)
     if disable:
         standing.follow_road_enabled = False
+    _create_alert(
+        session,
+        recipient_commander_id=standing.commander_id,
+        alert_type="report",
+        category="standing-order",
+        importance="normal",
+        message=message,
+        created_day=clock.day,
+        created_watch=clock.watch,
+    )
 
 
 def _latest_previous_location_for_army(session: Session, army: Army) -> str | None:
@@ -465,6 +640,7 @@ def _maybe_disable_follow_road_on_crossroads_entry(
     )
     if reason_code == "crossroads":
         _set_standing_order_report(
+            session,
             standing,
             clock=clock,
             message=reason_message or "Crossroads reached, new orders needed.",
@@ -492,6 +668,16 @@ def _apply_plan(
             standing.last_report_day = clock.day
             standing.last_report_watch = clock.watch
             standing.updated_at = datetime.now(timezone.utc)
+            _create_alert(
+                session,
+                recipient_commander_id=commander_id,
+                alert_type="action",
+                category="standing-order",
+                importance="normal",
+                message="Standing order cancelled: follow road.",
+                created_day=clock.day,
+                created_watch=clock.watch,
+            )
 
     active_actions = (
         session.query(Action)
@@ -578,6 +764,7 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
         army = session.query(Army).filter(Army.commander_id == standing.commander_id).first()
         if army is None:
             _set_standing_order_report(
+                session,
                 standing,
                 clock=clock,
                 message="Road march halted: no field army available for this commander.",
@@ -588,6 +775,7 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
         previous_h3 = _latest_previous_location_for_army(session, army)
         if not previous_h3:
             _set_standing_order_report(
+                session,
                 standing,
                 clock=clock,
                 message="Road march halted: previous position unknown; new orders needed.",
@@ -616,6 +804,7 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
 
         if not path:
             _set_standing_order_report(
+                session,
                 standing,
                 clock=clock,
                 message=stop_reason or "Road march halted: unable to continue.",
@@ -636,6 +825,7 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
             )
         except HTTPException as exc:
             _set_standing_order_report(
+                session,
                 standing,
                 clock=clock,
                 message=f"Road march halted: {exc.detail}",
@@ -646,12 +836,23 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
         standing.last_report_day = clock.day
         standing.last_report_watch = clock.watch
         standing.updated_at = datetime.now(timezone.utc)
+        _create_alert(
+            session,
+            recipient_commander_id=standing.commander_id,
+            alert_type="action",
+            category="standing-order",
+            importance="normal",
+            message="Next day's march planned according to standing orders",
+            created_day=clock.day,
+            created_watch=clock.watch,
+        )
         if stop_reason:
             # Crossroads should disable only when the army actually enters the junction.
             # If a partial path was staged up to a crossroads, keep standing order enabled
             # for now; completion tick will disable/report on entry.
             if not (stop_reason_code == "crossroads" and path):
                 _set_standing_order_report(
+                    session,
                     standing,
                     clock=clock,
                     message=stop_reason,
@@ -1134,6 +1335,7 @@ def advance_time_for_development(
         supply_result = None
         if clock.watch == int(Watch.NIGHT):
             supply_result = consume_supply_for_all_armies(session)
+            _emit_supply_alerts_after_consumption(session, clock)
         message_result = _process_messages_tick(session, clock)
         tick_result = {"started": 0, "completed": 0, "failed": 0}
         if payload.execute_actions:
@@ -1142,6 +1344,7 @@ def advance_time_for_development(
             actions_started += tick_result["started"]
             actions_completed += tick_result["completed"]
             actions_failed += tick_result["failed"]
+        _emit_enemy_proximity_alerts(session, clock)
         timeline.append(
             {
                 "time": _clock_payload(clock),
@@ -1284,6 +1487,16 @@ def create_action(
         standing.last_report_day = clock.day
         standing.last_report_watch = clock.watch
         standing.updated_at = datetime.now(timezone.utc)
+        _create_alert(
+            session,
+            recipient_commander_id=commander_id,
+            alert_type="action",
+            category="standing-order",
+            importance="normal",
+            message="Standing order cancelled: follow road.",
+            created_day=clock.day,
+            created_watch=clock.watch,
+        )
     action_params: dict[str, Any] = {}
     if payload.kind == "move":
         if clock.watch == int(Watch.NIGHT):
@@ -1389,6 +1602,24 @@ def plan_actions(
         now=datetime.now(timezone.utc),
         disable_follow_road=True,
     )
+    cancelled_note = _cancellation_narrative(cancelled_by_kind)
+    if payload.kind == "march" and not path:
+        alert_message = f"Halt ordered, {cancelled_note}." if cancelled_note else "Halt ordered."
+    elif payload.kind == "forage":
+        alert_message = f"Forage ordered, {cancelled_note}." if cancelled_note else "Forage ordered."
+    else:
+        march_text = f"{len(path)}-league march ordered"
+        alert_message = f"{march_text}, {cancelled_note}." if cancelled_note else f"{march_text}."
+    _create_alert(
+        session,
+        recipient_commander_id=commander_id,
+        alert_type="action",
+        category="orders",
+        importance="normal",
+        message=alert_message,
+        created_day=clock.day,
+        created_watch=clock.watch,
+    )
 
     session.commit()
     for action in created_actions:
@@ -1429,6 +1660,7 @@ def set_follow_road_standing_order(
     session: Session = Depends(_get_session),
 ):
     standing = _get_or_create_standing_order(session, commander_id)
+    clock = _get_or_create_clock(session)
     if payload.enabled and not standing.follow_road_enabled:
         current_action = _get_current_action_row(session, commander_id)
         if current_action is None:
@@ -1441,11 +1673,30 @@ def set_follow_road_standing_order(
         standing.last_report = "Standing order active: follow road."
         standing.last_report_day = None
         standing.last_report_watch = None
+        _create_alert(
+            session,
+            recipient_commander_id=commander_id,
+            alert_type="action",
+            category="standing-order",
+            importance="normal",
+            message="Standing order active: follow road.",
+            created_day=clock.day,
+            created_watch=clock.watch,
+        )
     else:
         standing.last_report = "Standing order cancelled: follow road."
-        clock = _get_or_create_clock(session)
         standing.last_report_day = clock.day
         standing.last_report_watch = clock.watch
+        _create_alert(
+            session,
+            recipient_commander_id=commander_id,
+            alert_type="action",
+            category="standing-order",
+            importance="normal",
+            message="Standing order cancelled: follow road.",
+            created_day=clock.day,
+            created_watch=clock.watch,
+        )
     standing.updated_at = datetime.now(timezone.utc)
     session.commit()
     session.refresh(standing)
@@ -1483,6 +1734,31 @@ def get_current_action(
     if current is None:
         return None
     return _serialize_action(current)
+
+
+@router.get("/me/alerts")
+def list_alerts(
+    limit: int = Query(default=25, ge=1, le=200),
+    unread_only: bool = Query(default=False),
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    clock = _get_or_create_clock(session)
+    query = session.query(Alert).filter(
+        or_(Alert.recipient_commander_id == commander_id, Alert.recipient_commander_id.is_(None)),
+        or_(
+            Alert.delivered_day < clock.day,
+            and_(Alert.delivered_day == clock.day, Alert.delivered_watch <= clock.watch),
+        )
+    )
+    if unread_only:
+        query = query.filter(Alert.is_read.is_(False))
+    alerts = (
+        query.order_by(Alert.delivered_day.desc(), Alert.delivered_watch.desc(), Alert.alert_id.desc())
+        .limit(limit)
+        .all()
+    )
+    return [_serialize_alert(alert) for alert in alerts]
 
 
 @router.post("/me/actions/{action_id}/cancel")
@@ -1539,6 +1815,16 @@ def send_message(
         priority=payload.priority,
         sent_day=clock.day,
         sent_watch=clock.watch,
+    )
+    _create_alert(
+        session,
+        recipient_commander_id=commander_id,
+        alert_type="report",
+        category="messages",
+        importance="normal",
+        message=f"Letter sent to {_commander_display_name(recipient)}.",
+        created_day=clock.day,
+        created_watch=clock.watch,
     )
     session.commit()
     session.refresh(message)

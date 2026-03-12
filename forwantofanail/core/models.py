@@ -69,6 +69,12 @@ class Commander(Base):
         foreign_keys="Message.recipient_id",
     )
     auth_tokens = relationship("AuthToken", back_populates="commander", cascade="all, delete-orphan")
+    alerts = relationship(
+        "Alert",
+        back_populates="recipient",
+        cascade="all, delete-orphan",
+        foreign_keys="Alert.recipient_commander_id",
+    )
     standing_order = relationship(
         "StandingOrder",
         back_populates="commander",
@@ -245,3 +251,32 @@ class Message(Base):
         foreign_keys=[sender_stronghold_id],
     )
     recipient = relationship("Commander", back_populates="received_messages", foreign_keys=[recipient_id])
+
+
+class Alert(Base):
+    __tablename__ = "alerts"
+
+    alert_id = Column(Integer, primary_key=True, autoincrement=True)
+    recipient_commander_id = Column(
+        Integer,
+        ForeignKey("commanders.commander_id"),
+        nullable=True,
+        index=True,
+    )
+    alert_type = Column(String(20), nullable=False, index=True)
+    category = Column(String(40), nullable=False, default="general", index=True)
+    importance = Column(String(20), nullable=False, default="normal", index=True)
+    message = Column(Text, nullable=False)
+    payload_json = Column(Text, nullable=False, default="{}")
+    created_day = Column(Integer, nullable=False, index=True)
+    created_watch = Column(Integer, nullable=False, index=True)
+    delivered_day = Column(Integer, nullable=False, index=True)
+    delivered_watch = Column(Integer, nullable=False, index=True)
+    is_read = Column(Boolean, nullable=False, default=False, index=True)
+    created_at = Column(DateTime, nullable=False, index=True)
+
+    recipient = relationship(
+        "Commander",
+        back_populates="alerts",
+        foreign_keys=[recipient_commander_id],
+    )

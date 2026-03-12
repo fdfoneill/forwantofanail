@@ -496,12 +496,7 @@
       remainingItinerary: [],
       validNextMoves: new Set(),
       alerts: [],
-      inboxInitialized: false,
-      seenMessageIds: new Set(),
-      lastWatchAlertKey: null,
-      previousSupplyCurrent: null,
       followRoadEnabled: false,
-      lastStandingReportKey: null,
     };
 
     const TERRAIN_COLORS = {
@@ -588,18 +583,6 @@
       els.alertList.innerHTML = rows.join("");
     }
 
-    function addAlert(message) {
-      const text = String(message || "").trim();
-      if (!text) {
-        return;
-      }
-      state.alerts.unshift(text);
-      if (state.alerts.length > 25) {
-        state.alerts = state.alerts.slice(0, 25);
-      }
-      renderAlerts();
-    }
-
     function renderStandingOrderToggle() {
       const enabled = !!state.followRoadEnabled;
       els.followRoadToggleInput.checked = enabled;
@@ -608,7 +591,7 @@
       els.followRoadToggleInput.disabled = !state.token || (!enabled && !canEnableFromOff);
     }
 
-    function processStandingOrderReports(view) {
+    function processStandingOrderState(view) {
       const followRoad = view?.standing_orders?.follow_road || {};
       const nextEnabled = !!followRoad.enabled;
       const wasEnabled = !!state.followRoadEnabled;
@@ -621,80 +604,6 @@
         refreshValidNextMoves().catch(() => {});
       }
       renderStandingOrderToggle();
-
-      const reportText = String(followRoad.last_report || "").trim();
-      if (!reportText) {
-        return;
-      }
-      const reportDay = Number(followRoad.last_report_day);
-      const reportWatch = Number(followRoad.last_report_watch);
-      const key = `${Number.isFinite(reportDay) ? reportDay : "x"}:${Number.isFinite(reportWatch) ? reportWatch : "x"}:${reportText}`;
-      if (state.lastStandingReportKey === key) {
-        return;
-      }
-      state.lastStandingReportKey = key;
-      addAlert(reportText);
-    }
-
-    function processWatchAlerts(view) {
-      if (!view) {
-        return;
-      }
-      const day = Number(view?.time?.day);
-      const watch = Number(view?.time?.watch);
-      if (!Number.isFinite(day) || !Number.isFinite(watch)) {
-        return;
-      }
-      const watchKey = `${day}:${watch}`;
-      const didWatchAdvance = state.lastWatchAlertKey !== watchKey;
-      const supplyCurrent = Number(view?.army?.supply?.current);
-      const previousSupply = Number(state.previousSupplyCurrent);
-      const consumedSupply =
-        didWatchAdvance &&
-        Number.isFinite(supplyCurrent) &&
-        Number.isFinite(previousSupply) &&
-        supplyCurrent < previousSupply;
-      if (consumedSupply) {
-        if (supplyCurrent <= 0) {
-          addAlert("No supplies: troops going hungry!");
-        } else {
-          const daysEstimate = Number(view?.army?.supply?.days_estimate);
-          const daysRemaining = Number.isFinite(daysEstimate) ? Math.max(0, Math.floor(daysEstimate)) : null;
-          if (daysRemaining != null && daysRemaining <= 7) {
-            addAlert(`Supplies low: ${daysRemaining} days remaining`);
-          }
-        }
-      }
-      if (didWatchAdvance) {
-        const ownFaction = String(view?.army?.faction || "").trim().toLowerCase();
-        const nearestByFaction = new Map();
-        const cells = Array.isArray(view?.environs?.cells) ? view.environs.cells : [];
-        for (const cell of cells) {
-          const otherArmies = Array.isArray(cell?.other_armies) ? cell.other_armies : [];
-          for (const intel of otherArmies) {
-            const factionName = String(intel?.faction || "").trim();
-            if (!factionName) {
-              continue;
-            }
-            if (ownFaction && factionName.toLowerCase() === ownFaction) {
-              continue;
-            }
-            const distance = Number(intel?.distance_cells);
-            if (!Number.isFinite(distance)) {
-              continue;
-            }
-            const prior = nearestByFaction.get(factionName);
-            if (prior == null || distance < prior) {
-              nearestByFaction.set(factionName, distance);
-            }
-          }
-        }
-        for (const [factionName, distance] of nearestByFaction.entries()) {
-          addAlert(`${factionName} army ${distance} leagues away`);
-        }
-      }
-      state.lastWatchAlertKey = watchKey;
-      state.previousSupplyCurrent = Number.isFinite(supplyCurrent) ? supplyCurrent : null;
     }
 
     function watchDisplayName(value) {
@@ -704,35 +613,6 @@
       }
       const base = WATCH_NAME_BY_INDEX[index] || "Unknown";
       return `${base} Watch`;
-    }
-
-    function cancellationNarrative(cancelledByKind) {
-      const summary = cancelledByKind && typeof cancelledByKind === "object" ? cancelledByKind : {};
-      const parts = [];
-      const moveCount = Number(summary.move || 0);
-      const forageCount = Number(summary.forage || 0);
-      const otherCount = Object.entries(summary)
-        .filter(([kind]) => kind !== "move" && kind !== "forage")
-        .reduce((total, [, count]) => total + Number(count || 0), 0);
-      if (moveCount > 0) {
-        parts.push(moveCount === 1 ? "planned march cancelled" : `${moveCount} planned marches cancelled`);
-      }
-      if (forageCount > 0) {
-        parts.push(forageCount === 1 ? "forage cancelled" : `${forageCount} forage actions cancelled`);
-      }
-      if (otherCount > 0) {
-        parts.push(otherCount === 1 ? "active order cancelled" : `${otherCount} active orders cancelled`);
-      }
-      if (!parts.length) {
-        return "";
-      }
-      if (parts.length === 1) {
-        return parts[0];
-      }
-      if (parts.length === 2) {
-        return `${parts[0]} and ${parts[1]}`;
-      }
-      return `${parts[0]}, ${parts[1]}, and ${parts[2]}`;
     }
 
     function armyStatusText(view) {
@@ -1122,26 +1002,24 @@
       if (!state.token) {
         state.inbox = [];
         state.openMessageId = null;
-        state.inboxInitialized = false;
-        state.seenMessageIds = new Set();
         els.messageRead.textContent = "Select a letter to read.";
         renderInbox();
         return;
       }
       const nextInbox = await api("/v1/me/messages", {}, true);
-      if (state.inboxInitialized) {
-        for (const msg of nextInbox) {
-          const id = String(msg.id || "");
-          if (!id || state.seenMessageIds.has(id)) {
-            continue;
-          }
-          addAlert(`Letter received from ${msg?.from?.name || "unknown sender"}.`);
-        }
-      }
-      state.seenMessageIds = new Set(nextInbox.map((msg) => String(msg.id || "")).filter(Boolean));
-      state.inboxInitialized = true;
       state.inbox = nextInbox;
       renderInbox();
+    }
+
+    async function refreshAlerts() {
+      if (!state.token) {
+        state.alerts = [];
+        renderAlerts();
+        return;
+      }
+      const rows = await api("/v1/me/alerts?limit=25", {}, true);
+      state.alerts = rows.map((item) => String(item?.message || "").trim()).filter(Boolean);
+      renderAlerts();
     }
 
     function projectCells(cells, width, height) {
@@ -1612,8 +1490,7 @@
       state.view = view;
       state.remainingItinerary = Array.isArray(view?.itinerary?.remaining_moves) ? view.itinerary.remaining_moves.map(String) : [];
       state.borderRoadNeighbors = new Set((borderRoads.roads || []).map((value) => String(value)));
-      processWatchAlerts(view);
-      processStandingOrderReports(view);
+      processStandingOrderState(view);
       updateMetadata(view);
       renderOrdersPanel();
       await refreshValidNextMoves();
@@ -1625,6 +1502,7 @@
       await refreshView();
       await refreshCorrespondents();
       await refreshInbox();
+      await refreshAlerts();
     }
 
     els.commanderSelect.addEventListener("change", async (event) => {
@@ -1637,12 +1515,7 @@
         state.correspondents = [];
         state.inbox = [];
         state.openMessageId = null;
-        state.inboxInitialized = false;
-        state.seenMessageIds = new Set();
-        state.lastWatchAlertKey = null;
-        state.previousSupplyCurrent = null;
         state.followRoadEnabled = false;
-        state.lastStandingReportKey = null;
         state.orderMode = "march";
         state.stagedPath = [];
         state.remainingItinerary = [];
@@ -1675,10 +1548,7 @@
         state.stagedPath = [];
         state.remainingItinerary = [];
         state.validNextMoves = new Set();
-        state.lastWatchAlertKey = null;
-        state.previousSupplyCurrent = null;
         state.followRoadEnabled = false;
-        state.lastStandingReportKey = null;
         await refreshAllPanels();
       } catch (err) {
         setStatus(`Login/load error: ${err.message}`, true);
@@ -1736,6 +1606,7 @@
           );
           state.followRoadEnabled = !!payload?.follow_road?.enabled;
           renderStandingOrderToggle();
+          await refreshAlerts();
         } catch (err) {
           renderStandingOrderToggle();
           setStatus(`Standing order update failed: ${err.message}`, true);
@@ -1771,7 +1642,6 @@
         }
         try {
           let payload;
-          let plannedLeagues = 0;
           if (state.orderMode === "forage") {
             payload = { kind: "forage", path: [] };
           } else {
@@ -1780,9 +1650,8 @@
               return;
             }
             payload = { kind: "march", path: state.stagedPath.slice() };
-            plannedLeagues = payload.path.length;
           }
-          const result = await api(
+          await api(
             "/v1/me/actions/plan",
             {
               method: "POST",
@@ -1794,24 +1663,7 @@
           state.validNextMoves = new Set();
           renderOrdersPanel();
           await refreshView();
-          const cancelled = Number(result.cancelled_count ?? result.cancelled_queued_count ?? 0);
-          const cancelledNote = cancellationNarrative(result.cancelled_by_kind);
-          if (result.hold) {
-            addAlert(cancelledNote ? `Halt ordered, ${cancelledNote}.` : "Halt ordered.");
-          } else if (state.orderMode === "forage") {
-            if (cancelled > 0 && cancelledNote) {
-              addAlert(`Forage ordered, ${cancelledNote}.`);
-            } else {
-              addAlert("Forage ordered.");
-            }
-          } else {
-            const marchText = `${plannedLeagues}-league march ordered`;
-            if (cancelled > 0 && cancelledNote) {
-              addAlert(`${marchText}, ${cancelledNote}.`);
-            } else {
-              addAlert(`${marchText}.`);
-            }
-          }
+          await refreshAlerts();
         } catch (err) {
           setStatus(`Order submit failed: ${err.message}`, true);
         }
@@ -1842,7 +1694,6 @@
           return;
         }
         try {
-          const recipientName = els.recipientSelect.options[els.recipientSelect.selectedIndex]?.textContent || recipientId;
           await api(
             "/v1/me/messages",
             {
@@ -1854,7 +1705,7 @@
           els.letterInput.value = "";
           els.composeBox.setAttribute("hidden", "");
           els.composeToggleBtn.textContent = "Send Letter";
-          addAlert(`Letter sent to ${recipientName}.`);
+          await refreshAlerts();
           await refreshInbox();
         } catch (err) {
           setStatus(`Send failed: ${err.message}`, true);
