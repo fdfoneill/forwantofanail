@@ -706,6 +706,35 @@
       return `${base} Watch`;
     }
 
+    function cancellationNarrative(cancelledByKind) {
+      const summary = cancelledByKind && typeof cancelledByKind === "object" ? cancelledByKind : {};
+      const parts = [];
+      const moveCount = Number(summary.move || 0);
+      const forageCount = Number(summary.forage || 0);
+      const otherCount = Object.entries(summary)
+        .filter(([kind]) => kind !== "move" && kind !== "forage")
+        .reduce((total, [, count]) => total + Number(count || 0), 0);
+      if (moveCount > 0) {
+        parts.push(moveCount === 1 ? "planned march cancelled" : `${moveCount} planned marches cancelled`);
+      }
+      if (forageCount > 0) {
+        parts.push(forageCount === 1 ? "forage cancelled" : `${forageCount} forage actions cancelled`);
+      }
+      if (otherCount > 0) {
+        parts.push(otherCount === 1 ? "active order cancelled" : `${otherCount} active orders cancelled`);
+      }
+      if (!parts.length) {
+        return "";
+      }
+      if (parts.length === 1) {
+        return parts[0];
+      }
+      if (parts.length === 2) {
+        return `${parts[0]} and ${parts[1]}`;
+      }
+      return `${parts[0]}, ${parts[1]}, and ${parts[2]}`;
+    }
+
     function armyStatusText(view) {
       const armyName = String(view?.army?.name || "Army").trim() || "Army";
       const watch = Number(view?.time?.watch);
@@ -1741,7 +1770,6 @@
           return;
         }
         try {
-          const previousKind = String(state.view?.current_action?.kind || "").trim().toLowerCase();
           let payload;
           let plannedLeagues = 0;
           if (state.orderMode === "forage") {
@@ -1767,22 +1795,19 @@
           renderOrdersPanel();
           await refreshView();
           const cancelled = Number(result.cancelled_count ?? result.cancelled_queued_count ?? 0);
+          const cancelledNote = cancellationNarrative(result.cancelled_by_kind);
           if (result.hold) {
-            addAlert(cancelled > 0 ? `Halt ordered. ${cancelled} active action(s) cancelled.` : "Halt ordered.");
+            addAlert(cancelledNote ? `Halt ordered, ${cancelledNote}.` : "Halt ordered.");
           } else if (state.orderMode === "forage") {
-            if (cancelled > 0 && previousKind === "forage") {
-              addAlert("Forage ordered, previous forage interrupted.");
-            } else if (cancelled > 0) {
-              addAlert(`Forage ordered, ${cancelled} active action(s) interrupted.`);
+            if (cancelled > 0 && cancelledNote) {
+              addAlert(`Forage ordered, ${cancelledNote}.`);
             } else {
               addAlert("Forage ordered.");
             }
           } else {
             const marchText = `${plannedLeagues}-league march ordered`;
-            if (cancelled > 0 && previousKind === "forage") {
-              addAlert(`${marchText}, forage interrupted.`);
-            } else if (cancelled > 0) {
-              addAlert(`${marchText}, ${cancelled} active action(s) interrupted.`);
+            if (cancelled > 0 && cancelledNote) {
+              addAlert(`${marchText}, ${cancelledNote}.`);
             } else {
               addAlert(`${marchText}.`);
             }
