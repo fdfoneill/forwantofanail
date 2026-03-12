@@ -387,6 +387,11 @@
       stroke: #3f3b34;
       stroke-width: 1.15;
     }
+    .cell-poly.valid-move-hover,
+    .cell-poly.valid-move-hover:hover {
+      stroke: #d7891f;
+      stroke-width: 2.4;
+    }
     .cell-poly.center-cell,
     .cell-poly.center-cell:hover {
       stroke: #ffffff;
@@ -808,12 +813,14 @@
       }
       renderStagedPathList();
       updateStageMoveButtonVisibility(state.hoverH3);
+      updateHoveredMoveOutline(state.hoverH3);
     }
 
     async function refreshValidNextMoves() {
       state.validNextMoves = new Set();
       if (!state.token || !state.view || state.orderMode !== "march") {
         updateStageMoveButtonVisibility(state.hoverH3);
+        updateHoveredMoveOutline(state.hoverH3);
         return;
       }
       const origin = state.stagedPath.length
@@ -821,12 +828,14 @@
         : state.view.environs.center_h3;
       if (!origin) {
         updateStageMoveButtonVisibility(state.hoverH3);
+        updateHoveredMoveOutline(state.hoverH3);
         return;
       }
       const payload = await api(`/v1/me/actions/valid-next?origin_h3=${encodeURIComponent(origin)}`, {}, true);
       const valid = Array.isArray(payload.valid_destinations) ? payload.valid_destinations : [];
       state.validNextMoves = new Set(valid.map((value) => String(value)));
       updateStageMoveButtonVisibility(state.hoverH3);
+      updateHoveredMoveOutline(state.hoverH3);
     }
 
     function canStageMove(targetH3) {
@@ -866,6 +875,29 @@
     function updateStageMoveButtonVisibility(h3Index) {
       const shouldShow = !!h3Index && canStageMove(h3Index).ok;
       els.queueMoveBtn.style.display = shouldShow ? "" : "none";
+    }
+
+    function clearHoveredMoveOutline() {
+      els.mapCanvas.querySelectorAll(".cell-poly.valid-move-hover").forEach((poly) => {
+        poly.classList.remove("valid-move-hover");
+      });
+    }
+
+    function updateHoveredMoveOutline(h3Index) {
+      clearHoveredMoveOutline();
+      if (!canClickStageMode()) {
+        return;
+      }
+      if (!h3Index || !canStageMove(h3Index).ok) {
+        return;
+      }
+      const polys = els.mapCanvas.querySelectorAll(".cell-poly");
+      for (const poly of polys) {
+        if ((poly.dataset.h3 || "") === h3Index) {
+          poly.classList.add("valid-move-hover");
+          break;
+        }
+      }
     }
 
     function canClickStageMode() {
@@ -1424,11 +1456,13 @@
         `<g>${itineraryOverlays.join("")}</g>` +
         `<g>${stagedOverlays.join("")}</g>`;
       bindHoverHandlers();
+      updateHoveredMoveOutline(state.hoverH3);
     }
 
     function hideHoverCard() {
       state.hoverH3 = null;
       els.hoverCard.style.display = "none";
+      clearHoveredMoveOutline();
     }
 
     function positionHoverCard(clientX, clientY) {
@@ -1480,11 +1514,13 @@
           `<div><span class=\"k\">Settlement:</span>${settlementText}</div>` +
           `<div><span class=\"k\">Foraged This Season:</span>${foragedText}</div>`;
         updateStageMoveButtonVisibility(h3Index);
+        updateHoveredMoveOutline(h3Index);
       } else {
         els.hoverTitle.textContent = "Cell";
         els.hoverTitle.classList.remove("stronghold");
         els.hoverMeta.innerHTML = "";
         updateStageMoveButtonVisibility(null);
+        updateHoveredMoveOutline(null);
       }
       els.hoverCard.style.display = "block";
       positionHoverCard(clientX, clientY);
@@ -1646,10 +1682,12 @@
       els.orderToggleBtn.addEventListener("click", () => {
         els.ordersBox.removeAttribute("hidden");
         els.orderToggleBtn.setAttribute("hidden", "");
+        updateHoveredMoveOutline(state.hoverH3);
       });
       els.hideOrdersBtn.addEventListener("click", () => {
         els.ordersBox.setAttribute("hidden", "");
         els.orderToggleBtn.removeAttribute("hidden");
+        updateHoveredMoveOutline(state.hoverH3);
       });
       els.followRoadToggleInput.addEventListener("change", async () => {
         if (!state.token) {
