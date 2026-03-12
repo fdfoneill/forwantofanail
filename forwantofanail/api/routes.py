@@ -415,14 +415,14 @@ def _next_road_cell(
     *,
     current_h3: str,
     last_h3: str,
-) -> tuple[str | None, str | None]:
+) -> tuple[str | None, str | None, str | None]:
     try:
         adjacent = set(h3.grid_ring(current_h3, 1))
     except Exception:
-        return None, "Road march halted: unable to inspect adjacent cells."
+        return None, "error", "Road march halted: unable to inspect adjacent cells."
 
     if not adjacent:
-        return None, "Road march halted: no adjacent cells."
+        return None, "dead_end", "Road march halted: no adjacent cells."
 
     road_adjacent = {
         row[0]
@@ -437,10 +437,39 @@ def _next_road_cell(
         if cell_h3 != last_h3 and cell_h3 in valid_from_current
     )
     if len(candidates) == 1:
-        return candidates[0], None
+        return candidates[0], None, None
     if len(candidates) == 0:
-        return None, "Road march halted: no onward road; new orders needed."
-    return None, "Crossroads reached, new orders needed."
+        return None, "dead_end", "Road march halted: no onward road; new orders needed."
+    return None, "crossroads", "Crossroads reached, new orders needed."
+
+
+def _maybe_disable_follow_road_on_crossroads_entry(
+    session: Session,
+    *,
+    army: Army,
+    origin_h3: str,
+    destination_h3: str,
+    clock: GameClock,
+) -> None:
+    if army.commander_id is None:
+        return
+    standing = session.get(StandingOrder, army.commander_id)
+    if standing is None or not standing.follow_road_enabled:
+        return
+
+    _, reason_code, reason_message = _next_road_cell(
+        session,
+        army,
+        current_h3=destination_h3,
+        last_h3=origin_h3,
+    )
+    if reason_code == "crossroads":
+        _set_standing_order_report(
+            standing,
+            clock=clock,
+            message=reason_message or "Crossroads reached, new orders needed.",
+            disable=True,
+        )
 
 
 def _apply_plan(
@@ -565,14 +594,16 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
         current_h3 = army.location_id
         last_h3 = previous_h3
         stop_reason: str | None = None
+        stop_reason_code: str | None = None
         for _ in range(MAX_FOLLOW_ROAD_STEPS):
-            next_h3, reason = _next_road_cell(
+            next_h3, reason_code, reason = _next_road_cell(
                 session,
                 army,
                 current_h3=current_h3,
                 last_h3=last_h3,
             )
             if next_h3 is None:
+                stop_reason_code = reason_code
                 stop_reason = reason or "Road march halted: unable to continue."
                 break
             path.append(next_h3)
@@ -607,12 +638,16 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
             )
             continue
         if stop_reason:
-            _set_standing_order_report(
-                standing,
-                clock=clock,
-                message=stop_reason,
-                disable=True,
-            )
+            # Crossroads should disable only when the army actually enters the junction.
+            # If a partial path was staged up to a crossroads, keep standing order enabled
+            # for now; completion tick will disable/report on entry.
+            if not (stop_reason_code == "crossroads" and path):
+                _set_standing_order_report(
+                    standing,
+                    clock=clock,
+                    message=stop_reason,
+                    disable=True,
+                )
         else:
             standing.updated_at = datetime.now(timezone.utc)
 
@@ -705,7 +740,9 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
                     failed += 1
                     continue
                 # Keep FK and relationship state consistent for follow-on queued actions in the same tick.
+                origin_h3 = army.location_id
                 army.location = destination_location
+                army.location_id = destination_h3
                 session.add(
                     Movement(
                         army_id=army.army_id,
@@ -713,6 +750,13 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
                         date=_scenario_date_for_day(clock.day),
                         watch=clock.watch,
                     )
+                )
+                _maybe_disable_follow_road_on_crossroads_entry(
+                    session,
+                    army=army,
+                    origin_h3=origin_h3,
+                    destination_h3=destination_h3,
+                    clock=clock,
                 )
                 action.state = "completed"
                 completed += 1
@@ -1081,11 +1125,11 @@ def advance_time_for_development(
         supply_result = None
         if clock.watch == int(Watch.NIGHT):
             supply_result = consume_supply_for_all_armies(session)
-        _auto_apply_follow_road_orders(session, clock)
         message_result = _process_messages_tick(session, clock)
         tick_result = {"started": 0, "completed": 0, "failed": 0}
         if payload.execute_actions:
             tick_result = _execute_action_tick(session, clock)
+            _auto_apply_follow_road_orders(session, clock)
             actions_started += tick_result["started"]
             actions_completed += tick_result["completed"]
             actions_failed += tick_result["failed"]
