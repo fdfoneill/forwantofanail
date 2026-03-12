@@ -37,7 +37,9 @@ forwantofanail/
         └── static/
             ├── dev_dashboard.html
             ├── player_dashboard.html
-            └── icons/strongholds/
+            └── icons/
+                ├── strongholds/
+                └── armies/
 ```
 
 # Getting Started
@@ -86,8 +88,13 @@ The dev dashboard includes an Admin Token field for this.
 
 * `GET /v1/commanders` returns commander names for dashboard login selection.
 * `GET /v1/me/roads/border?cells=...` returns adjacent off-environs road cells for player-map border road stubs.
+* `GET /v1/me/actions/valid-next` returns valid march destinations from an origin cell for client-side staging validation.
+* `POST /v1/me/actions/plan` replaces active queue with either forage, a staged march path, or halt (empty march path).
+* `GET /v1/me/orders/standing` and `POST /v1/me/orders/standing/follow-road` manage standing-order state.
+* `GET /v1/me/alerts` returns delivered alerts for the active commander, including global alerts.
+* `follow-road` standing order cannot be enabled while the army is holding (no active action).
 * Actions support queueing: multiple `queued` actions per commander, one `in_progress`.
-* Movement does not start or complete during watch `0` (Night).
+* Movement does not start during watch `0` (Night), but in-progress movement can complete at Night.
 * Supply is consumed once daily at the transition into watch `0` (Night).
 
 # Data Structure
@@ -195,8 +202,31 @@ Table: messages
 - is_read BOOL
 - created_at DATETIME
 
+Table: standing_orders
+- commander_id INT PRIMARY KEY FOREIGN KEY REFERENCES commanders(commander_id)
+- follow_road_enabled BOOL
+- last_report TEXT NULL
+- last_report_day INT NULL
+- last_report_watch INT NULL
+- updated_at DATETIME
+
+Table: alerts
+- alert_id INT PRIMARY KEY
+- recipient_commander_id INT NULL FOREIGN KEY REFERENCES commanders(commander_id)   # NULL => global/all players
+- alert_type VARCHAR(20)   # world event | action | report | violence
+- category VARCHAR(40)
+- importance VARCHAR(20)
+- message TEXT
+- payload_json TEXT
+- created_day INT
+- created_watch INT
+- delivered_day INT
+- delivered_watch INT
+- is_read BOOL
+- created_at DATETIME
+
 # Turn Structure and Movement
-Each in-game day is divided into five Watches: Matin, Prime, Noon, Vesper, and Night. In the current implementation, movement actions progress only during watches 1-4; watch 0 (Night) is a rest watch where movement does not start or complete.
+Each in-game day is divided into five Watches: Matin, Prime, Noon, Vesper, and Night. In the current implementation, movement actions do not start during watch 0 (Night), but an in-progress move may complete at Night if its ETA is reached.
 
 The LOCATIONS table divides the game map into a collection of discrete locations. This can be visualized as overlaying a tiling of hexagonal cells onto the region. The LOCATION_ID field contains h3 indices, which can be used to determine adjacency between cells. The h3 values are only used for graph connectivity; the scale is set at 1 league per cell. 
 
