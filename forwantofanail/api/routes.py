@@ -642,7 +642,7 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
                 disable=True,
             )
             continue
-        standing.last_report = "March planned according to standing orders"
+        standing.last_report = "Next day's march planned according to standing orders"
         standing.last_report_day = clock.day
         standing.last_report_watch = clock.watch
         standing.updated_at = datetime.now(timezone.utc)
