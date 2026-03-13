@@ -1074,6 +1074,7 @@
         .map((item) => ({
           message: normalizeAlertMessage(item?.message),
           importance: String(item?.importance || "normal").toLowerCase(),
+          signal_kind: String(item?.signal_kind || "event").toLowerCase(),
         }));
       renderAlerts();
     }
