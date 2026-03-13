@@ -55,7 +55,7 @@ WATCH_LABELS = {
     Watch.VESPER: "vesper",
 }
 ACTIVE_ACTION_STATES = {"queued", "in_progress"}
-SCENARIO_EPOCH = date(2000, 1, 1)
+SCENARIO_EPOCH = date(1410, 5, 20)
 MESSAGE_LOSS_PROBABILITY = 0.0
 MAX_FOLLOW_ROAD_STEPS = 4
 ALERT_TYPES = {"world event", "action", "report", "violence"}
@@ -185,6 +185,7 @@ def _clock_payload(clock: GameClock) -> dict[str, int | str]:
     watch_enum = Watch(int(clock.watch))
     return {
         "day": clock.day,
+        "calendar_date": _scenario_date_for_day(clock.day).isoformat(),
         "watch": int(clock.watch),
         "watch_label": WATCH_LABELS[watch_enum],
     }
@@ -415,9 +416,11 @@ def _emit_stronghold_conquest_alerts(
     new_faction: str,
     clock: GameClock,
 ) -> None:
+    event_date = _scenario_date_for_day(clock.day)
+    watch_name = WATCH_LABELS.get(Watch(int(clock.watch)), "watch").capitalize()
     message = (
         f"{stronghold.stronghold_name} was conquered by {new_faction} "
-        f"on day {clock.day}/watch {clock.watch}"
+        f"on {event_date.strftime('%B %d, %Y')}, {watch_name} Watch"
     )
     commanders = session.query(Commander).order_by(Commander.commander_id.asc()).all()
     for commander in commanders:
@@ -527,7 +530,7 @@ def _remaining_march_steps_for_watch(watch: int) -> int:
 
 
 def _scenario_date_for_day(day: int) -> date:
-    return SCENARIO_EPOCH + timedelta(days=max(day - 1, 0))
+    return SCENARIO_EPOCH + timedelta(days=max(day, 0))
 
 
 def _get_destination_h3(action: Action) -> str | None:

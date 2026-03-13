@@ -542,6 +542,10 @@
       3: "Midday",
       4: "Vesper",
     };
+    const MONTH_NAMES = [
+      "January", "February", "March", "April", "May", "June",
+      "July", "August", "September", "October", "November", "December",
+    ];
 
     const els = {
       commanderSelect: document.getElementById("commanderSelect"),
@@ -630,6 +634,34 @@
       }
       const base = WATCH_NAME_BY_INDEX[index] || "Unknown";
       return `${base} Watch`;
+    }
+
+    function formatScenarioDate(dayValue) {
+      const day = Number(dayValue);
+      if (!Number.isFinite(day)) {
+        return "-";
+      }
+      const base = new Date(Date.UTC(1410, 4, 20)); // May 20, 1410
+      base.setUTCDate(base.getUTCDate() + Math.max(0, day));
+      const month = MONTH_NAMES[base.getUTCMonth()] || "Unknown";
+      return `${month} ${base.getUTCDate()}, ${base.getUTCFullYear()}`;
+    }
+
+    function normalizeAlertMessage(message) {
+      const text = String(message || "").trim();
+      const match = text.match(/on day (\d+)\/watch (\d+)/i);
+      if (!match) {
+        return text;
+      }
+      const day = Number(match[1]);
+      const watch = Number(match[2]);
+      if (!Number.isFinite(day) || !Number.isFinite(watch)) {
+        return text;
+      }
+      return text.replace(
+        /on day \d+\/watch \d+/i,
+        `on ${formatScenarioDate(day)}, ${watchDisplayName(watch)}`
+      );
     }
 
     function armyStatusText(view) {
@@ -984,7 +1016,7 @@
         const unreadClass = msg.is_read ? "" : " unread";
         const marker = msg.is_read ? "" : "[UNREAD] ";
         const sentDay = Number(msg?.sent_watch?.day);
-        const dayText = Number.isFinite(sentDay) ? `, day ${sentDay}` : "";
+        const dayText = Number.isFinite(sentDay) ? `, ${formatScenarioDate(sentDay)}` : "";
         return (
           `<li class="inbox-item">` +
           `<button class="inbox-btn${unreadClass}" data-msg-id="${msg.id}" type="button">` +
@@ -1002,10 +1034,12 @@
             state.openMessageId = message.id;
             const sentWatchName = watchDisplayName(message?.sent_watch?.watch);
             const deliveredWatchName = watchDisplayName(message?.delivered_watch?.watch);
+            const sentDateText = formatScenarioDate(message?.sent_watch?.day);
+            const deliveredDateText = formatScenarioDate(message?.delivered_watch?.day);
             els.messageRead.textContent =
               `From: ${message.from.name}\n` +
-              `Sent: day ${message.sent_watch.day}, ${sentWatchName}\n` +
-              `Delivered: day ${message.delivered_watch.day}, ${deliveredWatchName}\n\n` +
+              `Sent: ${sentDateText}, ${sentWatchName}\n` +
+              `Delivered: ${deliveredDateText}, ${deliveredWatchName}\n\n` +
               `${message.content}`;
             await refreshInbox();
           } catch (err) {
@@ -1038,7 +1072,7 @@
       state.alerts = rows
         .filter((item) => String(item?.message || "").trim())
         .map((item) => ({
-          message: String(item?.message || "").trim(),
+          message: normalizeAlertMessage(item?.message),
           importance: String(item?.importance || "normal").toLowerCase(),
         }));
       renderAlerts();
@@ -1491,7 +1525,8 @@
         els.supplyDaysText.textContent = "-";
         return;
       }
-      els.timeText.textContent = `Day ${view.time.day}, ${watchDisplayName(view.time.watch)}`;
+      const calendarDate = formatScenarioDate(view?.time?.day);
+      els.timeText.textContent = `${calendarDate}, ${watchDisplayName(view.time.watch)}`;
       const centerCell = (view.environs.cells || []).find((cell) => cell.h3 === view.environs.center_h3);
       els.centerText.textContent = String(centerCell?.cell_title || view.environs.center_h3 || "-");
       els.radiusText.textContent = `${view.environs.radius} leagues`;
