@@ -264,6 +264,7 @@ class Alert(Base):
         index=True,
     )
     alert_type = Column(String(20), nullable=False, index=True)
+    signal_kind = Column(String(20), nullable=False, default="event", index=True)
     category = Column(String(40), nullable=False, default="general", index=True)
     importance = Column(String(20), nullable=False, default="normal", index=True)
     message = Column(Text, nullable=False)
