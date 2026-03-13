@@ -407,6 +407,44 @@ def _emit_enemy_proximity_alerts(session: Session, clock: GameClock) -> None:
             )
 
 
+def _emit_stronghold_conquest_alerts(
+    session: Session,
+    *,
+    stronghold: Stronghold,
+    new_faction: str,
+    clock: GameClock,
+) -> None:
+    message = (
+        f"{stronghold.stronghold_name} was conquered by {new_faction} "
+        f"on day {clock.day}/watch {clock.watch}"
+    )
+    commanders = session.query(Commander).order_by(Commander.commander_id.asc()).all()
+    for commander in commanders:
+        commander_h3 = _commander_location_h3(session, commander.commander_id)
+        delay = 0
+        if commander_h3:
+            delay = max(0, _grid_distance(stronghold.location_id, commander_h3))
+        delivered_day, delivered_watch = _advance_day_watch(clock.day, clock.watch, delay)
+        _create_alert(
+            session,
+            recipient_commander_id=commander.commander_id,
+            alert_type="world event",
+            category="territory",
+            importance="high",
+            message=message,
+            created_day=clock.day,
+            created_watch=clock.watch,
+            delivered_day=delivered_day,
+            delivered_watch=delivered_watch,
+            payload={
+                "stronghold_id": _stronghold_ref(stronghold.stronghold_id),
+                "stronghold_name": stronghold.stronghold_name,
+                "new_faction": new_faction,
+                "location_h3": stronghold.location_id,
+            },
+        )
+
+
 def _process_messages_tick(session: Session, clock: GameClock) -> dict[str, int]:
     due_messages = (
         session.query(Message)
@@ -961,6 +999,19 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
                         watch=clock.watch,
                     )
                 )
+                stronghold = (
+                    session.query(Stronghold)
+                    .filter(Stronghold.location_id == destination_h3)
+                    .first()
+                )
+                if stronghold is not None and stronghold.control != army.army_faction:
+                    stronghold.control = army.army_faction
+                    _emit_stronghold_conquest_alerts(
+                        session,
+                        stronghold=stronghold,
+                        new_faction=army.army_faction,
+                        clock=clock,
+                    )
                 _maybe_disable_follow_road_on_crossroads_entry(
                     session,
                     army=army,
