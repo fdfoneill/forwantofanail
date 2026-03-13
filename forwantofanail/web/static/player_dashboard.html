@@ -647,6 +647,39 @@
       return `${month} ${base.getUTCDate()}, ${base.getUTCFullYear()}`;
     }
 
+    function ordinalSuffix(value) {
+      const n = Math.abs(Number(value));
+      if (!Number.isFinite(n)) {
+        return "";
+      }
+      const v = n % 100;
+      if (v >= 11 && v <= 13) {
+        return "th";
+      }
+      const last = n % 10;
+      if (last === 1) return "st";
+      if (last === 2) return "nd";
+      if (last === 3) return "rd";
+      return "th";
+    }
+
+    function formatScenarioDateNoYear(dayValue) {
+      const day = Number(dayValue);
+      if (!Number.isFinite(day)) {
+        return "-";
+      }
+      const base = new Date(Date.UTC(1410, 4, 20)); // May 20, 1410
+      base.setUTCDate(base.getUTCDate() + Math.max(0, day));
+      const month = MONTH_NAMES[base.getUTCMonth()] || "Unknown";
+      const dom = base.getUTCDate();
+      return `${month} ${dom}${ordinalSuffix(dom)}`;
+    }
+
+    function formatWatchLabelLower(watchValue) {
+      const label = watchDisplayName(watchValue);
+      return label.replace(" Watch", " watch");
+    }
+
     function normalizeAlertMessage(message) {
       const text = String(message || "").trim();
       const match = text.match(/on day (\d+)\/watch (\d+)/i);
@@ -1069,13 +1102,46 @@
         return;
       }
       const rows = await api("/v1/me/alerts?limit=25", {}, true);
-      state.alerts = rows
-        .filter((item) => String(item?.message || "").trim())
-        .map((item) => ({
-          message: normalizeAlertMessage(item?.message),
-          importance: String(item?.importance || "normal").toLowerCase(),
-          signal_kind: String(item?.signal_kind || "event").toLowerCase(),
-        }));
+      const currentDay = Number(state.view?.time?.day);
+      const currentWatch = Number(state.view?.time?.watch);
+      const isCurrentWatchKnown = Number.isFinite(currentDay) && Number.isFinite(currentWatch);
+
+      const stateCurrent = [];
+      const events = [];
+      for (const item of rows) {
+        const rawMessage = String(item?.message || "").trim();
+        if (!rawMessage) {
+          continue;
+        }
+        const importance = String(item?.importance || "normal").toLowerCase();
+        const signalKind = String(item?.signal_kind || "event").toLowerCase();
+        const createdDay = Number(item?.created_watch?.day);
+        const createdWatch = Number(item?.created_watch?.watch);
+
+        if (signalKind === "state") {
+          if (!isCurrentWatchKnown || createdDay !== currentDay || createdWatch !== currentWatch) {
+            continue; // stale state alerts are hidden
+          }
+          stateCurrent.push({
+            message: normalizeAlertMessage(rawMessage),
+            importance,
+            signal_kind: "state",
+          });
+          continue;
+        }
+
+        const hasCreatedStamp = Number.isFinite(createdDay) && Number.isFinite(createdWatch);
+        const eventPrefix = hasCreatedStamp
+          ? `${formatScenarioDateNoYear(createdDay)}, ${formatWatchLabelLower(createdWatch)}: `
+          : "";
+        events.push({
+          message: `${eventPrefix}${normalizeAlertMessage(rawMessage)}`,
+          importance,
+          signal_kind: "event",
+        });
+      }
+
+      state.alerts = [...stateCurrent, ...events];
       renderAlerts();
     }
 

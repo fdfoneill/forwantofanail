@@ -214,6 +214,7 @@ Table: alerts
 - alert_id INT PRIMARY KEY
 - recipient_commander_id INT NULL FOREIGN KEY REFERENCES commanders(commander_id)   # NULL => global/all players
 - alert_type VARCHAR(20)   # world event | action | report | violence
+- signal_kind VARCHAR(20)  # event | state
 - category VARCHAR(40)
 - importance VARCHAR(20)
 - message TEXT
