@@ -1143,6 +1143,11 @@ def _serialize_army(army: Army) -> dict[str, Any]:
                     "warriors": det.warrior_count,
                     "wagons": det.wagon_count,
                     "is_cavalry": det.is_cavalry,
+                    "is_heavy": det.is_heavy,
+                    "type": (
+                        ("heavy " if det.is_heavy else "light ")
+                        + ("cavalry" if det.is_cavalry else "infantry")
+                    ),
                 }
                 for det in army.detachments
             ],

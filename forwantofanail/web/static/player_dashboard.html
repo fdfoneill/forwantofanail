@@ -84,6 +84,55 @@
       margin-top: 4px;
     }
     .status.error { color: #a22a2a; }
+    .army-status-toggle {
+      width: 100%;
+      margin-top: 8px;
+      margin-bottom: 0;
+      background: #f7f1e7;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      text-align: left;
+      font-weight: 700;
+    }
+    .army-status-toggle:hover {
+      background: #f2e9db;
+    }
+    .army-status-panel {
+      margin-top: 8px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      padding: 8px 10px;
+      font-size: 12px;
+      color: var(--ink);
+    }
+    .army-status-panel[hidden] { display: none; }
+    .army-summary {
+      margin: 0 0 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .army-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+    .army-table td {
+      padding: 5px 2px;
+      border-top: 1px solid #eee7dd;
+      vertical-align: top;
+    }
+    .army-table tr:first-child td {
+      border-top: 0;
+    }
+    .army-col-name { width: 45%; }
+    .army-col-type { width: 35%; color: var(--muted); }
+    .army-col-wagons { width: 20%; text-align: right; color: var(--muted); }
     .meta {
       margin-top: 14px;
       padding-top: 12px;
@@ -420,6 +469,16 @@
       <select id="commanderSelect">
         <option value="">Select commander...</option>
       </select>
+      <button id="armyStatusToggle" class="army-status-toggle" type="button">
+        <span id="armyStatusText">Army: -</span>
+        <span id="armyStatusChevron">▸</span>
+      </button>
+      <div id="armyStatusPanel" class="army-status-panel" hidden>
+        <div id="armySummaryText" class="army-summary">-</div>
+        <table class="army-table">
+          <tbody id="armyCompositionBody"></tbody>
+        </table>
+      </div>
       <div class="status" id="statusLine"></div>
 
       <div class="meta">
@@ -505,6 +564,7 @@
       validNextMoves: new Set(),
       alerts: [],
       followRoadEnabled: false,
+      armyPanelExpanded: false,
     };
 
     const TERRAIN_COLORS = {
@@ -549,6 +609,12 @@
 
     const els = {
       commanderSelect: document.getElementById("commanderSelect"),
+      armyStatusToggle: document.getElementById("armyStatusToggle"),
+      armyStatusText: document.getElementById("armyStatusText"),
+      armyStatusChevron: document.getElementById("armyStatusChevron"),
+      armyStatusPanel: document.getElementById("armyStatusPanel"),
+      armySummaryText: document.getElementById("armySummaryText"),
+      armyCompositionBody: document.getElementById("armyCompositionBody"),
       statusLine: document.getElementById("statusLine"),
       timeText: document.getElementById("timeText"),
       centerText: document.getElementById("centerText"),
@@ -711,6 +777,57 @@
         return `${armyName}: Foraging`;
       }
       return `${armyName}: Holding`;
+    }
+
+    function renderArmyStatusSection(view) {
+      if (!view?.army) {
+        els.armyStatusText.textContent = "Army: -";
+        els.armySummaryText.textContent = "-";
+        els.armyCompositionBody.innerHTML = "";
+        els.armyStatusPanel.setAttribute("hidden", "");
+        els.armyStatusChevron.textContent = "▸";
+        return;
+      }
+
+      els.armyStatusText.textContent = armyStatusText(view);
+      const detachments = Array.isArray(view?.army?.composition?.detachments) ? view.army.composition.detachments : [];
+      let infantry = 0;
+      let cavalry = 0;
+      let wagons = 0;
+      const rows = [];
+      for (const det of detachments) {
+        const warriors = Number(det?.warriors ?? 0) || 0;
+        const wagonCount = Number(det?.wagons ?? 0) || 0;
+        if (det?.is_cavalry) {
+          cavalry += warriors;
+        } else {
+          infantry += warriors;
+        }
+        wagons += wagonCount;
+        const unitType = String(det?.type || (det?.is_cavalry ? "cavalry" : "infantry"));
+        rows.push(
+          `<tr>` +
+            `<td class="army-col-name">${String(det?.name || "Detachment")}</td>` +
+            `<td class="army-col-type">${warriors} ${unitType}</td>` +
+            `<td class="army-col-wagons">${wagonCount} wagons</td>` +
+          `</tr>`
+        );
+      }
+
+      els.armySummaryText.textContent = `${infantry} infantry | ${cavalry} cavalry | ${wagons} wagons`;
+      if (rows.length) {
+        els.armyCompositionBody.innerHTML = rows.join("");
+      } else {
+        els.armyCompositionBody.innerHTML = `<tr><td class="army-col-name">No detachments</td><td class="army-col-type"></td><td class="army-col-wagons"></td></tr>`;
+      }
+
+      if (state.armyPanelExpanded) {
+        els.armyStatusPanel.removeAttribute("hidden");
+        els.armyStatusChevron.textContent = "▾";
+      } else {
+        els.armyStatusPanel.setAttribute("hidden", "");
+        els.armyStatusChevron.textContent = "▸";
+      }
     }
 
     function currentWatchIndex() {
@@ -1616,10 +1733,10 @@
       state.borderRoadNeighbors = new Set((borderRoads.roads || []).map((value) => String(value)));
       processStandingOrderState(view);
       updateMetadata(view);
+      renderArmyStatusSection(view);
       renderOrdersPanel();
       await refreshValidNextMoves();
       renderMap();
-      setStatus(armyStatusText(view));
     }
 
     async function refreshAllPanels() {
@@ -1679,11 +1796,13 @@
         state.inbox = [];
         state.openMessageId = null;
         state.followRoadEnabled = false;
+        state.armyPanelExpanded = false;
         state.orderMode = "march";
         state.stagedPath = [];
         state.remainingItinerary = [];
         state.validNextMoves = new Set();
         updateMetadata(null);
+        renderArmyStatusSection(null);
         renderMap();
         renderOrdersPanel();
         renderStandingOrderToggle();
@@ -1712,6 +1831,7 @@
         state.remainingItinerary = [];
         state.validNextMoves = new Set();
         state.followRoadEnabled = false;
+        state.armyPanelExpanded = false;
         await refreshAllPanels();
       } catch (err) {
         setStatus(`Login/load error: ${err.message}`, true);
@@ -1741,6 +1861,11 @@
       renderAlerts();
       renderOrdersPanel();
       renderStandingOrderToggle();
+      renderArmyStatusSection(null);
+      els.armyStatusToggle.addEventListener("click", () => {
+        state.armyPanelExpanded = !state.armyPanelExpanded;
+        renderArmyStatusSection(state.view);
+      });
       els.orderToggleBtn.addEventListener("click", () => openOrdersPane());
       els.hideOrdersBtn.addEventListener("click", () => closeOrdersPane());
       els.followRoadToggleInput.addEventListener("change", async () => {
