@@ -814,6 +814,9 @@ def _apply_plan(
 def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
     if clock.watch != int(Watch.NIGHT):
         return
+    # Ensure movement rows created earlier in this same tick are visible to
+    # previous-position lookup before building the next standing-order plan.
+    session.flush()
     standing_rows = (
         session.query(StandingOrder)
         .filter(StandingOrder.follow_road_enabled.is_(True))
