@@ -364,7 +364,7 @@ def _emit_supply_alerts_after_consumption(session: Session, clock: GameClock) ->
                 recipient_commander_id=army.commander_id,
                 alert_type="report",
                 category="supply",
-                importance="high" if days_remaining <= 2 else "normal",
+                importance="moderate",
                 message=f"Supplies low: {days_remaining} days remaining",
                 created_day=clock.day,
                 created_watch=clock.watch,
@@ -400,7 +400,7 @@ def _emit_enemy_proximity_alerts(session: Session, clock: GameClock) -> None:
                 recipient_commander_id=army.commander_id,
                 alert_type="report",
                 category="contact",
-                importance="normal",
+                importance="moderate",
                 message=f"{faction_name} army {distance} leagues away",
                 created_day=clock.day,
                 created_watch=clock.watch,
@@ -411,6 +411,7 @@ def _emit_stronghold_conquest_alerts(
     session: Session,
     *,
     stronghold: Stronghold,
+    previous_faction: str,
     new_faction: str,
     clock: GameClock,
 ) -> None:
@@ -421,16 +422,19 @@ def _emit_stronghold_conquest_alerts(
     commanders = session.query(Commander).order_by(Commander.commander_id.asc()).all()
     for commander in commanders:
         commander_h3 = _commander_location_h3(session, commander.commander_id)
+        commander_army = session.query(Army).filter(Army.commander_id == commander.commander_id).first()
+        commander_faction = (commander_army.army_faction or "").strip() if commander_army else ""
         delay = 0
         if commander_h3:
             delay = max(0, _grid_distance(stronghold.location_id, commander_h3))
         delivered_day, delivered_watch = _advance_day_watch(clock.day, clock.watch, delay)
+        importance = "high" if commander_faction and commander_faction == previous_faction else "normal"
         _create_alert(
             session,
             recipient_commander_id=commander.commander_id,
             alert_type="world event",
             category="territory",
-            importance="high",
+            importance=importance,
             message=message,
             created_day=clock.day,
             created_watch=clock.watch,
@@ -439,6 +443,7 @@ def _emit_stronghold_conquest_alerts(
             payload={
                 "stronghold_id": _stronghold_ref(stronghold.stronghold_id),
                 "stronghold_name": stronghold.stronghold_name,
+                "previous_faction": previous_faction,
                 "new_faction": new_faction,
                 "location_h3": stronghold.location_id,
             },
@@ -1005,10 +1010,12 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
                     .first()
                 )
                 if stronghold is not None and stronghold.control != army.army_faction:
+                    previous_faction = stronghold.control
                     stronghold.control = army.army_faction
                     _emit_stronghold_conquest_alerts(
                         session,
                         stronghold=stronghold,
+                        previous_faction=previous_faction,
                         new_faction=army.army_faction,
                         clock=clock,
                     )

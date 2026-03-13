@@ -310,6 +310,14 @@
       color: var(--ink);
       line-height: 1.35;
     }
+    .alerts-item.high {
+      background: #ffe9e9;
+      border-color: #efc3c3;
+    }
+    .alerts-item.moderate {
+      background: #fff1df;
+      border-color: #efcfaa;
+    }
     .alerts-empty {
       color: var(--muted);
       font-size: 12px;
@@ -579,7 +587,16 @@
         els.alertList.innerHTML = "<li class=\"alerts-empty\">No recent alerts.</li>";
         return;
       }
-      const rows = state.alerts.map((message) => `<li class="alerts-item">${message}</li>`);
+      const rows = state.alerts.map((item) => {
+        const message = typeof item === "string" ? item : String(item?.message || "");
+        const importance = String(item?.importance || "").toLowerCase();
+        const cls = importance === "high"
+          ? "alerts-item high"
+          : importance === "moderate"
+            ? "alerts-item moderate"
+            : "alerts-item";
+        return `<li class="${cls}">${message}</li>`;
+      });
       els.alertList.innerHTML = rows.join("");
     }
 
@@ -1018,7 +1035,12 @@
         return;
       }
       const rows = await api("/v1/me/alerts?limit=25", {}, true);
-      state.alerts = rows.map((item) => String(item?.message || "").trim()).filter(Boolean);
+      state.alerts = rows
+        .filter((item) => String(item?.message || "").trim())
+        .map((item) => ({
+          message: String(item?.message || "").trim(),
+          importance: String(item?.importance || "normal").toLowerCase(),
+        }));
       renderAlerts();
     }
 
