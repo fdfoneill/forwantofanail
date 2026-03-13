@@ -1629,6 +1629,45 @@
       await refreshAlerts();
     }
 
+    function openOrdersPane() {
+      els.ordersBox.removeAttribute("hidden");
+      els.orderToggleBtn.setAttribute("hidden", "");
+      updateHoveredMoveOutline(state.hoverH3);
+    }
+
+    function closeOrdersPane() {
+      els.ordersBox.setAttribute("hidden", "");
+      els.orderToggleBtn.removeAttribute("hidden");
+      updateHoveredMoveOutline(state.hoverH3);
+    }
+
+    function toggleOrdersPane() {
+      if (els.ordersBox.hasAttribute("hidden")) {
+        openOrdersPane();
+      } else {
+        closeOrdersPane();
+      }
+    }
+
+    async function setOrderModeFromShortcut(mode) {
+      openOrdersPane();
+      const nextMode = String(mode || "march").trim().toLowerCase();
+      if (nextMode === "forage" && !isNightOrMatinWatch()) {
+        state.orderMode = "march";
+        renderOrdersPanel();
+        return;
+      }
+      state.orderMode = nextMode === "forage" ? "forage" : "march";
+      els.orderModeSelect.value = state.orderMode;
+      if (state.orderMode === "forage") {
+        state.stagedPath = [];
+        state.validNextMoves = new Set();
+        renderMap();
+      }
+      renderOrdersPanel();
+      await refreshValidNextMoves();
+    }
+
     els.commanderSelect.addEventListener("change", async (event) => {
       const commanderName = event.target.value;
       if (!commanderName) {
@@ -1702,16 +1741,8 @@
       renderAlerts();
       renderOrdersPanel();
       renderStandingOrderToggle();
-      els.orderToggleBtn.addEventListener("click", () => {
-        els.ordersBox.removeAttribute("hidden");
-        els.orderToggleBtn.setAttribute("hidden", "");
-        updateHoveredMoveOutline(state.hoverH3);
-      });
-      els.hideOrdersBtn.addEventListener("click", () => {
-        els.ordersBox.setAttribute("hidden", "");
-        els.orderToggleBtn.removeAttribute("hidden");
-        updateHoveredMoveOutline(state.hoverH3);
-      });
+      els.orderToggleBtn.addEventListener("click", () => openOrdersPane());
+      els.hideOrdersBtn.addEventListener("click", () => closeOrdersPane());
       els.followRoadToggleInput.addEventListener("change", async () => {
         if (!state.token) {
           setStatus("Select a commander first.", true);
@@ -1758,6 +1789,33 @@
         }
         renderOrdersPanel();
         await refreshValidNextMoves();
+      });
+      document.addEventListener("keydown", async (event) => {
+        const target = event.target;
+        const tag = target && target.tagName ? String(target.tagName).toUpperCase() : "";
+        if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (target && target.isContentEditable)) {
+          return;
+        }
+        const key = String(event.key || "").toLowerCase();
+        if (key === "m") {
+          event.preventDefault();
+          await setOrderModeFromShortcut("march");
+          return;
+        }
+        if (key === "f") {
+          event.preventDefault();
+          await setOrderModeFromShortcut("forage");
+          return;
+        }
+        if (key === "o") {
+          event.preventDefault();
+          toggleOrdersPane();
+          return;
+        }
+        if (key === "enter" && !els.ordersBox.hasAttribute("hidden")) {
+          event.preventDefault();
+          els.submitOrdersBtn.click();
+        }
       });
       els.submitOrdersBtn.addEventListener("click", async () => {
         if (!state.token) {
