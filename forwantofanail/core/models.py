@@ -102,6 +102,7 @@ class Army(Base):
             "army_resting_morale >= 2 AND army_resting_morale <= 12",
             name="ck_armies_resting_morale_range",
         ),
+        CheckConstraint("noncombattant_percent >= 0", name="ck_armies_noncombattant_percent_nonnegative"),
     )
 
     army_id = Column(Integer, primary_key=True)
@@ -114,7 +115,7 @@ class Army(Base):
     army_resting_morale = Column(Integer, nullable=False, default=9)
     is_embarked = Column(Boolean, nullable=False, default=False)
     is_garrison = Column(Boolean, nullable=False, default=False)
-    noncombattant_count = Column(Integer, nullable=False, default=0)
+    noncombattant_percent = Column(Float, nullable=False, default=0.25)
 
     location = relationship("Location", back_populates="armies")
     commander = relationship("Commander", back_populates="armies")

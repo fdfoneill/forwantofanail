@@ -42,7 +42,11 @@ from forwantofanail.mechanics.movement import (
     list_valid_destinations,
     list_valid_destinations_from_origin,
 )
-from forwantofanail.mechanics.supply import consume_supply_for_all_armies, supply_stats
+from forwantofanail.mechanics.supply import (
+    consume_supply_for_all_armies,
+    noncombatant_count,
+    supply_stats,
+)
 from forwantofanail.mechanics.time import Watch
 
 router = APIRouter(prefix="/v1")
@@ -1127,6 +1131,7 @@ def _clamp_morale(value: int | None, default: int = 9) -> int:
 
 def _serialize_army(army: Army) -> dict[str, Any]:
     stats = supply_stats(army)
+    noncombatants = noncombatant_count(army)
     current_morale = _clamp_morale(army.army_morale)
     resting_morale = _clamp_morale(army.army_resting_morale, default=current_morale)
 
@@ -1159,7 +1164,8 @@ def _serialize_army(army: Army) -> dict[str, Any]:
                 }
                 for det in army.detachments
             ],
-            "noncombatants": army.noncombattant_count,
+            "noncombatants": noncombatants,
+            "noncombatant_percent": float(army.noncombattant_percent or 0.0),
         },
         "supply": {
             "current": army.army_supply,
