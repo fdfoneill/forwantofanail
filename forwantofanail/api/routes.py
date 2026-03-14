@@ -569,6 +569,8 @@ def _emit_supply_alerts_after_consumption(session: Session, clock: GameClock) ->
             continue
         stats = supply_stats(army)
         if army.army_supply <= 0:
+            # Starvation erodes current morale before each resulting morale test.
+            army.army_morale = _clamp_morale(int(army.army_morale or 0) - 1)
             _run_morale_test_for_army(
                 session,
                 army=army,
