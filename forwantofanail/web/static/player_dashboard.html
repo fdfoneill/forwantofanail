@@ -469,6 +469,11 @@
       <select id="commanderSelect">
         <option value="">Select commander...</option>
       </select>
+      <div class="meta">
+        <div><strong>Time:</strong> <span id="timeText">-</span></div>
+        <div><strong>Current Location:</strong> <span id="centerText">-</span></div>
+        <div><strong>Scouting Radius:</strong> <span id="radiusText">-</span></div>
+      </div>
       <button id="armyStatusToggle" class="army-status-toggle" type="button">
         <span id="armyStatusText">Army: -</span>
         <span id="armyStatusChevron">▸</span>
@@ -479,18 +484,33 @@
           <tbody id="armyCompositionBody"></tbody>
         </table>
       </div>
+      <button id="supplyStatusToggle" class="army-status-toggle" type="button">
+        <span id="supplyStatusText">Supply: - days remaining</span>
+        <span id="supplyStatusChevron">▸</span>
+      </button>
+      <div id="supplyStatusPanel" class="army-status-panel" hidden>
+        <table class="army-table">
+          <tbody>
+            <tr>
+              <td class="army-col-name">Current</td>
+              <td class="army-col-type"></td>
+              <td class="army-col-wagons"><span id="supplyCurrentText">-</span></td>
+            </tr>
+            <tr>
+              <td class="army-col-name">Capacity</td>
+              <td class="army-col-type"></td>
+              <td class="army-col-wagons"><span id="supplyCapacityText">-</span></td>
+            </tr>
+            <tr>
+              <td class="army-col-name">Daily Use</td>
+              <td class="army-col-type"></td>
+              <td class="army-col-wagons"><span id="supplyDailyText">-</span></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
       <div class="status" id="statusLine"></div>
 
-      <div class="meta">
-        <div><strong>Time:</strong> <span id="timeText">-</span></div>
-        <div><strong>Current Location:</strong> <span id="centerText">-</span></div>
-        <div><strong>Scouting Radius:</strong> <span id="radiusText">-</span></div>
-        <div style="margin-top:10px;"><strong>Supply</strong></div>
-        <div><strong>Current:</strong> <span id="supplyCurrentText">-</span></div>
-        <div><strong>Capacity:</strong> <span id="supplyCapacityText">-</span></div>
-        <div><strong>Daily Use:</strong> <span id="supplyDailyText">-</span></div>
-        <div><strong>Days Remaining:</strong> <span id="supplyDaysText">-</span></div>
-      </div>
       <div class="section-divider"></div>
 
       <div class="standing-order">
@@ -565,6 +585,7 @@
       alerts: [],
       followRoadEnabled: false,
       armyPanelExpanded: false,
+      supplyPanelExpanded: false,
     };
 
     const TERRAIN_COLORS = {
@@ -615,6 +636,10 @@
       armyStatusPanel: document.getElementById("armyStatusPanel"),
       armySummaryText: document.getElementById("armySummaryText"),
       armyCompositionBody: document.getElementById("armyCompositionBody"),
+      supplyStatusToggle: document.getElementById("supplyStatusToggle"),
+      supplyStatusText: document.getElementById("supplyStatusText"),
+      supplyStatusChevron: document.getElementById("supplyStatusChevron"),
+      supplyStatusPanel: document.getElementById("supplyStatusPanel"),
       statusLine: document.getElementById("statusLine"),
       timeText: document.getElementById("timeText"),
       centerText: document.getElementById("centerText"),
@@ -622,7 +647,6 @@
       supplyCurrentText: document.getElementById("supplyCurrentText"),
       supplyCapacityText: document.getElementById("supplyCapacityText"),
       supplyDailyText: document.getElementById("supplyDailyText"),
-      supplyDaysText: document.getElementById("supplyDaysText"),
       followRoadToggleInput: document.getElementById("followRoadToggleInput"),
       orderToggleBtn: document.getElementById("orderToggleBtn"),
       ordersBox: document.getElementById("ordersBox"),
@@ -827,6 +851,24 @@
       } else {
         els.armyStatusPanel.setAttribute("hidden", "");
         els.armyStatusChevron.textContent = "▸";
+      }
+    }
+
+    function renderSupplyStatusSection(view) {
+      const supply = view?.army?.supply || null;
+      const daysText = supply?.days_estimate == null
+        ? "-"
+        : String(Math.floor(Number(supply.days_estimate)));
+      els.supplyStatusText.textContent = `Supply: ${daysText} days remaining`;
+      els.supplyCurrentText.textContent = String(supply?.current ?? "-");
+      els.supplyCapacityText.textContent = String(supply?.capacity ?? "-");
+      els.supplyDailyText.textContent = String(supply?.daily_consumption ?? "-");
+      if (state.supplyPanelExpanded) {
+        els.supplyStatusPanel.removeAttribute("hidden");
+        els.supplyStatusChevron.textContent = "▾";
+      } else {
+        els.supplyStatusPanel.setAttribute("hidden", "");
+        els.supplyStatusChevron.textContent = "▸";
       }
     }
 
@@ -1703,10 +1745,6 @@
         els.timeText.textContent = "-";
         els.centerText.textContent = "-";
         els.radiusText.textContent = "-";
-        els.supplyCurrentText.textContent = "-";
-        els.supplyCapacityText.textContent = "-";
-        els.supplyDailyText.textContent = "-";
-        els.supplyDaysText.textContent = "-";
         return;
       }
       const calendarDate = formatScenarioDate(view?.time?.day);
@@ -1714,11 +1752,6 @@
       const centerCell = (view.environs.cells || []).find((cell) => cell.h3 === view.environs.center_h3);
       els.centerText.textContent = String(centerCell?.cell_title || view.environs.center_h3 || "-");
       els.radiusText.textContent = `${view.environs.radius} leagues`;
-      const supply = view.army?.supply || {};
-      els.supplyCurrentText.textContent = String(supply.current ?? "-");
-      els.supplyCapacityText.textContent = String(supply.capacity ?? "-");
-      els.supplyDailyText.textContent = String(supply.daily_consumption ?? "-");
-      els.supplyDaysText.textContent = supply.days_estimate == null ? "-" : String(Math.floor(Number(supply.days_estimate)));
     }
 
     async function refreshView() {
@@ -1734,6 +1767,7 @@
       processStandingOrderState(view);
       updateMetadata(view);
       renderArmyStatusSection(view);
+      renderSupplyStatusSection(view);
       renderOrdersPanel();
       await refreshValidNextMoves();
       renderMap();
@@ -1797,12 +1831,14 @@
         state.openMessageId = null;
         state.followRoadEnabled = false;
         state.armyPanelExpanded = false;
+        state.supplyPanelExpanded = false;
         state.orderMode = "march";
         state.stagedPath = [];
         state.remainingItinerary = [];
         state.validNextMoves = new Set();
         updateMetadata(null);
         renderArmyStatusSection(null);
+        renderSupplyStatusSection(null);
         renderMap();
         renderOrdersPanel();
         renderStandingOrderToggle();
@@ -1832,6 +1868,7 @@
         state.validNextMoves = new Set();
         state.followRoadEnabled = false;
         state.armyPanelExpanded = false;
+        state.supplyPanelExpanded = false;
         await refreshAllPanels();
       } catch (err) {
         setStatus(`Login/load error: ${err.message}`, true);
@@ -1862,9 +1899,14 @@
       renderOrdersPanel();
       renderStandingOrderToggle();
       renderArmyStatusSection(null);
+      renderSupplyStatusSection(null);
       els.armyStatusToggle.addEventListener("click", () => {
         state.armyPanelExpanded = !state.armyPanelExpanded;
         renderArmyStatusSection(state.view);
+      });
+      els.supplyStatusToggle.addEventListener("click", () => {
+        state.supplyPanelExpanded = !state.supplyPanelExpanded;
+        renderSupplyStatusSection(state.view);
       });
       els.orderToggleBtn.addEventListener("click", () => openOrdersPane());
       els.hideOrdersBtn.addEventListener("click", () => closeOrdersPane());
