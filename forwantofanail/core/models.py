@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from sqlalchemy import (
     Boolean,
+    CheckConstraint,
     Column,
     Date,
     DateTime,
@@ -95,6 +96,13 @@ class CommanderTrait(Base):
 
 class Army(Base):
     __tablename__ = "armies"
+    __table_args__ = (
+        CheckConstraint("army_morale >= 2 AND army_morale <= 12", name="ck_armies_morale_range"),
+        CheckConstraint(
+            "army_resting_morale >= 2 AND army_resting_morale <= 12",
+            name="ck_armies_resting_morale_range",
+        ),
+    )
 
     army_id = Column(Integer, primary_key=True)
     location_id = Column(String(15), ForeignKey("locations.location_id"), nullable=False)
@@ -102,7 +110,8 @@ class Army(Base):
     army_faction = Column(String(100), nullable=False)
     commander_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=True)
     army_supply = Column(Integer, nullable=False, default=0)
-    army_morale = Column(Integer, nullable=False, default=0)
+    army_morale = Column(Integer, nullable=False, default=9)
+    army_resting_morale = Column(Integer, nullable=False, default=9)
     is_embarked = Column(Boolean, nullable=False, default=False)
     is_garrison = Column(Boolean, nullable=False, default=False)
     noncombattant_count = Column(Integer, nullable=False, default=0)

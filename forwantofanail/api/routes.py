@@ -1119,8 +1119,16 @@ def _find_commander_army(session: Session, commander_id: int) -> Army:
     return army
 
 
+def _clamp_morale(value: int | None, default: int = 9) -> int:
+    if value is None:
+        return default
+    return max(2, min(12, int(value)))
+
+
 def _serialize_army(army: Army) -> dict[str, Any]:
     stats = supply_stats(army)
+    current_morale = _clamp_morale(army.army_morale)
+    resting_morale = _clamp_morale(army.army_resting_morale, default=current_morale)
 
     status_flags = []
     if army.is_embarked:
@@ -1158,6 +1166,12 @@ def _serialize_army(army: Army) -> dict[str, Any]:
             "capacity": stats.capacity,
             "daily_consumption": stats.daily_consumption,
             "days_estimate": stats.days_estimate,
+        },
+        "morale": {
+            "current": current_morale,
+            "resting": resting_morale,
+            "min": 2,
+            "max": 12,
         },
         "status_flags": status_flags,
     }

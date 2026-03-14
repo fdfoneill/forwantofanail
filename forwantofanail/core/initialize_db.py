@@ -60,6 +60,12 @@ def _parse_date(value: str | None) -> date | None:
     return date.fromisoformat(text)
 
 
+def _clamp_morale(value: int | None, default: int = 9) -> int:
+    if value is None:
+        return default
+    return max(2, min(12, int(value)))
+
+
 def _load_csv(model_cls, csv_path: Path, converters: dict[str, callable]):
     with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -118,7 +124,7 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
                 },
             )
         )
-        session.add_all(
+        armies = list(
             _load_csv(
                 Army,
                 data_dir / "armies.csv",
@@ -136,6 +142,11 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
                 },
             )
         )
+        for army in armies:
+            army.army_morale = _clamp_morale(army.army_morale)
+            # Resting morale starts equal to the initial current morale.
+            army.army_resting_morale = army.army_morale
+        session.add_all(armies)
         session.add_all(
             _load_csv(
                 Detachment,
