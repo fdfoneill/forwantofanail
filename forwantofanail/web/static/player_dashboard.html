@@ -479,6 +479,7 @@
         <span id="armyStatusChevron">▸</span>
       </button>
       <div id="armyStatusPanel" class="army-status-panel" hidden>
+        <div id="armyMoraleText" class="army-summary">Morale: -</div>
         <div id="armySummaryText" class="army-summary">-</div>
         <table class="army-table">
           <tbody id="armyCompositionBody"></tbody>
@@ -634,6 +635,7 @@
       armyStatusText: document.getElementById("armyStatusText"),
       armyStatusChevron: document.getElementById("armyStatusChevron"),
       armyStatusPanel: document.getElementById("armyStatusPanel"),
+      armyMoraleText: document.getElementById("armyMoraleText"),
       armySummaryText: document.getElementById("armySummaryText"),
       armyCompositionBody: document.getElementById("armyCompositionBody"),
       supplyStatusToggle: document.getElementById("supplyStatusToggle"),
@@ -806,6 +808,7 @@
     function renderArmyStatusSection(view) {
       if (!view?.army) {
         els.armyStatusText.textContent = "Army: -";
+        els.armyMoraleText.textContent = "Morale: -";
         els.armySummaryText.textContent = "-";
         els.armyCompositionBody.innerHTML = "";
         els.armyStatusPanel.setAttribute("hidden", "");
@@ -814,6 +817,7 @@
       }
 
       els.armyStatusText.textContent = armyStatusText(view);
+      els.armyMoraleText.textContent = `Morale: ${String(view?.army?.morale?.current ?? "-")}`;
       const detachments = Array.isArray(view?.army?.composition?.detachments) ? view.army.composition.detachments : [];
       let infantry = 0;
       let cavalry = 0;
