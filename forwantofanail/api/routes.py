@@ -542,6 +542,26 @@ def _run_morale_test_for_army(
     )
 
 
+def _emit_no_supply_state_alerts(session: Session, clock: GameClock) -> None:
+    armies = session.query(Army).filter(Army.commander_id.is_not(None)).all()
+    for army in armies:
+        if army.commander_id is None:
+            continue
+        if int(army.army_supply or 0) > 0:
+            continue
+        _create_alert(
+            session,
+            recipient_commander_id=army.commander_id,
+            alert_type="report",
+            signal_kind="state",
+            category="supply",
+            importance="high",
+            message="No supplies: troops going hungry!",
+            created_day=clock.day,
+            created_watch=clock.watch,
+        )
+
+
 def _emit_supply_alerts_after_consumption(session: Session, clock: GameClock) -> None:
     armies = session.query(Army).filter(Army.commander_id.is_not(None)).all()
     for army in armies:
@@ -549,17 +569,6 @@ def _emit_supply_alerts_after_consumption(session: Session, clock: GameClock) ->
             continue
         stats = supply_stats(army)
         if army.army_supply <= 0:
-            _create_alert(
-                session,
-                recipient_commander_id=army.commander_id,
-                alert_type="report",
-                signal_kind="state",
-                category="supply",
-                importance="high",
-                message="No supplies: troops going hungry!",
-                created_day=clock.day,
-                created_watch=clock.watch,
-            )
             _run_morale_test_for_army(
                 session,
                 army=army,
@@ -967,11 +976,6 @@ def _apply_plan(
         created_actions.append(action)
     elif kind == "march":
         if path:
-            if clock.watch == int(Watch.NIGHT) and len(path) != MAX_FOLLOW_ROAD_STEPS and not allow_partial_night_march:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Night march submissions must contain exactly 4 staged moves (or be empty for Halt)",
-                )
             max_steps = _remaining_march_steps_for_watch(int(clock.watch))
             if len(path) > max_steps:
                 raise HTTPException(
@@ -1649,6 +1653,7 @@ def advance_time_for_development(
             # Night supply checks run after action resolution so completed forage can replenish first.
             supply_result = consume_supply_for_all_armies(session)
             _emit_supply_alerts_after_consumption(session, clock)
+        _emit_no_supply_state_alerts(session, clock)
         _emit_enemy_proximity_alerts(session, clock)
         timeline.append(
             {
