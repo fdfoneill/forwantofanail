@@ -2000,10 +2000,6 @@
           if (state.orderMode === "forage") {
             payload = { kind: "forage", path: [] };
           } else {
-            if (isNightWatch() && state.stagedPath.length > 0 && state.stagedPath.length !== 4) {
-              setStatus("Night march requires exactly 4 staged moves (or none for Halt).", true);
-              return;
-            }
             payload = { kind: "march", path: state.stagedPath.slice() };
           }
           await api(
