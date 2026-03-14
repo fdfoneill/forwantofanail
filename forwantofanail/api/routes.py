@@ -62,7 +62,7 @@ ACTIVE_ACTION_STATES = {"queued", "in_progress"}
 SCENARIO_EPOCH = date(1410, 5, 20)
 MESSAGE_LOSS_PROBABILITY = 0.0
 MAX_FOLLOW_ROAD_STEPS = 4
-ALERT_TYPES = {"world event", "action", "report", "violence"}
+ALERT_TYPES = {"world event", "action", "report", "violence", "morale"}
 
 
 def _commander_ref(commander_id: int) -> str:
@@ -347,6 +347,201 @@ def _cancellation_narrative(cancelled_by_kind: dict[str, int]) -> str:
     return f"{parts[0]}, {parts[1]}, and {parts[2]}"
 
 
+def _apply_supply_loss(army: Army, percent: float) -> int:
+    baseline = max(0, int(army.army_supply or 0))
+    if baseline <= 0:
+        return 0
+    lost = max(0, int(round(baseline * max(0.0, percent))))
+    lost = min(lost, baseline)
+    army.army_supply = baseline - lost
+    return lost
+
+
+def _apply_random_warrior_loss(army: Army, percent: float) -> int:
+    detachments = [det for det in army.detachments if int(det.warrior_count or 0) > 0]
+    if not detachments:
+        return 0
+    total = sum(int(det.warrior_count or 0) for det in detachments)
+    if total <= 0:
+        return 0
+    target = min(total, max(0, int(round(total * max(0.0, percent)))))
+    if target <= 0:
+        return 0
+    lost = 0
+    available = list(detachments)
+    while lost < target and available:
+        det = random.choice(available)
+        current = int(det.warrior_count or 0)
+        if current <= 0:
+            available.remove(det)
+            continue
+        det.warrior_count = current - 1
+        lost += 1
+        if det.warrior_count <= 0:
+            available.remove(det)
+    return lost
+
+
+def _remove_selected_detachments(session: Session, detachments: list[Any]) -> list[str]:
+    removed_names: list[str] = []
+    for det in detachments:
+        removed_names.append(str(det.detachment_name or "Unnamed detachment"))
+        session.delete(det)
+    return removed_names
+
+
+def _nearest_other_commander_army(session: Session, army: Army) -> Army | None:
+    candidates = (
+        session.query(Army)
+        .filter(
+            Army.army_id != army.army_id,
+            Army.commander_id.is_not(None),
+        )
+        .all()
+    )
+    if not candidates:
+        return None
+    return min(
+        candidates,
+        key=lambda candidate: (
+            max(0, _grid_distance(army.location_id, candidate.location_id)),
+            int(candidate.army_id),
+        ),
+    )
+
+
+def _describe_location_by_nearest_strongholds(session: Session, location_h3: str) -> str:
+    strongholds = session.query(Stronghold).all()
+    if not strongholds:
+        return "at an unknown location"
+    ranked = sorted(
+        strongholds,
+        key=lambda sh: (
+            max(0, _grid_distance(location_h3, sh.location_id)),
+            int(sh.stronghold_id),
+        ),
+    )
+    if len(ranked) == 1:
+        return f"near {ranked[0].stronghold_name}"
+    return f"between {ranked[0].stronghold_name} and {ranked[1].stronghold_name}"
+
+
+def _run_morale_test_for_army(
+    session: Session,
+    *,
+    army: Army,
+    clock: GameClock,
+    category: str,
+) -> None:
+    current_morale = _clamp_morale(army.army_morale)
+    roll = random.randint(1, 6) + random.randint(1, 6)
+    if roll <= current_morale:
+        return
+
+    message = "Grumbling from the troops..."
+    payload: dict[str, Any] = {
+        "roll": roll,
+        "current_morale": current_morale,
+    }
+
+    if roll == 2:
+        removed = [det for det in list(army.detachments) if random.random() < 0.5]
+        removed_names = _remove_selected_detachments(session, removed)
+        names_text = ", ".join(removed_names) if removed_names else "No detachments"
+        message = f"Total mutiny! {names_text} have disbanded."
+        payload["removed_detachments"] = removed_names
+    elif roll == 3:
+        lost_supply = _apply_supply_loss(army, 0.30)
+        lost_warriors = _apply_random_warrior_loss(army, 0.30)
+        message = f"Mass desertion! {lost_supply} supply and {lost_warriors} warriors lost."
+        payload["lost_supply"] = lost_supply
+        payload["lost_warriors"] = lost_warriors
+    elif roll == 4:
+        requested = random.randint(1, 6)
+        detachments = list(army.detachments)
+        random.shuffle(detachments)
+        removed = detachments[: min(requested, len(detachments))]
+        removed_names = _remove_selected_detachments(session, removed)
+        names_text = ", ".join(removed_names) if removed_names else "No detachments"
+        message = f"Major mutiny! {names_text} have disbanded."
+        payload["removed_detachments"] = removed_names
+    elif roll == 5:
+        lost_supply = _apply_supply_loss(army, 0.20)
+        lost_warriors = _apply_random_warrior_loss(army, 0.20)
+        message = f"Major desertion! {lost_supply} supply and {lost_warriors} warriors lost."
+        payload["lost_supply"] = lost_supply
+        payload["lost_warriors"] = lost_warriors
+    elif roll == 6:
+        lost_supply = _apply_supply_loss(army, 0.20)
+        message = f"Mass embezzlement! {lost_supply} supply stolen."
+        payload["lost_supply"] = lost_supply
+    elif roll == 7:
+        detachments = list(army.detachments)
+        if detachments:
+            removed = random.choice(detachments)
+            removed_name = str(removed.detachment_name or "Unnamed detachment")
+            session.delete(removed)
+            message = f"Mutiny! {removed_name} has disbanded."
+            payload["removed_detachments"] = [removed_name]
+        else:
+            message = "Mutiny! But no detachments remained to disband."
+    elif roll == 8:
+        lost_supply = _apply_supply_loss(army, 0.10)
+        lost_warriors = _apply_random_warrior_loss(army, 0.10)
+        message = f"Desertion! {lost_supply} supply and {lost_warriors} warriors lost."
+        payload["lost_supply"] = lost_supply
+        payload["lost_warriors"] = lost_warriors
+    elif roll == 9:
+        recipient_army = _nearest_other_commander_army(session, army)
+        recipient_name = "unknown recipient"
+        if recipient_army is not None and recipient_army.commander_id is not None:
+            recipient_commander = session.get(Commander, recipient_army.commander_id)
+            if recipient_commander is not None:
+                recipient_name = _commander_display_name(recipient_commander)
+                descriptor = _describe_location_by_nearest_strongholds(session, army.location_id)
+                _create_message(
+                    session,
+                    sender_name=f"A sympathizer in {army.army_name}",
+                    sender_commander_id=None,
+                    sender_stronghold_id=None,
+                    recipient_id=recipient_commander.commander_id,
+                    origin_h3=army.location_id,
+                    destination_h3=recipient_army.location_id,
+                    content=(
+                        "I write from within the ranks. "
+                        f"The army is currently {descriptor}."
+                    ),
+                    priority="urgent",
+                    sent_day=clock.day,
+                    sent_watch=clock.watch,
+                )
+        message = f"Treachery! A disgruntled officer has betrayed the army's position to {recipient_name}."
+        payload["recipient"] = recipient_name
+    elif roll == 10:
+        current_pct = float(army.noncombattant_percent or 0.0)
+        army.noncombattant_percent = max(0.0, current_pct + 0.05)
+        new_noncombatants = noncombatant_count(army)
+        message = f"New camp followers acquired. Army now has {new_noncombatants} noncombattants."
+        payload["new_noncombatants"] = new_noncombatants
+    elif roll == 11:
+        lost_supply = _apply_supply_loss(army, 0.05)
+        message = f"Thievery among the troops. {lost_supply} supply looted."
+        payload["lost_supply"] = lost_supply
+
+    _create_alert(
+        session,
+        recipient_commander_id=army.commander_id,
+        alert_type="morale",
+        signal_kind="event",
+        category=category,
+        importance="high",
+        message=message,
+        created_day=clock.day,
+        created_watch=clock.watch,
+        payload=payload,
+    )
+
+
 def _emit_supply_alerts_after_consumption(session: Session, clock: GameClock) -> None:
     armies = session.query(Army).filter(Army.commander_id.is_not(None)).all()
     for army in armies:
@@ -364,6 +559,12 @@ def _emit_supply_alerts_after_consumption(session: Session, clock: GameClock) ->
                 message="No supplies: troops going hungry!",
                 created_day=clock.day,
                 created_watch=clock.watch,
+            )
+            _run_morale_test_for_army(
+                session,
+                army=army,
+                clock=clock,
+                category="supply",
             )
             continue
         days_estimate = stats.days_estimate
@@ -1435,10 +1636,6 @@ def advance_time_for_development(
 
     for _ in range(payload.steps):
         clock.day, clock.watch = _advance_day_watch(clock.day, clock.watch, 1)
-        supply_result = None
-        if clock.watch == int(Watch.NIGHT):
-            supply_result = consume_supply_for_all_armies(session)
-            _emit_supply_alerts_after_consumption(session, clock)
         message_result = _process_messages_tick(session, clock)
         tick_result = {"started": 0, "completed": 0, "failed": 0}
         if payload.execute_actions:
@@ -1447,6 +1644,11 @@ def advance_time_for_development(
             actions_started += tick_result["started"]
             actions_completed += tick_result["completed"]
             actions_failed += tick_result["failed"]
+        supply_result = None
+        if clock.watch == int(Watch.NIGHT):
+            # Night supply checks run after action resolution so completed forage can replenish first.
+            supply_result = consume_supply_for_all_armies(session)
+            _emit_supply_alerts_after_consumption(session, clock)
         _emit_enemy_proximity_alerts(session, clock)
         timeline.append(
             {
