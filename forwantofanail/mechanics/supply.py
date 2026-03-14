@@ -37,11 +37,21 @@ def _wagon_count(army: Army) -> int:
     return sum(det.wagon_count for det in army.detachments)
 
 
+def fighting_strength(army: Army) -> int:
+    return _infantry_count(army) + _cavalry_count(army)
+
+
+def noncombatant_count(army: Army) -> int:
+    ratio = float(getattr(army, "noncombattant_percent", 0.25) or 0.0)
+    ratio = max(0.0, ratio)
+    return int(round(fighting_strength(army) * ratio))
+
+
 def supply_capacity(army: Army) -> int:
     infantry = _infantry_count(army)
     cavalry = _cavalry_count(army)
     wagons = _wagon_count(army)
-    noncombatants = army.noncombattant_count
+    noncombatants = noncombatant_count(army)
     return (
         infantry * INFANTRY_CAPACITY
         + noncombatants * NONCOMBATANT_CAPACITY
@@ -54,7 +64,7 @@ def daily_supply_consumption(army: Army) -> int:
     infantry = _infantry_count(army)
     cavalry = _cavalry_count(army)
     wagons = _wagon_count(army)
-    noncombatants = army.noncombattant_count
+    noncombatants = noncombatant_count(army)
     return (
         infantry * INFANTRY_DAILY_CONSUMPTION
         + noncombatants * NONCOMBATANT_DAILY_CONSUMPTION

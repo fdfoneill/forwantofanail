@@ -66,6 +66,12 @@ def _clamp_morale(value: int | None, default: int = 9) -> int:
     return max(2, min(12, int(value)))
 
 
+def _clamp_noncombatant_percent(value: float | None, default: float = 0.25) -> float:
+    if value is None:
+        return default
+    return max(0.0, float(value))
+
+
 def _load_csv(model_cls, csv_path: Path, converters: dict[str, callable]):
     with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -124,30 +130,36 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
                 },
             )
         )
-        armies = list(
-            _load_csv(
-                Army,
-                data_dir / "armies.csv",
-                {
-                    "army_id": _parse_int,
-                    "location_id": str,
-                    "army_name": str,
-                    "army_faction": str,
-                    "commander_id": _parse_int,
-                    "army_supply": _parse_int,
-                    "army_morale": _parse_int,
-                    "is_embarked": _parse_bool,
-                    "is_garrison": _parse_bool,
-                    "noncombattant_count": _parse_int,
-                },
-            )
-        )
+        armies: list[Army] = []
+        source_noncombatants_by_army_id: dict[int, int] = {}
+        with (data_dir / "armies.csv").open("r", encoding="utf-8-sig", newline="") as handle:
+            reader = csv.DictReader(handle)
+            for row in reader:
+                army_id = _parse_int(row.get("army_id"))
+                if army_id is None:
+                    continue
+                noncombatants = _parse_int(row.get("noncombattant_count"))
+                source_noncombatants_by_army_id[army_id] = int(noncombatants or 0)
+                armies.append(
+                    Army(
+                        army_id=army_id,
+                        location_id=(row.get("location_id") or "").strip(),
+                        army_name=(row.get("army_name") or "").strip(),
+                        army_faction=(row.get("army_faction") or "").strip(),
+                        commander_id=_parse_int(row.get("commander_id")),
+                        army_supply=int(_parse_int(row.get("army_supply")) or 0),
+                        army_morale=_parse_int(row.get("army_morale")),
+                        is_embarked=bool(_parse_bool(row.get("is_embarked"))),
+                        is_garrison=bool(_parse_bool(row.get("is_garrison"))),
+                        noncombattant_percent=0.25,
+                    )
+                )
         for army in armies:
             army.army_morale = _clamp_morale(army.army_morale)
             # Resting morale starts equal to the initial current morale.
             army.army_resting_morale = army.army_morale
         session.add_all(armies)
-        session.add_all(
+        detachments = list(
             _load_csv(
                 Detachment,
                 data_dir / "detachments.csv",
@@ -163,6 +175,22 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
                 },
             )
         )
+        session.add_all(detachments)
+        session.flush()
+        fighting_strength_by_army_id: dict[int, int] = {}
+        for detachment in detachments:
+            fighting_strength_by_army_id.setdefault(detachment.army_id, 0)
+            fighting_strength_by_army_id[detachment.army_id] += int(detachment.warrior_count or 0)
+        for army in armies:
+            source_noncombatants = int(source_noncombatants_by_army_id.get(army.army_id, 0))
+            fighting_strength = int(fighting_strength_by_army_id.get(army.army_id, 0))
+            if fighting_strength <= 0:
+                army.noncombattant_percent = 0.25
+            else:
+                army.noncombattant_percent = _clamp_noncombatant_percent(
+                    source_noncombatants / fighting_strength,
+                    default=0.25,
+                )
         session.add_all(
             _load_csv(
                 DetachmentSpecial,

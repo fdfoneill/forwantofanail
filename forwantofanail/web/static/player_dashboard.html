@@ -808,7 +808,7 @@
     function renderArmyStatusSection(view) {
       if (!view?.army) {
         els.armyStatusText.textContent = "Army: -";
-        els.armyMoraleText.textContent = "Morale: -";
+        els.armyMoraleText.textContent = "Morale: - | - noncombattants";
         els.armySummaryText.textContent = "-";
         els.armyCompositionBody.innerHTML = "";
         els.armyStatusPanel.setAttribute("hidden", "");
@@ -817,7 +817,9 @@
       }
 
       els.armyStatusText.textContent = armyStatusText(view);
-      els.armyMoraleText.textContent = `Morale: ${String(view?.army?.morale?.current ?? "-")}`;
+      const moraleCurrent = String(view?.army?.morale?.current ?? "-");
+      const noncombatants = String(view?.army?.composition?.noncombatants ?? "-");
+      els.armyMoraleText.textContent = `Morale: ${moraleCurrent} | ${noncombatants} noncombattants`;
       const detachments = Array.isArray(view?.army?.composition?.detachments) ? view.army.composition.detachments : [];
       let infantry = 0;
       let cavalry = 0;
