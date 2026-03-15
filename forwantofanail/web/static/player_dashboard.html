@@ -699,9 +699,7 @@
     function renderStandingOrderToggle() {
       const enabled = !!state.followRoadEnabled;
       els.followRoadToggleInput.checked = enabled;
-      const hasCurrentAction = !!state.view?.current_action;
-      const canEnableFromOff = hasCurrentAction;
-      els.followRoadToggleInput.disabled = !state.token || (!enabled && !canEnableFromOff);
+      els.followRoadToggleInput.disabled = !state.token;
     }
 
     function processStandingOrderState(view) {
@@ -997,9 +995,6 @@
     function canStageMove(targetH3) {
       if (!state.view || !targetH3) {
         return { ok: false, reason: "No active view loaded." };
-      }
-      if (state.followRoadEnabled) {
-        return { ok: false, reason: "Disable Follow Road standing order to stage manual march." };
       }
       if (state.orderMode !== "march") {
         return { ok: false, reason: "Set orders to March to stage movement." };

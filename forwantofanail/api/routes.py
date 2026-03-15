@@ -822,14 +822,11 @@ def _set_standing_order_report(
     *,
     clock: GameClock,
     message: str,
-    disable: bool,
 ) -> None:
     standing.last_report = message
     standing.last_report_day = clock.day
     standing.last_report_watch = clock.watch
     standing.updated_at = datetime.now(timezone.utc)
-    if disable:
-        standing.follow_road_enabled = False
     _create_alert(
         session,
         recipient_commander_id=standing.commander_id,
@@ -892,36 +889,6 @@ def _next_road_cell(
     return None, "crossroads", "Crossroads reached, new orders needed."
 
 
-def _maybe_disable_follow_road_on_crossroads_entry(
-    session: Session,
-    *,
-    army: Army,
-    origin_h3: str,
-    destination_h3: str,
-    clock: GameClock,
-) -> None:
-    if army.commander_id is None:
-        return
-    standing = session.get(StandingOrder, army.commander_id)
-    if standing is None or not standing.follow_road_enabled:
-        return
-
-    _, reason_code, reason_message = _next_road_cell(
-        session,
-        army,
-        current_h3=destination_h3,
-        last_h3=origin_h3,
-    )
-    if reason_code == "crossroads":
-        _set_standing_order_report(
-            session,
-            standing,
-            clock=clock,
-            message=reason_message or "Crossroads reached, new orders needed.",
-            disable=True,
-        )
-
-
 def _apply_plan(
     session: Session,
     *,
@@ -934,25 +901,7 @@ def _apply_plan(
     allow_partial_night_march: bool = False,
     disable_follow_road: bool = False,
 ) -> tuple[list[Action], int]:
-    if disable_follow_road:
-        standing = _get_or_create_standing_order(session, commander_id)
-        if standing.follow_road_enabled:
-            standing.follow_road_enabled = False
-            standing.last_report = "Standing order cancelled: follow road."
-            standing.last_report_day = clock.day
-            standing.last_report_watch = clock.watch
-            standing.updated_at = datetime.now(timezone.utc)
-            _create_alert(
-                session,
-                recipient_commander_id=commander_id,
-                alert_type="action",
-                signal_kind="event",
-                category="standing-order",
-                importance="normal",
-                message="Standing order cancelled: follow road.",
-                created_day=clock.day,
-                created_watch=clock.watch,
-            )
+    _ = disable_follow_road
 
     active_actions = (
         session.query(Action)
@@ -1041,7 +990,6 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
                 standing,
                 clock=clock,
                 message="Road march halted: no field army available for this commander.",
-                disable=True,
             )
             continue
 
@@ -1052,7 +1000,6 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
                 standing,
                 clock=clock,
                 message="Road march halted: previous position unknown; new orders needed.",
-                disable=True,
             )
             continue
 
@@ -1081,7 +1028,6 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
                 standing,
                 clock=clock,
                 message=stop_reason or "Road march halted: unable to continue.",
-                disable=True,
             )
             continue
 
@@ -1102,7 +1048,6 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
                 standing,
                 clock=clock,
                 message=f"Road march halted: {exc.detail}",
-                disable=True,
             )
             continue
         standing.last_report = "Next day's march planned according to standing orders"
@@ -1121,16 +1066,14 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
             created_watch=clock.watch,
         )
         if stop_reason:
-            # Crossroads should disable only when the army actually enters the junction.
-            # If a partial path was staged up to a crossroads, keep standing order enabled
-            # for now; completion tick will disable/report on entry.
-            if not (stop_reason_code == "crossroads" and path):
+            # Only alert for dead-end/crossroads when it is the current
+            # end-of-march cell (i.e., no next step could be staged at all).
+            if not (stop_reason_code in {"crossroads", "dead_end"} and path):
                 _set_standing_order_report(
                     session,
                     standing,
                     clock=clock,
                     message=stop_reason,
-                    disable=True,
                 )
         else:
             standing.updated_at = datetime.now(timezone.utc)
@@ -1250,13 +1193,6 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
                         new_faction=army.army_faction,
                         clock=clock,
                     )
-                _maybe_disable_follow_road_on_crossroads_entry(
-                    session,
-                    army=army,
-                    origin_h3=origin_h3,
-                    destination_h3=destination_h3,
-                    clock=clock,
-                )
                 action.state = "completed"
                 completed += 1
                 continue
@@ -1792,23 +1728,6 @@ def create_action(
 ):
     army = _find_commander_army(session, commander_id)
     clock = _get_or_create_clock(session)
-    standing = _get_or_create_standing_order(session, commander_id)
-    if standing.follow_road_enabled:
-        standing.follow_road_enabled = False
-        standing.last_report = "Standing order cancelled: follow road."
-        standing.last_report_day = clock.day
-        standing.last_report_watch = clock.watch
-        standing.updated_at = datetime.now(timezone.utc)
-        _create_alert(
-            session,
-            recipient_commander_id=commander_id,
-            alert_type="action",
-            category="standing-order",
-            importance="normal",
-            message="Standing order cancelled: follow road.",
-            created_day=clock.day,
-            created_watch=clock.watch,
-        )
     action_params: dict[str, Any] = {}
     if payload.kind == "move":
         if clock.watch == int(Watch.NIGHT):
@@ -1912,7 +1831,7 @@ def plan_actions(
         kind=payload.kind,
         path=path,
         now=datetime.now(timezone.utc),
-        disable_follow_road=True,
+        disable_follow_road=False,
     )
     cancelled_note = _cancellation_narrative(cancelled_by_kind)
     if payload.kind == "march" and not path:
@@ -1974,13 +1893,6 @@ def set_follow_road_standing_order(
 ):
     standing = _get_or_create_standing_order(session, commander_id)
     clock = _get_or_create_clock(session)
-    if payload.enabled and not standing.follow_road_enabled:
-        current_action = _get_current_action_row(session, commander_id)
-        if current_action is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Follow Road cannot be enabled while army is holding",
-            )
     standing.follow_road_enabled = bool(payload.enabled)
     if payload.enabled:
         standing.last_report = "Standing order active: follow road."
