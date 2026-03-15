@@ -514,24 +514,25 @@
 
       <div class="section-divider"></div>
 
-      <div class="standing-order">
-        <span>Standing Order: Follow Road</span>
-        <label class="switch" for="followRoadToggleInput">
-          <input id="followRoadToggleInput" type="checkbox" />
-          <span class="switch-slider"></span>
-        </label>
-      </div>
+      <button id="ordersStatusToggle" class="army-status-toggle" type="button">
+        <span id="ordersStatusText">Orders: Hold</span>
+        <span id="ordersStatusChevron">▸</span>
+      </button>
 
-      <button id="orderToggleBtn" type="button">Issue Order</button>
-
-      <div class="orders-tools" id="ordersBox" hidden>
-        <button id="hideOrdersBtn" type="button">Hide Orders</button>
+      <div class="orders-tools army-status-panel" id="ordersPanel" hidden>
+        <div class="standing-order">
+          <span>Standing Order: Follow Road</span>
+          <label class="switch" for="followRoadToggleInput">
+            <input id="followRoadToggleInput" type="checkbox" />
+            <span class="switch-slider"></span>
+          </label>
+        </div>
         <select id="orderModeSelect">
           <option value="march">March</option>
           <option value="forage">Forage</option>
         </select>
         <ul id="stagedPathList" class="staged-list"></ul>
-        <button id="submitOrdersBtn" type="button">Submit Orders</button>
+        <button id="submitOrdersBtn" type="button">Issue Orders</button>
       </div>
 
       <div class="message-tools">
@@ -587,6 +588,7 @@
       followRoadEnabled: false,
       armyPanelExpanded: false,
       supplyPanelExpanded: false,
+      ordersPanelExpanded: false,
     };
 
     const TERRAIN_COLORS = {
@@ -642,6 +644,10 @@
       supplyStatusText: document.getElementById("supplyStatusText"),
       supplyStatusChevron: document.getElementById("supplyStatusChevron"),
       supplyStatusPanel: document.getElementById("supplyStatusPanel"),
+      ordersStatusToggle: document.getElementById("ordersStatusToggle"),
+      ordersStatusText: document.getElementById("ordersStatusText"),
+      ordersStatusChevron: document.getElementById("ordersStatusChevron"),
+      ordersPanel: document.getElementById("ordersPanel"),
       statusLine: document.getElementById("statusLine"),
       timeText: document.getElementById("timeText"),
       centerText: document.getElementById("centerText"),
@@ -650,11 +656,8 @@
       supplyCapacityText: document.getElementById("supplyCapacityText"),
       supplyDailyText: document.getElementById("supplyDailyText"),
       followRoadToggleInput: document.getElementById("followRoadToggleInput"),
-      orderToggleBtn: document.getElementById("orderToggleBtn"),
-      ordersBox: document.getElementById("ordersBox"),
       orderModeSelect: document.getElementById("orderModeSelect"),
       submitOrdersBtn: document.getElementById("submitOrdersBtn"),
-      hideOrdersBtn: document.getElementById("hideOrdersBtn"),
       stagedPathList: document.getElementById("stagedPathList"),
       composeToggleBtn: document.getElementById("composeToggleBtn"),
       composeBox: document.getElementById("composeBox"),
@@ -876,6 +879,28 @@
       }
     }
 
+    function ordersStatusText(view) {
+      const kind = String(view?.current_action?.kind || "").trim().toLowerCase();
+      if (kind === "move" || kind === "march") {
+        return "Orders: March";
+      }
+      if (kind === "forage") {
+        return "Orders: Forage";
+      }
+      return "Orders: Hold";
+    }
+
+    function renderOrdersStatusSection(view) {
+      els.ordersStatusText.textContent = ordersStatusText(view);
+      if (state.ordersPanelExpanded) {
+        els.ordersPanel.removeAttribute("hidden");
+        els.ordersStatusChevron.textContent = "▾";
+      } else {
+        els.ordersPanel.setAttribute("hidden", "");
+        els.ordersStatusChevron.textContent = "▸";
+      }
+    }
+
     function currentWatchIndex() {
       return Number(state.view?.time?.watch);
     }
@@ -1058,7 +1083,7 @@
       if (state.orderMode !== "march") {
         return false;
       }
-      if (els.ordersBox.hasAttribute("hidden")) {
+      if (!state.ordersPanelExpanded) {
         return false;
       }
       return true;
@@ -1769,6 +1794,7 @@
       updateMetadata(view);
       renderArmyStatusSection(view);
       renderSupplyStatusSection(view);
+      renderOrdersStatusSection(view);
       renderOrdersPanel();
       await refreshValidNextMoves();
       renderMap();
@@ -1782,19 +1808,19 @@
     }
 
     function openOrdersPane() {
-      els.ordersBox.removeAttribute("hidden");
-      els.orderToggleBtn.setAttribute("hidden", "");
+      state.ordersPanelExpanded = true;
+      renderOrdersStatusSection(state.view);
       updateHoveredMoveOutline(state.hoverH3);
     }
 
     function closeOrdersPane() {
-      els.ordersBox.setAttribute("hidden", "");
-      els.orderToggleBtn.removeAttribute("hidden");
+      state.ordersPanelExpanded = false;
+      renderOrdersStatusSection(state.view);
       updateHoveredMoveOutline(state.hoverH3);
     }
 
     function toggleOrdersPane() {
-      if (els.ordersBox.hasAttribute("hidden")) {
+      if (!state.ordersPanelExpanded) {
         openOrdersPane();
       } else {
         closeOrdersPane();
@@ -1833,6 +1859,7 @@
         state.followRoadEnabled = false;
         state.armyPanelExpanded = false;
         state.supplyPanelExpanded = false;
+        state.ordersPanelExpanded = false;
         state.orderMode = "march";
         state.stagedPath = [];
         state.remainingItinerary = [];
@@ -1842,9 +1869,8 @@
         renderSupplyStatusSection(null);
         renderMap();
         renderOrdersPanel();
+        renderOrdersStatusSection(null);
         renderStandingOrderToggle();
-        els.ordersBox.setAttribute("hidden", "");
-        els.orderToggleBtn.removeAttribute("hidden");
         renderAlerts();
         renderCorrespondents();
         renderInbox();
@@ -1860,8 +1886,7 @@
         els.messageRead.textContent = "Select a letter to read.";
         state.alerts = [];
         renderAlerts();
-        els.ordersBox.setAttribute("hidden", "");
-        els.orderToggleBtn.removeAttribute("hidden");
+        state.ordersPanelExpanded = false;
         await loginCommander(commanderName);
         state.orderMode = "march";
         state.stagedPath = [];
@@ -1870,6 +1895,7 @@
         state.followRoadEnabled = false;
         state.armyPanelExpanded = false;
         state.supplyPanelExpanded = false;
+        state.ordersPanelExpanded = false;
         await refreshAllPanels();
       } catch (err) {
         setStatus(`Login/load error: ${err.message}`, true);
@@ -1901,6 +1927,7 @@
       renderStandingOrderToggle();
       renderArmyStatusSection(null);
       renderSupplyStatusSection(null);
+      renderOrdersStatusSection(null);
       els.armyStatusToggle.addEventListener("click", () => {
         state.armyPanelExpanded = !state.armyPanelExpanded;
         renderArmyStatusSection(state.view);
@@ -1909,8 +1936,7 @@
         state.supplyPanelExpanded = !state.supplyPanelExpanded;
         renderSupplyStatusSection(state.view);
       });
-      els.orderToggleBtn.addEventListener("click", () => openOrdersPane());
-      els.hideOrdersBtn.addEventListener("click", () => closeOrdersPane());
+      els.ordersStatusToggle.addEventListener("click", () => toggleOrdersPane());
       els.followRoadToggleInput.addEventListener("change", async () => {
         if (!state.token) {
           setStatus("Select a commander first.", true);
@@ -1980,7 +2006,7 @@
           toggleOrdersPane();
           return;
         }
-        if (key === "enter" && !els.ordersBox.hasAttribute("hidden")) {
+        if (key === "enter" && state.ordersPanelExpanded) {
           event.preventDefault();
           els.submitOrdersBtn.click();
         }
