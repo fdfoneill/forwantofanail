@@ -823,6 +823,7 @@ def _set_standing_order_report(
     clock: GameClock,
     message: str,
 ) -> None:
+    importance = "moderate" if "new orders needed" in message.lower() else "normal"
     standing.last_report = message
     standing.last_report_day = clock.day
     standing.last_report_watch = clock.watch
@@ -833,7 +834,7 @@ def _set_standing_order_report(
         alert_type="report",
         signal_kind="event",
         category="standing-order",
-        importance="normal",
+        importance=importance,
         message=message,
         created_day=clock.day,
         created_watch=clock.watch,
