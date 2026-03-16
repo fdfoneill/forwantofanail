@@ -232,3 +232,23 @@ def list_valid_destinations_from_origin(session: Session, army_id: int, origin_i
             continue
         valid.append(destination.location_id)
     return valid
+
+
+def calculate_move_watches_from_origin(
+    session: Session,
+    army_id: int,
+    origin_id: str,
+    destination_id: str,
+) -> int:
+    army = session.get(Army, army_id)
+    if army is None:
+        raise ValueError(f"Unknown army_id {army_id}")
+    origin = session.get(Location, origin_id)
+    if origin is None:
+        raise ValueError(f"Unknown origin {origin_id}")
+    destination = session.get(Location, destination_id)
+    if destination is None:
+        raise ValueError(f"Unknown destination {destination_id}")
+    if not are_adjacent(origin.location_id, destination.location_id):
+        raise ValueError("Destination is not adjacent to origin.")
+    return _movement_cost(session, army, origin, destination)
