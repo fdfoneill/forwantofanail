@@ -1273,6 +1273,19 @@ def _clamp_morale(value: int | None, default: int = 9) -> int:
     return max(2, min(12, int(value)))
 
 
+def _detachment_display_type(detachment: Any) -> str:
+    special_names = sorted(
+        str(special.special_name).strip()
+        for special in list(getattr(detachment, "specials", []) or [])
+        if str(getattr(special, "special_name", "")).strip()
+    )
+    if special_names:
+        return special_names[0].lower()
+    return ("heavy " if detachment.is_heavy else "light ") + (
+        "cavalry" if detachment.is_cavalry else "infantry"
+    )
+
+
 def _serialize_army(army: Army) -> dict[str, Any]:
     stats = supply_stats(army)
     noncombatants = noncombatant_count(army)
@@ -1301,10 +1314,7 @@ def _serialize_army(army: Army) -> dict[str, Any]:
                     "wagons": det.wagon_count,
                     "is_cavalry": det.is_cavalry,
                     "is_heavy": det.is_heavy,
-                    "type": (
-                        ("heavy " if det.is_heavy else "light ")
-                        + ("cavalry" if det.is_cavalry else "infantry")
-                    ),
+                    "type": _detachment_display_type(det),
                 }
                 for det in army.detachments
             ],
