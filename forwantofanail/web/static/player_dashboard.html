@@ -592,6 +592,7 @@
       armyPanelExpanded: false,
       supplyPanelExpanded: false,
       ordersPanelExpanded: false,
+      refreshInFlight: false,
     };
 
     const TERRAIN_COLORS = {
@@ -713,11 +714,9 @@
       const nextEnabled = !!followRoad.enabled;
       const wasEnabled = !!state.followRoadEnabled;
       state.followRoadEnabled = nextEnabled;
-      if (nextEnabled && (state.stagedPath.length > 0 || state.stagedAttack)) {
+      if (!wasEnabled && nextEnabled && state.stagedPath.length > 0) {
         state.stagedPath = [];
-        state.stagedAttack = null;
         state.validNextMoves = new Set();
-        state.validAttackTargets = new Map();
         renderStagedPathList();
       } else if (wasEnabled && !nextEnabled) {
         refreshOrderTargets().catch(() => {});
@@ -1966,10 +1965,18 @@
     }
 
     async function refreshAllPanels() {
+      if (state.refreshInFlight) {
+        return;
+      }
+      state.refreshInFlight = true;
+      try {
       await refreshView();
       await refreshCorrespondents();
       await refreshInbox();
       await refreshAlerts();
+      } finally {
+        state.refreshInFlight = false;
+      }
     }
 
     function openOrdersPane() {
@@ -2239,6 +2246,7 @@
               },
               true
             );
+            setStatus("Attack order issued.");
           } else {
             const payload = state.orderMode === "forage"
               ? { kind: "forage", path: [] }
@@ -2251,6 +2259,12 @@
               },
               true
             );
+            if (state.orderMode === "forage") {
+              setStatus("Forage order issued.");
+            } else {
+              const leagues = state.stagedPath.length;
+              setStatus(leagues ? `${leagues}-league march ordered.` : "Halt ordered.");
+            }
           }
           state.stagedPath = [];
           state.stagedAttack = null;
