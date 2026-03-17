@@ -807,6 +807,9 @@
       if (kind === "forage") {
         return `${armyName}: Foraging`;
       }
+      if (kind === "attack") {
+        return `${armyName}: Attacking`;
+      }
       return `${armyName}: Holding`;
     }
 
@@ -2246,7 +2249,6 @@
               },
               true
             );
-            setStatus("Attack order issued.");
           } else {
             const payload = state.orderMode === "forage"
               ? { kind: "forage", path: [] }

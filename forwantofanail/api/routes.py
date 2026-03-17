@@ -1103,6 +1103,16 @@ def _effective_strength(army: Army) -> int:
     return _infantry_count(army) + (2 * _cavalry_count(army))
 
 
+def _ratio_label(numerator: int, denominator: int) -> str | None:
+    if numerator <= 0 or denominator <= 0:
+        return None
+    ratio = numerator / denominator
+    rounded = int(round(ratio))
+    if rounded < 2:
+        return None
+    return f"{rounded}-to-1"
+
+
 def _is_enemy_occupied(session: Session, *, destination_h3: str, moving_army: Army) -> bool:
     blocker = (
         session.query(Army)
@@ -1561,11 +1571,90 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
                 default=-999,
             )
             own_mods = army_modifiers.get(army.army_id, {})
+            own_faction = str(army.army_faction)
             army_name = str(army.army_name or f"Army {army.army_id}")
+            enemy_armies = [other for other in participant_armies if str(other.army_faction) != own_faction]
+            enemy_primary = enemy_armies[0] if enemy_armies else None
+            enemy_name = str(enemy_primary.army_name or "enemy army") if enemy_primary is not None else "enemy army"
+
+            # If this army was an attacker, prefer naming the explicit target from submitted attack.
+            if army.army_id in attacker_ids:
+                for action_id in edge_action_ids_by_node.get(army.army_id, set()):
+                    if action_id in action_ids_in_component:
+                        target_army_id = target_army_id_by_action_id.get(action_id)
+                        target_army = session.get(Army, target_army_id) if target_army_id is not None else None
+                        if target_army is not None:
+                            enemy_name = str(target_army.army_name or enemy_name)
+                            enemy_primary = target_army
+                            break
+            else:
+                incoming = incoming_by_target.get(army.army_id, [])
+                if incoming:
+                    attacker_id = None
+                    for inc_action_id in incoming:
+                        for row_action_id, row_attacker_id, _ in edges:
+                            if row_action_id == inc_action_id:
+                                attacker_id = row_attacker_id
+                                break
+                        if attacker_id is not None:
+                            break
+                    attacker_army = session.get(Army, attacker_id) if attacker_id is not None else None
+                    if attacker_army is not None:
+                        enemy_name = str(attacker_army.army_name or enemy_name)
+                        enemy_primary = attacker_army
+
+            enemy_qualifiers: list[str] = []
+            if enemy_primary is not None:
+                enemy_mods = army_modifiers.get(enemy_primary.army_id, {})
+                if int(enemy_mods.get("out_of_formation", 0) or 0) < 0:
+                    enemy_qualifiers.append("out of formation")
+                if int(enemy_mods.get("undersupplied", 0) or 0) < 0:
+                    enemy_qualifiers.append("undersupplied")
+            enemy_display = f"{enemy_name} ({', '.join(enemy_qualifiers)})" if enemy_qualifiers else enemy_name
+
+            own_side_strength = max(1, int(side_strength.get(own_faction, 1)))
+            enemy_side_strength = max(
+                (int(side_strength.get(f, 1)) for f in side_strength.keys() if f != own_faction),
+                default=1,
+            )
+            ratio = _ratio_label(own_side_strength, enemy_side_strength)
+            battle_position: list[str] = []
+            if ratio:
+                battle_position.append(f"with {ratio} numerical superiority")
+            if int(own_mods.get("morale_advantage", 0) or 0) > 0:
+                battle_position.append("with superior morale")
+            if int(own_mods.get("chosen_battlefield", 0) or 0) > 0:
+                battle_position.append("holding chosen ground")
+            if int(own_mods.get("surprise", 0) or 0) > 0:
+                battle_position.append("with surprise")
+            if int(own_mods.get("rough_terrain", 0) or 0) < 0:
+                battle_position.append("in rough terrain")
+            if int(own_mods.get("undersupplied", 0) or 0) < 0:
+                battle_position.append("while undersupplied")
+            if int(own_mods.get("out_of_formation", 0) or 0) < 0:
+                battle_position.append("out of formation")
+
+            if army.army_id in attacker_ids:
+                opener = f"BATTLE! {army_name} attacks {enemy_display}"
+            else:
+                opener = f"BATTLE! {enemy_display} attacks {army_name}"
+            if battle_position:
+                opener = f"{opener} {' and '.join(battle_position)}"
+            opener = f"{opener}."
+
+            casualties = int(casualties_by_army.get(army.army_id, 0) or 0)
+            morale_delta = int(morale_delta_by_army.get(army.army_id, 0) or 0)
+            if morale_delta > 0:
+                morale_text = "army morale increased."
+            elif morale_delta < 0:
+                morale_text = "army morale decreased."
+            else:
+                morale_text = "army morale held."
+            enemy_routed = any(bool(rout_by_army.get(other.army_id, False)) for other in enemy_armies)
+            rout_text = " Enemy routed." if enemy_routed else ""
             message = (
-                f"BATTLE! {army_name} roll {own_roll} vs enemy top {enemy_top}. "
-                f"{winner_faction.upper()} victory. "
-                f"{casualties_by_army.get(army.army_id, 0)} warriors lost."
+                f"{opener} {winner_faction.upper()} VICTORY. "
+                f"{casualties} {own_faction} warriors slain, {morale_text}{rout_text}"
             )
             _create_alert(
                 session,
@@ -2417,6 +2506,7 @@ def create_action(
     if current_action is not None and current_action.state == "in_progress" and current_action.kind == "rout":
         raise HTTPException(status_code=409, detail="Army is routing; new orders unavailable until regroup.")
     action_params: dict[str, Any] = {}
+    attack_target_name: str | None = None
     if payload.kind == "move":
         if clock.watch == int(Watch.NIGHT):
             raise HTTPException(status_code=400, detail="Move actions cannot be submitted during Night watch")
@@ -2492,6 +2582,7 @@ def create_action(
             adjacent = set()
         if target_h3 not in adjacent:
             raise HTTPException(status_code=400, detail="Attack target must be adjacent")
+        attack_target_name = str(target_army.army_name or f"{target_army.army_faction} army").strip()
         action_params["target_h3"] = target_h3
         action_params["target_army_id"] = target_army_id
         # Attack preempts all existing queued and in-progress actions.
@@ -2531,6 +2622,20 @@ def create_action(
         )
         if not in_progress_exists:
             _start_action_now_if_valid(session, action, army, clock)
+
+    if payload.kind == "attack" and action.state in ACTIVE_ACTION_STATES:
+        target_name = attack_target_name or "enemy army"
+        _create_alert(
+            session,
+            recipient_commander_id=commander_id,
+            alert_type="action",
+            signal_kind="event",
+            category="orders",
+            importance="normal",
+            message=f"Attack ordered against {target_name}.",
+            created_day=clock.day,
+            created_watch=clock.watch,
+        )
 
     session.commit()
     session.refresh(action)
