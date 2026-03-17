@@ -939,7 +939,29 @@
     function renderStagedPathList() {
       if (state.orderMode === "attack") {
         if (!state.stagedAttack) {
-          els.stagedPathList.innerHTML = "<li class=\"staged-empty\">No staged attack target.</li>";
+          const targets = Array.from(state.validAttackTargets.values());
+          if (!targets.length) {
+            els.stagedPathList.innerHTML = "<li class=\"staged-empty\">No adjacent enemy armies available to attack.</li>";
+            return;
+          }
+          const rows = targets.map((target) => {
+            const h3Label = String(target.target_h3 || "").trim();
+            const label = String(target.label || target.faction || "Enemy army").trim();
+            return (
+              `<li class="staged-item">` +
+              `<span>${label} (${h3Label})</span>` +
+              `<button class="staged-remove" data-attack-target="${h3Label}" type="button">Stage</button>` +
+              `</li>`
+            );
+          });
+          els.stagedPathList.innerHTML = rows.join("");
+          els.stagedPathList.querySelectorAll("button[data-attack-target]").forEach((btn) => {
+            btn.addEventListener("click", async () => {
+              const h3Index = String(btn.dataset.attackTarget || "").trim();
+              if (!h3Index) return;
+              await stageMoveToCell(h3Index);
+            });
+          });
           return;
         }
         const label = String(state.stagedAttack.label || state.stagedAttack.target_h3 || "Target");
@@ -1900,7 +1922,7 @@
             return;
           }
           const h3Index = poly.dataset.h3 || "";
-          await stageMoveToCell(h3Index, { silent: true });
+          await stageMoveToCell(h3Index, { silent: state.orderMode !== "attack" });
         });
       });
     }
@@ -1935,7 +1957,11 @@
       renderSupplyStatusSection(view);
       renderOrdersStatusSection(view);
       renderOrdersPanel();
-      await refreshOrderTargets();
+      try {
+        await refreshOrderTargets();
+      } catch (err) {
+        setStatus(`Attack target lookup failed: ${err.message}`, true);
+      }
       renderMap();
     }
 
@@ -2157,7 +2183,11 @@
           renderMap();
         }
         renderOrdersPanel();
-        await refreshOrderTargets();
+        try {
+          await refreshOrderTargets();
+        } catch (err) {
+          setStatus(`Order target lookup failed: ${err.message}`, true);
+        }
       });
       document.addEventListener("keydown", async (event) => {
         const target = event.target;
