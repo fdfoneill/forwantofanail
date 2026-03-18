@@ -531,6 +531,7 @@
           <option value="march">March</option>
           <option value="forage">Forage</option>
           <option value="attack">Attack</option>
+          <option value="besiege">Besiege</option>
         </select>
         <ul id="stagedPathList" class="staged-list"></ul>
         <button id="submitOrdersBtn" type="button">Issue Orders</button>
@@ -584,10 +585,13 @@
       orderMode: "march",
       stagedPath: [],
       stagedAttack: null,
+      stagedSiege: null,
       remainingItinerary: [],
       remainingRout: [],
+      remainingSiegeTarget: "",
       validNextMoves: new Set(),
       validAttackTargets: new Map(),
+      validBesiegeTargets: new Map(),
       alerts: [],
       followRoadEnabled: false,
       armyPanelExpanded: false,
@@ -822,6 +826,9 @@
       if (kind === "attack") {
         return `${armyName}: Attacking`;
       }
+      if (kind === "besiege") {
+        return `${armyName}: Besieging`;
+      }
       return `${armyName}: Holding`;
     }
 
@@ -909,6 +916,9 @@
       if (kind === "attack") {
         return "Orders: Attack";
       }
+      if (kind === "besiege") {
+        return "Orders: Besiege";
+      }
       if (kind === "rout") {
         return "Orders: Routed";
       }
@@ -993,6 +1003,44 @@
         }
         return;
       }
+      if (state.orderMode === "besiege") {
+        if (!state.stagedSiege) {
+          const targets = Array.from(state.validBesiegeTargets.values());
+          if (!targets.length) {
+            els.stagedPathList.innerHTML = "<li class=\"staged-empty\">No adjacent enemy strongholds available to besiege.</li>";
+            return;
+          }
+          const rows = targets.map((target) => (
+            `<li class="staged-item">` +
+            `<span>${String(target.stronghold_name || "Stronghold")}</span>` +
+            `<button class="staged-remove" data-besiege-target="${String(target.target_h3 || "").trim()}" type="button">Stage</button>` +
+            `</li>`
+          ));
+          els.stagedPathList.innerHTML = rows.join("");
+          els.stagedPathList.querySelectorAll("button[data-besiege-target]").forEach((btn) => {
+            btn.addEventListener("click", async () => {
+              const h3Index = String(btn.dataset.besiegeTarget || "").trim();
+              if (!h3Index) return;
+              await stageMoveToCell(h3Index);
+            });
+          });
+          return;
+        }
+        const label = String(state.stagedSiege.stronghold_name || state.stagedSiege.target_h3 || "Stronghold");
+        els.stagedPathList.innerHTML =
+          `<li class="staged-item"><span>Target: ${label}</span>` +
+          `<button class="staged-remove" data-clear-besiege="1" type="button">Clear</button></li>`;
+        const clearBtn = els.stagedPathList.querySelector("button[data-clear-besiege]");
+        if (clearBtn) {
+          clearBtn.addEventListener("click", async () => {
+            state.stagedSiege = null;
+            renderStagedPathList();
+            await refreshValidBesiegeTargets().catch(() => {});
+            renderMap();
+          });
+        }
+        return;
+      }
       if (!state.stagedPath.length) {
         els.stagedPathList.innerHTML = "<li class=\"staged-empty\">No staged march cells.</li>";
         return;
@@ -1046,13 +1094,14 @@
       const maxSteps = maxMarchSteps();
       const isMarch = state.orderMode === "march";
       const isForage = state.orderMode === "forage";
-       const isAttack = state.orderMode === "attack";
+      const isAttack = state.orderMode === "attack";
+      const isBesiege = state.orderMode === "besiege";
       const isRouting = String(state.view?.current_action?.kind || "").trim().toLowerCase() === "rout";
       els.orderModeSelect.value = state.orderMode;
-      els.queueMoveBtn.disabled = !(isMarch || isAttack) || isRouting;
-      els.stagedPathList.style.display = (isMarch || isAttack) ? "" : "none";
-      els.queueMoveBtn.textContent = isAttack ? "Stage Attack" : "Stage Move";
-      els.submitOrdersBtn.disabled = isRouting || (isForage && !isNightOrMatinWatch()) || (isAttack && !state.stagedAttack);
+      els.queueMoveBtn.disabled = !(isMarch || isAttack || isBesiege) || isRouting;
+      els.stagedPathList.style.display = (isMarch || isAttack || isBesiege) ? "" : "none";
+      els.queueMoveBtn.textContent = isAttack ? "Stage Attack" : (isBesiege ? "Stage Siege" : "Stage Move");
+      els.submitOrdersBtn.disabled = isRouting || (isForage && !isNightOrMatinWatch()) || (isAttack && !state.stagedAttack) || (isBesiege && !state.stagedSiege);
       const forageOption = els.orderModeSelect.querySelector("option[value=\"forage\"]");
       if (forageOption) {
         forageOption.disabled = !isNightOrMatinWatch();
@@ -1064,6 +1113,10 @@
       const marchOption = els.orderModeSelect.querySelector("option[value=\"march\"]");
       if (marchOption) {
         marchOption.disabled = isRouting;
+      }
+      const besiegeOption = els.orderModeSelect.querySelector("option[value=\"besiege\"]");
+      if (besiegeOption) {
+        besiegeOption.disabled = isRouting;
       }
       if (state.stagedPath.length > maxSteps) {
         state.stagedPath = state.stagedPath.slice(0, maxSteps);
@@ -1134,9 +1187,48 @@
       updateHoveredMoveOutline(state.hoverH3);
     }
 
+    async function refreshValidBesiegeTargets() {
+      state.validBesiegeTargets = new Map();
+      if (!state.token || !state.view || state.orderMode !== "besiege") {
+        renderStagedPathList();
+        updateStageMoveButtonVisibility(state.hoverH3);
+        updateHoveredMoveOutline(state.hoverH3);
+        return;
+      }
+      const origin = state.view.environs.center_h3;
+      if (!origin) {
+        renderStagedPathList();
+        updateStageMoveButtonVisibility(state.hoverH3);
+        updateHoveredMoveOutline(state.hoverH3);
+        return;
+      }
+      const payload = await api(`/v1/me/actions/valid-besiege?origin_h3=${encodeURIComponent(origin)}`, {}, true);
+      const targets = Array.isArray(payload.targets) ? payload.targets : [];
+      for (const row of targets) {
+        const key = String(row?.target_h3 || "").trim();
+        if (!key) continue;
+        state.validBesiegeTargets.set(key, {
+          target_h3: key,
+          stronghold_id: String(row?.stronghold_id || "").trim(),
+          stronghold_name: String(row?.stronghold_name || "").trim(),
+          faction: String(row?.faction || "").trim(),
+          defender_labels: Array.isArray(row?.defender_labels) ? row.defender_labels.map(String) : [],
+        });
+      }
+      if (state.stagedSiege && !state.validBesiegeTargets.has(String(state.stagedSiege.target_h3 || ""))) {
+        state.stagedSiege = null;
+      }
+      renderStagedPathList();
+      els.submitOrdersBtn.disabled = String(state.view?.current_action?.kind || "").trim().toLowerCase() === "rout" || !state.stagedSiege;
+      updateStageMoveButtonVisibility(state.hoverH3);
+      updateHoveredMoveOutline(state.hoverH3);
+    }
+
     async function refreshOrderTargets() {
       if (state.orderMode === "attack") {
         await refreshValidAttackTargets();
+      } else if (state.orderMode === "besiege") {
+        await refreshValidBesiegeTargets();
       } else {
         await refreshValidNextMoves();
       }
@@ -1199,8 +1291,32 @@
       return { ok: true, reason: "" };
     }
 
+    function canStageBesiege(targetH3) {
+      if (!state.view || !targetH3) {
+        return { ok: false, reason: "No active view loaded." };
+      }
+      if (state.orderMode !== "besiege") {
+        return { ok: false, reason: "Set orders to Besiege to stage a siege target." };
+      }
+      const isRouting = String(state.view?.current_action?.kind || "").trim().toLowerCase() === "rout";
+      if (isRouting) {
+        return { ok: false, reason: "Army is routing; new orders unavailable until regroup." };
+      }
+      const visible = new Set((state.view?.environs?.cells || []).map((c) => c.h3));
+      if (!visible.has(targetH3)) {
+        return { ok: false, reason: "Cell is outside your current view." };
+      }
+      const target = state.validBesiegeTargets.get(String(targetH3));
+      if (!target) {
+        return { ok: false, reason: "Cell is not a valid adjacent enemy stronghold." };
+      }
+      return { ok: true, reason: "" };
+    }
+
     function updateStageMoveButtonVisibility(h3Index) {
-      const check = state.orderMode === "attack" ? canStageAttack(h3Index) : canStageMove(h3Index);
+      const check = state.orderMode === "attack"
+        ? canStageAttack(h3Index)
+        : (state.orderMode === "besiege" ? canStageBesiege(h3Index) : canStageMove(h3Index));
       const shouldShow = !!h3Index && check.ok;
       els.queueMoveBtn.style.display = shouldShow ? "" : "none";
     }
@@ -1216,7 +1332,9 @@
       if (!canClickStageMode()) {
         return;
       }
-      const check = state.orderMode === "attack" ? canStageAttack(h3Index) : canStageMove(h3Index);
+      const check = state.orderMode === "attack"
+        ? canStageAttack(h3Index)
+        : (state.orderMode === "besiege" ? canStageBesiege(h3Index) : canStageMove(h3Index));
       if (!h3Index || !check.ok) {
         return;
       }
@@ -1236,7 +1354,7 @@
       if (String(state.view?.current_action?.kind || "").trim().toLowerCase() === "rout") {
         return false;
       }
-      if (!["march", "attack"].includes(state.orderMode)) {
+      if (!["march", "attack", "besiege"].includes(state.orderMode)) {
         return false;
       }
       if (!state.ordersPanelExpanded) {
@@ -1270,6 +1388,27 @@
         state.stagedAttack = { ...target };
         renderOrdersPanel();
         await refreshValidAttackTargets();
+        renderMap();
+        return true;
+      }
+      if (state.orderMode === "besiege") {
+        const check = canStageBesiege(h3Index);
+        if (!check.ok) {
+          if (!silent) {
+            setStatus(check.reason, true);
+          }
+          return false;
+        }
+        const target = state.validBesiegeTargets.get(String(h3Index));
+        if (!target) {
+          if (!silent) {
+            setStatus("No valid stronghold found in selected cell.", true);
+          }
+          return false;
+        }
+        state.stagedSiege = { ...target };
+        renderOrdersPanel();
+        await refreshValidBesiegeTargets();
         renderMap();
         return true;
       }
@@ -1639,6 +1778,7 @@
       const itineraryOverlays = [];
       const routOverlays = [];
       const attackOverlays = [];
+      const siegeOverlays = [];
       const roadLines = [];
       const strongholdIcons = [];
       const otherArmyIcons = [];
@@ -1646,9 +1786,15 @@
       const stagedAttackH3 = state.orderMode === "attack" && state.stagedAttack
         ? String(state.stagedAttack.target_h3 || "").trim()
         : "";
+      const stagedSiegeH3 = state.orderMode === "besiege" && state.stagedSiege
+        ? String(state.stagedSiege.target_h3 || "").trim()
+        : "";
       const stagedIndexByH3 = new Map(state.stagedPath.map((h3Index, idx) => [h3Index, idx + 1]));
       if (stagedAttackH3) {
         stagedIndexByH3.set(stagedAttackH3, 1);
+      }
+      if (stagedSiegeH3) {
+        stagedIndexByH3.set(stagedSiegeH3, 1);
       }
       const itineraryIndexByH3 = new Map(
         state.remainingItinerary
@@ -1665,6 +1811,7 @@
           ? (view?.current_action?.target_h3 || "")
           : ""
       ).trim();
+      const queuedSiegeH3 = String(view?.itinerary?.siege_target_h3 || "").trim();
 
       for (const item of projected) {
         centerByH3.set(item.cell.h3, item.center);
@@ -1902,6 +2049,12 @@
             `<polygon points="${attackPoints}" fill="none" stroke="#b53333" stroke-width="2.2" stroke-dasharray="6 4" stroke-linejoin="round" opacity="0.95" pointer-events="none" />`
           );
         }
+        if (queuedSiegeH3 && item.cell.h3 === queuedSiegeH3) {
+          const siegePoints = item.poly.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+          siegeOverlays.push(
+            `<polygon points="${siegePoints}" fill="none" stroke="#7f3c8d" stroke-width="2.2" stroke-dasharray="6 4" stroke-linejoin="round" opacity="0.95" pointer-events="none" />`
+          );
+        }
       }
 
       if (centerPolygon) {
@@ -1915,6 +2068,7 @@
         `<g>${itineraryOverlays.join("")}</g>` +
         `<g>${routOverlays.join("")}</g>` +
         `<g>${attackOverlays.join("")}</g>` +
+        `<g>${siegeOverlays.join("")}</g>` +
         `<g>${stagedOverlays.join("")}</g>`;
       bindHoverHandlers();
       updateHoveredMoveOutline(state.hoverH3);
@@ -1954,6 +2108,8 @@
         const hasStronghold = !!(cell.stronghold && cell.stronghold.name);
         let strongholdTypeText = "none";
         let strongholdFactionText = "none";
+        let siegeText = "no";
+        let gatesText = "unknown";
         if (cell.stronghold && cell.stronghold.type) {
           strongholdTypeText = String(cell.stronghold.type);
         }
@@ -1961,6 +2117,12 @@
           strongholdFactionText = String(cell.stronghold.faction);
         } else if (!hasStronghold && cell.region_control) {
           strongholdFactionText = String(cell.region_control);
+        }
+        if (cell.stronghold?.under_siege) {
+          siegeText = "yes";
+          if (typeof cell.stronghold?.siege?.gates_open === "boolean") {
+            gatesText = cell.stronghold.siege.gates_open ? "open" : "closed";
+          }
         }
         els.hoverTitle.textContent = String(cell.cell_title || terrain);
         if (hasStronghold) {
@@ -1972,6 +2134,8 @@
           `<div><span class=\"k\">Terrain:</span>${terrain}</div>` +
           `<div><span class=\"k\">Stronghold Type:</span>${strongholdTypeText}</div>` +
           `<div><span class=\"k\">Faction:</span>${strongholdFactionText}</div>` +
+          `<div><span class=\"k\">Under Siege:</span>${siegeText}</div>` +
+          `${siegeText === "yes" ? `<div><span class=\"k\">Gates:</span>${gatesText}</div>` : ""}` +
           `<div><span class=\"k\">Settlement:</span>${settlementText}</div>` +
           `<div><span class=\"k\">Foraged This Season:</span>${foragedText}</div>`;
         updateStageMoveButtonVisibility(h3Index);
@@ -2043,6 +2207,7 @@
       state.view = view;
       state.remainingItinerary = Array.isArray(view?.itinerary?.remaining_moves) ? view.itinerary.remaining_moves.map(String) : [];
       state.remainingRout = Array.isArray(view?.itinerary?.remaining_rout) ? view.itinerary.remaining_rout.map(String) : [];
+      state.remainingSiegeTarget = String(view?.itinerary?.siege_target_h3 || "").trim();
       state.borderRoadNeighbors = new Set((borderRoads.roads || []).map((value) => String(value)));
       processStandingOrderState(view);
       updateMetadata(view);
@@ -2103,6 +2268,8 @@
       }
       if (nextMode === "attack") {
         state.orderMode = "attack";
+      } else if (nextMode === "besiege") {
+        state.orderMode = "besiege";
       } else if (nextMode === "forage") {
         state.orderMode = "forage";
       } else {
@@ -2112,16 +2279,28 @@
       if (state.orderMode === "forage") {
         state.stagedPath = [];
         state.stagedAttack = null;
+        state.stagedSiege = null;
         state.validNextMoves = new Set();
         state.validAttackTargets = new Map();
+        state.validBesiegeTargets = new Map();
         renderMap();
       } else if (state.orderMode === "attack") {
         state.stagedPath = [];
+        state.stagedSiege = null;
         state.validNextMoves = new Set();
+        state.validBesiegeTargets = new Map();
+        renderMap();
+      } else if (state.orderMode === "besiege") {
+        state.stagedPath = [];
+        state.stagedAttack = null;
+        state.validNextMoves = new Set();
+        state.validAttackTargets = new Map();
         renderMap();
       } else {
         state.stagedAttack = null;
+        state.stagedSiege = null;
         state.validAttackTargets = new Map();
+        state.validBesiegeTargets = new Map();
         renderMap();
       }
       renderOrdersPanel();
@@ -2146,10 +2325,13 @@
         state.orderMode = "march";
         state.stagedPath = [];
         state.stagedAttack = null;
+        state.stagedSiege = null;
         state.remainingItinerary = [];
         state.remainingRout = [];
+        state.remainingSiegeTarget = "";
         state.validNextMoves = new Set();
         state.validAttackTargets = new Map();
+        state.validBesiegeTargets = new Map();
         updateMetadata(null);
         renderArmyStatusSection(null);
         renderSupplyStatusSection(null);
@@ -2176,11 +2358,14 @@
         await loginCommander(commanderName);
         state.orderMode = "march";
         state.stagedPath = [];
-        state.stagedAttack = null;
-        state.remainingItinerary = [];
-        state.remainingRout = [];
-        state.validNextMoves = new Set();
-        state.validAttackTargets = new Map();
+          state.stagedAttack = null;
+          state.stagedSiege = null;
+          state.remainingItinerary = [];
+          state.remainingRout = [];
+          state.remainingSiegeTarget = "";
+          state.validNextMoves = new Set();
+          state.validAttackTargets = new Map();
+          state.validBesiegeTargets = new Map();
         state.followRoadEnabled = false;
         state.armyPanelExpanded = false;
         state.supplyPanelExpanded = false;
@@ -2266,6 +2451,8 @@
         }
         if (nextMode === "attack") {
           state.orderMode = "attack";
+        } else if (nextMode === "besiege") {
+          state.orderMode = "besiege";
         } else if (nextMode === "forage") {
           state.orderMode = "forage";
         } else {
@@ -2274,16 +2461,28 @@
         if (state.orderMode === "forage") {
           state.stagedPath = [];
           state.stagedAttack = null;
+          state.stagedSiege = null;
           state.validNextMoves = new Set();
           state.validAttackTargets = new Map();
+          state.validBesiegeTargets = new Map();
           renderMap();
         } else if (state.orderMode === "attack") {
           state.stagedPath = [];
+          state.stagedSiege = null;
           state.validNextMoves = new Set();
+          state.validBesiegeTargets = new Map();
+          renderMap();
+        } else if (state.orderMode === "besiege") {
+          state.stagedPath = [];
+          state.stagedAttack = null;
+          state.validNextMoves = new Set();
+          state.validAttackTargets = new Map();
           renderMap();
         } else {
           state.stagedAttack = null;
+          state.stagedSiege = null;
           state.validAttackTargets = new Map();
+          state.validBesiegeTargets = new Map();
           renderMap();
         }
         renderOrdersPanel();
@@ -2343,6 +2542,22 @@
               },
               true
             );
+          } else if (state.orderMode === "besiege") {
+            if (!state.stagedSiege) {
+              setStatus("Stage an adjacent stronghold to issue a siege order.", true);
+              return;
+            }
+            await api(
+              "/v1/me/actions",
+              {
+                method: "POST",
+                body: JSON.stringify({
+                  kind: "besiege",
+                  target_stronghold_id: state.stagedSiege.stronghold_id,
+                }),
+              },
+              true
+            );
           } else {
             const payload = state.orderMode === "forage"
               ? { kind: "forage", path: [] }
@@ -2364,8 +2579,10 @@
           }
           state.stagedPath = [];
           state.stagedAttack = null;
+          state.stagedSiege = null;
           state.validNextMoves = new Set();
           state.validAttackTargets = new Map();
+          state.validBesiegeTargets = new Map();
           renderOrdersPanel();
           await refreshView();
           await refreshAlerts();

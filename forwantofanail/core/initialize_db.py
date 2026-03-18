@@ -15,6 +15,7 @@ from forwantofanail.core.models import (
     GameClock,
     Location,
     Movement,
+    Siege,
     Stronghold,
     TerrainType,
 )
