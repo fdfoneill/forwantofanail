@@ -779,6 +779,13 @@
       return label.replace(" Watch", " watch");
     }
 
+    function watchStampAge(currentDay, currentWatch, createdDay, createdWatch) {
+      if (![currentDay, currentWatch, createdDay, createdWatch].every((value) => Number.isFinite(value))) {
+        return null;
+      }
+      return ((currentDay * 5) + currentWatch) - ((createdDay * 5) + createdWatch);
+    }
+
     function normalizeAlertMessage(message) {
       const text = String(message || "").trim();
       const match = text.match(/on day (\d+)\/watch (\d+)/i);
@@ -1496,6 +1503,7 @@
         }
         const importance = String(item?.importance || "normal").toLowerCase();
         const signalKind = String(item?.signal_kind || "event").toLowerCase();
+        const category = String(item?.category || "").toLowerCase();
         const createdDay = Number(item?.created_watch?.day);
         const createdWatch = Number(item?.created_watch?.watch);
 
@@ -1509,6 +1517,13 @@
             signal_kind: "state",
           });
           continue;
+        }
+
+        if ((category === "orders" || category === "standing-order") && isCurrentWatchKnown) {
+          const age = watchStampAge(currentDay, currentWatch, createdDay, createdWatch);
+          if (age !== null && age >= 5) {
+            continue;
+          }
         }
 
         const hasCreatedStamp = Number.isFinite(createdDay) && Number.isFinite(createdWatch);

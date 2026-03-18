@@ -2904,7 +2904,7 @@ def set_follow_road_standing_order(
     clock = _get_or_create_clock(session)
     standing.follow_road_enabled = bool(payload.enabled)
     if payload.enabled:
-        standing.last_report = "Standing order active: follow road."
+        standing.last_report = "Standing order issued: follow road."
         standing.last_report_day = None
         standing.last_report_watch = None
         _create_alert(
@@ -2914,12 +2914,12 @@ def set_follow_road_standing_order(
             signal_kind="event",
             category="standing-order",
             importance="normal",
-            message="Standing order active: follow road.",
+            message="Standing order issued: follow road.",
             created_day=clock.day,
             created_watch=clock.watch,
         )
     else:
-        standing.last_report = "Standing order cancelled: follow road."
+        standing.last_report = "Standing order rescinded: follow road."
         standing.last_report_day = clock.day
         standing.last_report_watch = clock.watch
         _create_alert(
@@ -2929,7 +2929,7 @@ def set_follow_road_standing_order(
             signal_kind="event",
             category="standing-order",
             importance="normal",
-            message="Standing order cancelled: follow road.",
+            message="Standing order rescinded: follow road.",
             created_day=clock.day,
             created_watch=clock.watch,
         )
