@@ -1089,12 +1089,14 @@
     async function refreshValidAttackTargets() {
       state.validAttackTargets = new Map();
       if (!state.token || !state.view || state.orderMode !== "attack") {
+        renderStagedPathList();
         updateStageMoveButtonVisibility(state.hoverH3);
         updateHoveredMoveOutline(state.hoverH3);
         return;
       }
       const origin = state.view.environs.center_h3;
       if (!origin) {
+        renderStagedPathList();
         updateStageMoveButtonVisibility(state.hoverH3);
         updateHoveredMoveOutline(state.hoverH3);
         return;
@@ -1113,8 +1115,9 @@
       }
       if (state.stagedAttack && !state.validAttackTargets.has(String(state.stagedAttack.target_h3 || ""))) {
         state.stagedAttack = null;
-        renderStagedPathList();
       }
+      renderStagedPathList();
+      els.submitOrdersBtn.disabled = String(state.view?.current_action?.kind || "").trim().toLowerCase() === "rout" || !state.stagedAttack;
       updateStageMoveButtonVisibility(state.hoverH3);
       updateHoveredMoveOutline(state.hoverH3);
     }
@@ -1253,7 +1256,7 @@
           return false;
         }
         state.stagedAttack = { ...target };
-        renderStagedPathList();
+        renderOrdersPanel();
         await refreshValidAttackTargets();
         renderMap();
         return true;
