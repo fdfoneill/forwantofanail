@@ -645,6 +645,26 @@ def _emit_enemy_proximity_alerts(session: Session, clock: GameClock) -> None:
             )
 
 
+def _emit_rout_state_alerts(session: Session, clock: GameClock) -> None:
+    routing_actions = (
+        session.query(Action)
+        .filter(Action.state == "in_progress", Action.kind == "rout")
+        .all()
+    )
+    for action in routing_actions:
+        _create_alert(
+            session,
+            recipient_commander_id=action.commander_id,
+            alert_type="violence",
+            signal_kind="state",
+            category="battle",
+            importance="high",
+            message="Army out of control!",
+            created_day=clock.day,
+            created_watch=clock.watch,
+        )
+
+
 def _emit_stronghold_conquest_alerts(
     session: Session,
     *,
@@ -1926,6 +1946,17 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
                         )
                     )
             action.state = "completed"
+            _create_alert(
+                session,
+                recipient_commander_id=action.commander_id,
+                alert_type="report",
+                signal_kind="event",
+                category="battle",
+                importance="normal",
+                message="Army rallied",
+                created_day=clock.day,
+                created_watch=clock.watch,
+            )
             completed += 1
             continue
 
@@ -2382,6 +2413,7 @@ def advance_time_for_development(
             _emit_supply_alerts_after_consumption(session, clock)
         _emit_no_supply_state_alerts(session, clock)
         _emit_enemy_proximity_alerts(session, clock)
+        _emit_rout_state_alerts(session, clock)
         timeline.append(
             {
                 "time": _clock_payload(clock),

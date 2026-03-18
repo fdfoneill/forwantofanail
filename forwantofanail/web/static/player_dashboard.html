@@ -796,11 +796,14 @@
 
     function armyStatusText(view) {
       const armyName = String(view?.army?.name || "Army").trim() || "Army";
+      const kind = String(view?.current_action?.kind || "").trim().toLowerCase();
+      if (kind === "rout") {
+        return `${armyName}: Fleeing`;
+      }
       const watch = Number(view?.time?.watch);
       if (watch === 0) {
         return `${armyName}: Encamped`;
       }
-      const kind = String(view?.current_action?.kind || "").trim().toLowerCase();
       if (kind === "move") {
         return `${armyName}: Marching`;
       }
@@ -898,7 +901,7 @@
         return "Orders: Attack";
       }
       if (kind === "rout") {
-        return "Orders: Rout";
+        return "Orders: Routed";
       }
       return "Orders: Hold";
     }
