@@ -1269,20 +1269,7 @@ def _retreat_one_cell(
     if not candidates:
         return False
     destination_h3 = random.choice(candidates)
-    destination_location = session.get(Location, destination_h3)
-    if destination_location is None:
-        return False
-    army.location = destination_location
-    army.location_id = destination_h3
-    session.add(
-        Movement(
-            army_id=army.army_id,
-            location_id=destination_h3,
-            date=_scenario_date_for_day(clock.day),
-            watch=clock.watch,
-        )
-    )
-    return True
+    return _execute_move_to_destination(session, clock, army, destination_h3)
 
 
 def _create_rout_action(
@@ -2052,18 +2039,7 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
             path = [str(h3_index).strip() for h3_index in (payload.get("path") or []) if str(h3_index).strip()]
             if path:
                 destination_h3 = path[-1]
-                destination_location = session.get(Location, destination_h3)
-                if destination_location is not None:
-                    army.location = destination_location
-                    army.location_id = destination_h3
-                    session.add(
-                        Movement(
-                            army_id=army.army_id,
-                            location_id=destination_h3,
-                            date=_scenario_date_for_day(clock.day),
-                            watch=clock.watch,
-                        )
-                    )
+                _execute_move_to_destination(session, clock, army, destination_h3)
             action.state = "completed"
             _create_alert(
                 session,
