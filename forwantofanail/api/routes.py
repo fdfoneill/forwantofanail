@@ -676,7 +676,7 @@ def _emit_stronghold_conquest_alerts(
     event_date = _scenario_date_for_day(clock.day)
     watch_name = WATCH_LABELS.get(Watch(int(clock.watch)), "watch").capitalize()
     message = (
-        f"{stronghold.stronghold_name} was conquered by {new_faction} "
+        f"{stronghold.stronghold_name} was conquered by {new_faction} forces "
         f"on {event_date.strftime('%B %d, %Y')}, {watch_name} Watch"
     )
     commanders = session.query(Commander).order_by(Commander.commander_id.asc()).all()
