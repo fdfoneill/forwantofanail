@@ -1320,52 +1320,57 @@ def _create_rout_action(
     return action
 
 
-def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_actions: list[Action]) -> dict[str, int]:
-    if not due_attack_actions:
+def _execute_move_to_destination(session: Session, clock: GameClock, army: Army, destination_h3: str) -> bool:
+    destination_location = session.get(Location, destination_h3)
+    if destination_location is None:
+        return False
+    army.location = destination_location
+    army.location_id = destination_h3
+    session.add(
+        Movement(
+            army_id=army.army_id,
+            location_id=destination_h3,
+            date=_scenario_date_for_day(clock.day),
+            watch=clock.watch,
+        )
+    )
+    stronghold = (
+        session.query(Stronghold)
+        .filter(Stronghold.location_id == destination_h3)
+        .first()
+    )
+    if stronghold is not None and stronghold.control != army.army_faction:
+        previous_faction = stronghold.control
+        stronghold.control = army.army_faction
+        _emit_stronghold_conquest_alerts(
+            session,
+            stronghold=stronghold,
+            previous_faction=previous_faction,
+            new_faction=army.army_faction,
+            clock=clock,
+        )
+    return True
+
+
+def _resolve_battles_from_edges(
+    session: Session,
+    clock: GameClock,
+    *,
+    action_by_id: dict[int, Action],
+    edges: list[tuple[int, int, int]],
+    target_h3_by_action_id: dict[int, str],
+    target_army_id_by_action_id: dict[int, int],
+    forced_out_of_formation_army_ids: set[int] | None = None,
+    disable_surprise_army_ids: set[int] | None = None,
+    allow_side_draw: bool = False,
+    winner_destination_by_action_id: dict[int, str] | None = None,
+) -> dict[str, int]:
+    if not edges:
         return {"completed": 0, "failed": 0}
 
-    action_by_id: dict[int, Action] = {action.action_id: action for action in due_attack_actions}
-    attacker_army_by_action_id: dict[int, Army] = {}
-    target_army_id_by_action_id: dict[int, int] = {}
-    target_h3_by_action_id: dict[int, str] = {}
-    edges: list[tuple[int, int, int]] = []  # (action_id, attacker_army_id, target_army_id)
-    failed = 0
-    completed = 0
-
-    for action in due_attack_actions:
-        attacker = session.query(Army).filter(Army.commander_id == action.commander_id).first()
-        if attacker is None:
-            action.state = "failed"
-            failed += 1
-            continue
-        try:
-            params = json.loads(action.parameters_json or "{}")
-        except json.JSONDecodeError:
-            params = {}
-        target_h3 = str(params.get("target_h3") or "").strip()
-        raw_target_army_id = params.get("target_army_id")
-        if target_h3 == "" or raw_target_army_id is None:
-            action.state = "failed"
-            failed += 1
-            continue
-        try:
-            target_army_id = int(raw_target_army_id)
-        except (TypeError, ValueError):
-            action.state = "failed"
-            failed += 1
-            continue
-        target = session.get(Army, target_army_id)
-        if target is None or target.army_id == attacker.army_id or target.army_faction == attacker.army_faction:
-            action.state = "failed"
-            failed += 1
-            continue
-        attacker_army_by_action_id[action.action_id] = attacker
-        target_army_id_by_action_id[action.action_id] = target_army_id
-        target_h3_by_action_id[action.action_id] = target_h3
-        edges.append((action.action_id, attacker.army_id, target_army_id))
-
-    if not edges:
-        return {"completed": completed, "failed": failed}
+    forced_out_of_formation_army_ids = forced_out_of_formation_army_ids or set()
+    disable_surprise_army_ids = disable_surprise_army_ids or set()
+    winner_destination_by_action_id = winner_destination_by_action_id or {}
 
     adjacency: dict[int, set[int]] = defaultdict(set)
     edge_action_ids_by_node: dict[int, set[int]] = defaultdict(set)
@@ -1390,6 +1395,9 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
             comp.add(cur)
             stack.extend(list(adjacency.get(cur, set()) - visited))
         components.append(comp)
+
+    failed = 0
+    completed = 0
 
     for comp_idx, participant_ids in enumerate(components, start=1):
         participant_armies = [session.get(Army, army_id) for army_id in participant_ids]
@@ -1453,7 +1461,10 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
             )
             chosen_battlefield = 1 if (not is_attacker and active_kind is None) else 0
             undersupplied = 1 if int(army.army_supply or 0) < int(supply_stats(army).daily_consumption or 0) else 0
-            out_of_formation = 1 if (active_kind is not None and active_kind != "attack") else 0
+            out_of_formation = 1 if (
+                army.army_id in forced_out_of_formation_army_ids
+                or (active_kind is not None and active_kind != "attack")
+            ) else 0
             target_h3 = None
             if is_attacker:
                 for action_id in edge_action_ids_by_node.get(army.army_id, set()):
@@ -1477,7 +1488,7 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
                 if terrain_name and terrain_name != "open ground":
                     rough_terrain = 1
             surprise = 0
-            if is_attacker:
+            if is_attacker and army.army_id not in disable_surprise_army_ids:
                 target_army_id = None
                 for action_id in edge_action_ids_by_node.get(army.army_id, set()):
                     if action_id in action_ids_in_component:
@@ -1511,9 +1522,11 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
                 side_top_roll[faction] = final_roll
                 side_top_army_id[faction] = army.army_id
 
-        winner_faction = max(side_top_roll.keys(), key=lambda faction: side_top_roll[faction])
-        winner_armies = sides[winner_faction]
-        winner_top_army = session.get(Army, side_top_army_id[winner_faction]) if winner_faction in side_top_army_id else None
+        top_score = max(side_top_roll.values())
+        top_factions = [faction for faction, score in side_top_roll.items() if score == top_score]
+        winner_faction = None if allow_side_draw and len(top_factions) > 1 else max(side_top_roll.keys(), key=lambda faction: side_top_roll[faction])
+        winner_armies = sides.get(winner_faction, []) if winner_faction is not None else []
+        winner_top_army = session.get(Army, side_top_army_id[winner_faction]) if winner_faction is not None and winner_faction in side_top_army_id else None
 
         casualties_by_army: dict[int, int] = {}
         morale_delta_by_army: dict[int, int] = defaultdict(int)
@@ -1606,6 +1619,10 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
             if action is None:
                 continue
             if action.state == "in_progress":
+                if winner_faction is not None and action_id in winner_destination_by_action_id:
+                    acting_army = session.query(Army).filter(Army.commander_id == action.commander_id).first()
+                    if acting_army is not None and str(acting_army.army_faction) == str(winner_faction):
+                        _execute_move_to_destination(session, clock, acting_army, winner_destination_by_action_id[action_id])
                 action.state = "completed"
                 completed += 1
 
@@ -1699,7 +1716,10 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
                 morale_text = "army morale decreased."
             else:
                 morale_text = "army morale held."
-            outcome_text = "VICTORY" if own_faction == winner_faction else "DEFEAT"
+            if winner_faction is None:
+                outcome_text = "DRAW"
+            else:
+                outcome_text = "VICTORY" if own_faction == winner_faction else "DEFEAT"
             enemy_routed = any(bool(rout_by_army.get(other.army_id, False)) for other in enemy_armies)
             own_routed = bool(rout_by_army.get(army.army_id, False))
             own_supply_lost = int(supply_transfer_by_army.get(army.army_id, {}).get("lost", 0) or 0)
@@ -1748,6 +1768,59 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
             )
 
     return {"completed": completed, "failed": failed}
+
+
+def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_actions: list[Action]) -> dict[str, int]:
+    if not due_attack_actions:
+        return {"completed": 0, "failed": 0}
+
+    action_by_id: dict[int, Action] = {action.action_id: action for action in due_attack_actions}
+    target_army_id_by_action_id: dict[int, int] = {}
+    target_h3_by_action_id: dict[int, str] = {}
+    edges: list[tuple[int, int, int]] = []  # (action_id, attacker_army_id, target_army_id)
+    failed = 0
+
+    for action in due_attack_actions:
+        attacker = session.query(Army).filter(Army.commander_id == action.commander_id).first()
+        if attacker is None:
+            action.state = "failed"
+            failed += 1
+            continue
+        try:
+            params = json.loads(action.parameters_json or "{}")
+        except json.JSONDecodeError:
+            params = {}
+        target_h3 = str(params.get("target_h3") or "").strip()
+        raw_target_army_id = params.get("target_army_id")
+        if target_h3 == "" or raw_target_army_id is None:
+            action.state = "failed"
+            failed += 1
+            continue
+        try:
+            target_army_id = int(raw_target_army_id)
+        except (TypeError, ValueError):
+            action.state = "failed"
+            failed += 1
+            continue
+        target = session.get(Army, target_army_id)
+        if target is None or target.army_id == attacker.army_id or target.army_faction == attacker.army_faction:
+            action.state = "failed"
+            failed += 1
+            continue
+        target_army_id_by_action_id[action.action_id] = target_army_id
+        target_h3_by_action_id[action.action_id] = target_h3
+        edges.append((action.action_id, attacker.army_id, target_army_id))
+
+    result = _resolve_battles_from_edges(
+        session,
+        clock,
+        action_by_id=action_by_id,
+        edges=edges,
+        target_h3_by_action_id=target_h3_by_action_id,
+        target_army_id_by_action_id=target_army_id_by_action_id,
+    )
+    result["failed"] += failed
+    return result
 
 
 def _start_action_now_if_valid(session: Session, action: Action, army: Army, clock: GameClock) -> bool:
@@ -1846,6 +1919,77 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
     due_attack_actions: list[Action] = []
     deferred_moves: list[tuple[Action, Army, str]] = []
     deferred_once: set[int] = set()
+    ready_moves: list[tuple[Action, Army, str]] = []
+
+    def resolve_move_batch(move_batch: list[tuple[Action, Army, str]]) -> dict[str, int]:
+        batch_completed = 0
+        batch_failed = 0
+        if not move_batch:
+            return {"completed": 0, "failed": 0}
+
+        by_destination: dict[str, list[tuple[Action, Army, str]]] = defaultdict(list)
+        for row in move_batch:
+            by_destination[row[2]].append(row)
+
+        contested_battle_input: list[tuple[str, list[tuple[Action, Army, str]]]] = []
+        uncontested_moves: list[tuple[Action, Army, str]] = []
+        for destination_h3, rows in by_destination.items():
+            factions = {str(army.army_faction) for _, army, _ in rows}
+            if len(factions) > 1:
+                contested_battle_input.append((destination_h3, rows))
+            else:
+                uncontested_moves.extend(rows)
+
+        for action, army, destination_h3 in uncontested_moves:
+            if action.state != "in_progress":
+                continue
+            if not _execute_move_to_destination(session, clock, army, destination_h3):
+                action.state = "failed"
+                batch_failed += 1
+                continue
+            action.state = "completed"
+            batch_completed += 1
+
+        synthetic_action_id = -1
+        synthetic_actions: dict[int, Action] = {}
+        synthetic_edges: list[tuple[int, int, int]] = []
+        synthetic_target_h3_by_action_id: dict[int, str] = {}
+        synthetic_target_army_id_by_action_id: dict[int, int] = {}
+        synthetic_winner_destination_by_action_id: dict[int, str] = {}
+        forced_out_of_formation_army_ids: set[int] = set()
+        disable_surprise_army_ids: set[int] = set()
+
+        for destination_h3, rows in contested_battle_input:
+            for idx, (action, army, _) in enumerate(rows):
+                forced_out_of_formation_army_ids.add(army.army_id)
+                disable_surprise_army_ids.add(army.army_id)
+                synthetic_actions[action.action_id] = action
+                synthetic_winner_destination_by_action_id[action.action_id] = destination_h3
+                opponents = [other_army for _, other_army, _ in rows if other_army.army_id != army.army_id and other_army.army_faction != army.army_faction]
+                if not opponents:
+                    continue
+                for opponent in opponents:
+                    synthetic_edges.append((action.action_id, army.army_id, opponent.army_id))
+                    synthetic_target_h3_by_action_id[action.action_id] = destination_h3
+                    synthetic_target_army_id_by_action_id[action.action_id] = opponent.army_id
+
+        if synthetic_edges:
+            battle_result = _resolve_battles_from_edges(
+                session,
+                clock,
+                action_by_id=synthetic_actions,
+                edges=synthetic_edges,
+                target_h3_by_action_id=synthetic_target_h3_by_action_id,
+                target_army_id_by_action_id=synthetic_target_army_id_by_action_id,
+                forced_out_of_formation_army_ids=forced_out_of_formation_army_ids,
+                disable_surprise_army_ids=disable_surprise_army_ids,
+                allow_side_draw=True,
+                winner_destination_by_action_id=synthetic_winner_destination_by_action_id,
+            )
+            batch_completed += int(battle_result.get("completed", 0))
+            batch_failed += int(battle_result.get("failed", 0))
+
+        return {"completed": batch_completed, "failed": batch_failed}
 
     # First, attempt to complete currently in-progress non-attack actions.
     for commander_id, commander_actions in in_progress_by_commander.items():
@@ -1880,38 +2024,7 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
                 deferred_moves.append((action, army, destination_h3))
                 deferred_once.add(action.action_id)
                 continue
-            destination_location = session.get(Location, destination_h3)
-            if destination_location is None:
-                action.state = "failed"
-                failed += 1
-                continue
-            army.location = destination_location
-            army.location_id = destination_h3
-            session.add(
-                Movement(
-                    army_id=army.army_id,
-                    location_id=destination_h3,
-                    date=_scenario_date_for_day(clock.day),
-                    watch=clock.watch,
-                )
-            )
-            stronghold = (
-                session.query(Stronghold)
-                .filter(Stronghold.location_id == destination_h3)
-                .first()
-            )
-            if stronghold is not None and stronghold.control != army.army_faction:
-                previous_faction = stronghold.control
-                stronghold.control = army.army_faction
-                _emit_stronghold_conquest_alerts(
-                    session,
-                    stronghold=stronghold,
-                    previous_faction=previous_faction,
-                    new_faction=army.army_faction,
-                    clock=clock,
-                )
-            action.state = "completed"
-            completed += 1
+            ready_moves.append((action, army, destination_h3))
             continue
 
         if action.kind == "forage":
@@ -1963,7 +2076,12 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
         action.state = "failed"
         failed += 1
 
+    move_result = resolve_move_batch(ready_moves)
+    completed += int(move_result.get("completed", 0))
+    failed += int(move_result.get("failed", 0))
+
     # One deferred pass for blocked moves: "back of the line" in same watch.
+    deferred_ready_moves: list[tuple[Action, Army, str]] = []
     for action, army, destination_h3 in deferred_moves:
         if action.state != "in_progress":
             continue
@@ -1971,38 +2089,11 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
             action.state = "failed"
             failed += 1
             continue
-        destination_location = session.get(Location, destination_h3)
-        if destination_location is None:
-            action.state = "failed"
-            failed += 1
-            continue
-        army.location = destination_location
-        army.location_id = destination_h3
-        session.add(
-            Movement(
-                army_id=army.army_id,
-                location_id=destination_h3,
-                date=_scenario_date_for_day(clock.day),
-                watch=clock.watch,
-            )
-        )
-        stronghold = (
-            session.query(Stronghold)
-            .filter(Stronghold.location_id == destination_h3)
-            .first()
-        )
-        if stronghold is not None and stronghold.control != army.army_faction:
-            previous_faction = stronghold.control
-            stronghold.control = army.army_faction
-            _emit_stronghold_conquest_alerts(
-                session,
-                stronghold=stronghold,
-                previous_faction=previous_faction,
-                new_faction=army.army_faction,
-                clock=clock,
-            )
-        action.state = "completed"
-        completed += 1
+        deferred_ready_moves.append((action, army, destination_h3))
+
+    deferred_result = resolve_move_batch(deferred_ready_moves)
+    completed += int(deferred_result.get("completed", 0))
+    failed += int(deferred_result.get("failed", 0))
 
     # Resolve due attack battles after non-attack movement/forage/rout effects.
     battle_result = _resolve_due_attack_battles(session, clock, due_attack_actions)
