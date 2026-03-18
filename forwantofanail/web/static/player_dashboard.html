@@ -585,6 +585,7 @@
       stagedPath: [],
       stagedAttack: null,
       remainingItinerary: [],
+      remainingRout: [],
       validNextMoves: new Set(),
       validAttackTargets: new Map(),
       alerts: [],
@@ -1595,6 +1596,7 @@
       let centerPolygon = "";
       const stagedOverlays = [];
       const itineraryOverlays = [];
+      const routOverlays = [];
       const attackOverlays = [];
       const roadLines = [];
       const strongholdIcons = [];
@@ -1609,6 +1611,11 @@
       }
       const itineraryIndexByH3 = new Map(
         state.remainingItinerary
+          .filter((h3Index) => !stagedIndexByH3.has(h3Index))
+          .map((h3Index, idx) => [h3Index, idx + 1])
+      );
+      const routIndexByH3 = new Map(
+        state.remainingRout
           .filter((h3Index) => !stagedIndexByH3.has(h3Index))
           .map((h3Index, idx) => [h3Index, idx + 1])
       );
@@ -1840,6 +1847,14 @@
           );
         }
 
+        const routNumber = routIndexByH3.get(item.cell.h3);
+        if (routNumber) {
+          const routPoints = item.poly.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+          routOverlays.push(
+            `<polygon points="${routPoints}" fill="none" stroke="#a85a1a" stroke-width="2.0" stroke-dasharray="6 4" stroke-linejoin="round" opacity="0.92" pointer-events="none" />`
+          );
+        }
+
         if (queuedAttackH3 && item.cell.h3 === queuedAttackH3) {
           const attackPoints = item.poly.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
           attackOverlays.push(
@@ -1857,6 +1872,7 @@
         `<g>${strongholdIcons.join("")}</g>` +
         `<g>${otherArmyIcons.join("")}</g>` +
         `<g>${itineraryOverlays.join("")}</g>` +
+        `<g>${routOverlays.join("")}</g>` +
         `<g>${attackOverlays.join("")}</g>` +
         `<g>${stagedOverlays.join("")}</g>`;
       bindHoverHandlers();
@@ -1978,6 +1994,7 @@
       const borderRoads = await api(`/v1/me/roads/border?cells=${cellsParam}`, {}, true);
       state.view = view;
       state.remainingItinerary = Array.isArray(view?.itinerary?.remaining_moves) ? view.itinerary.remaining_moves.map(String) : [];
+      state.remainingRout = Array.isArray(view?.itinerary?.remaining_rout) ? view.itinerary.remaining_rout.map(String) : [];
       state.borderRoadNeighbors = new Set((borderRoads.roads || []).map((value) => String(value)));
       processStandingOrderState(view);
       updateMetadata(view);
@@ -2081,6 +2098,7 @@
         state.stagedPath = [];
         state.stagedAttack = null;
         state.remainingItinerary = [];
+        state.remainingRout = [];
         state.validNextMoves = new Set();
         state.validAttackTargets = new Map();
         updateMetadata(null);
@@ -2111,6 +2129,7 @@
         state.stagedPath = [];
         state.stagedAttack = null;
         state.remainingItinerary = [];
+        state.remainingRout = [];
         state.validNextMoves = new Set();
         state.validAttackTargets = new Map();
         state.followRoadEnabled = false;

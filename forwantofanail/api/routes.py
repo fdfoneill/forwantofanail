@@ -2296,14 +2296,22 @@ def _serialize_remaining_itinerary(session: Session, commander_id: int) -> dict[
         .all()
     )
     remaining_moves: list[str] = []
+    remaining_rout: list[str] = []
     for action in actions:
-        if action.kind != "move":
-            continue
-        destination_h3 = _get_destination_h3(action)
-        if destination_h3:
-            remaining_moves.append(destination_h3)
+        try:
+            params = json.loads(action.parameters_json or "{}")
+        except json.JSONDecodeError:
+            params = {}
+        if action.kind == "move":
+            destination_h3 = _get_destination_h3(action)
+            if destination_h3:
+                remaining_moves.append(destination_h3)
+        elif action.kind == "rout" and action.state == "in_progress":
+            path = [str(h3_index).strip() for h3_index in (params.get("path") or []) if str(h3_index).strip()]
+            remaining_rout.extend(path)
     return {
         "remaining_moves": remaining_moves,
+        "remaining_rout": remaining_rout,
     }
 
 
