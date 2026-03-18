@@ -167,6 +167,30 @@ class Stronghold(Base):
         back_populates="sender_stronghold",
         foreign_keys="Message.sender_stronghold_id",
     )
+    sieges = relationship("Siege", back_populates="stronghold", cascade="all, delete-orphan")
+
+
+class Siege(Base):
+    __tablename__ = "sieges"
+
+    siege_id = Column(Integer, primary_key=True, autoincrement=True)
+    stronghold_id = Column(Integer, ForeignKey("strongholds.stronghold_id"), nullable=False, index=True)
+    besieger_army_id = Column(Integer, ForeignKey("armies.army_id"), nullable=False, index=True)
+    besieger_commander_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=True, index=True)
+    started_day = Column(Integer, nullable=False)
+    started_watch = Column(Integer, nullable=False)
+    matin_ticks_elapsed = Column(Integer, nullable=False, default=0)
+    current_resistance = Column(Float, nullable=False)
+    max_resistance = Column(Float, nullable=False)
+    gates_open = Column(Boolean, nullable=False, default=False)
+    state = Column(String(20), nullable=False, default="active", index=True)
+    ended_day = Column(Integer, nullable=True)
+    ended_watch = Column(Integer, nullable=True)
+    ended_reason = Column(String(40), nullable=True)
+
+    stronghold = relationship("Stronghold", back_populates="sieges")
+    besieger_army = relationship("Army", foreign_keys=[besieger_army_id])
+    besieger_commander = relationship("Commander", foreign_keys=[besieger_commander_id])
 
 
 class Movement(Base):
