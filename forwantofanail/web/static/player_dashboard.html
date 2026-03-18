@@ -951,7 +951,7 @@
             const label = String(target.label || target.faction || "Enemy army").trim();
             return (
               `<li class="staged-item">` +
-              `<span>${label} (${h3Label})</span>` +
+              `<span>${label}</span>` +
               `<button class="staged-remove" data-attack-target="${h3Label}" type="button">Stage</button>` +
               `</li>`
             );
@@ -1592,16 +1592,28 @@
       let centerPolygon = "";
       const stagedOverlays = [];
       const itineraryOverlays = [];
+      const attackOverlays = [];
       const roadLines = [];
       const strongholdIcons = [];
       const otherArmyIcons = [];
       const centerByH3 = new Map();
+      const stagedAttackH3 = state.orderMode === "attack" && state.stagedAttack
+        ? String(state.stagedAttack.target_h3 || "").trim()
+        : "";
       const stagedIndexByH3 = new Map(state.stagedPath.map((h3Index, idx) => [h3Index, idx + 1]));
+      if (stagedAttackH3) {
+        stagedIndexByH3.set(stagedAttackH3, 1);
+      }
       const itineraryIndexByH3 = new Map(
         state.remainingItinerary
           .filter((h3Index) => !stagedIndexByH3.has(h3Index))
           .map((h3Index, idx) => [h3Index, idx + 1])
       );
+      const queuedAttackH3 = String(
+        view?.current_action?.kind === "attack"
+          ? (view?.current_action?.target_h3 || "")
+          : ""
+      ).trim();
 
       for (const item of projected) {
         centerByH3.set(item.cell.h3, item.center);
@@ -1824,6 +1836,13 @@
             `<polygon points="${itineraryPoints}" fill="none" stroke="#2a6ea8" stroke-width="2.0" stroke-dasharray="6 4" stroke-linejoin="round" opacity="0.9" pointer-events="none" />`
           );
         }
+
+        if (queuedAttackH3 && item.cell.h3 === queuedAttackH3) {
+          const attackPoints = item.poly.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+          attackOverlays.push(
+            `<polygon points="${attackPoints}" fill="none" stroke="#b53333" stroke-width="2.2" stroke-dasharray="6 4" stroke-linejoin="round" opacity="0.95" pointer-events="none" />`
+          );
+        }
       }
 
       if (centerPolygon) {
@@ -1835,6 +1854,7 @@
         `<g>${strongholdIcons.join("")}</g>` +
         `<g>${otherArmyIcons.join("")}</g>` +
         `<g>${itineraryOverlays.join("")}</g>` +
+        `<g>${attackOverlays.join("")}</g>` +
         `<g>${stagedOverlays.join("")}</g>`;
       bindHoverHandlers();
       updateHoveredMoveOutline(state.hoverH3);

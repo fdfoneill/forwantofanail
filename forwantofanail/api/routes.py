@@ -2192,6 +2192,18 @@ def _serialize_action(action: Action) -> dict[str, Any]:
     }
     if action.eta_day is not None and action.eta_watch is not None:
         payload["eta"] = _to_watch_stamp(action.eta_day, action.eta_watch)
+    try:
+        params = json.loads(action.parameters_json or "{}")
+    except json.JSONDecodeError:
+        params = {}
+    if action.kind == "move":
+        destination_h3 = params.get("destination_h3")
+        if isinstance(destination_h3, str) and destination_h3.strip():
+            payload["destination_h3"] = destination_h3.strip()
+    if action.kind == "attack":
+        target_h3 = params.get("target_h3")
+        if isinstance(target_h3, str) and target_h3.strip():
+            payload["target_h3"] = target_h3.strip()
     return payload
 
 
