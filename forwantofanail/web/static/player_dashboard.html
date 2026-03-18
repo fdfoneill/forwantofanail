@@ -530,6 +530,7 @@
         <select id="orderModeSelect">
           <option value="march">March</option>
           <option value="forage">Forage</option>
+          <option value="attack">Attack</option>
         </select>
         <ul id="stagedPathList" class="staged-list"></ul>
         <button id="submitOrdersBtn" type="button">Issue Orders</button>
@@ -582,13 +583,17 @@
       openMessageId: null,
       orderMode: "march",
       stagedPath: [],
+      stagedAttack: null,
       remainingItinerary: [],
+      remainingRout: [],
       validNextMoves: new Set(),
+      validAttackTargets: new Map(),
       alerts: [],
       followRoadEnabled: false,
       armyPanelExpanded: false,
       supplyPanelExpanded: false,
       ordersPanelExpanded: false,
+      refreshInFlight: false,
     };
 
     const TERRAIN_COLORS = {
@@ -710,12 +715,12 @@
       const nextEnabled = !!followRoad.enabled;
       const wasEnabled = !!state.followRoadEnabled;
       state.followRoadEnabled = nextEnabled;
-      if (nextEnabled && state.stagedPath.length > 0) {
+      if (!wasEnabled && nextEnabled && state.stagedPath.length > 0) {
         state.stagedPath = [];
         state.validNextMoves = new Set();
         renderStagedPathList();
       } else if (wasEnabled && !nextEnabled) {
-        refreshValidNextMoves().catch(() => {});
+        refreshOrderTargets().catch(() => {});
       }
       renderStandingOrderToggle();
     }
@@ -792,16 +797,22 @@
 
     function armyStatusText(view) {
       const armyName = String(view?.army?.name || "Army").trim() || "Army";
+      const kind = String(view?.current_action?.kind || "").trim().toLowerCase();
+      if (kind === "rout") {
+        return `${armyName}: Fleeing`;
+      }
       const watch = Number(view?.time?.watch);
       if (watch === 0) {
         return `${armyName}: Encamped`;
       }
-      const kind = String(view?.current_action?.kind || "").trim().toLowerCase();
       if (kind === "move") {
         return `${armyName}: Marching`;
       }
       if (kind === "forage") {
         return `${armyName}: Foraging`;
+      }
+      if (kind === "attack") {
+        return `${armyName}: Attacking`;
       }
       return `${armyName}: Holding`;
     }
@@ -887,6 +898,12 @@
       if (kind === "forage") {
         return "Orders: Forage";
       }
+      if (kind === "attack") {
+        return "Orders: Attack";
+      }
+      if (kind === "rout") {
+        return "Orders: Routed";
+      }
       return "Orders: Hold";
     }
 
@@ -926,6 +943,48 @@
     }
 
     function renderStagedPathList() {
+      if (state.orderMode === "attack") {
+        if (!state.stagedAttack) {
+          const targets = Array.from(state.validAttackTargets.values());
+          if (!targets.length) {
+            els.stagedPathList.innerHTML = "<li class=\"staged-empty\">No adjacent enemy armies available to attack.</li>";
+            return;
+          }
+          const rows = targets.map((target) => {
+            const h3Label = String(target.target_h3 || "").trim();
+            const label = String(target.label || target.faction || "Enemy army").trim();
+            return (
+              `<li class="staged-item">` +
+              `<span>${label}</span>` +
+              `<button class="staged-remove" data-attack-target="${h3Label}" type="button">Stage</button>` +
+              `</li>`
+            );
+          });
+          els.stagedPathList.innerHTML = rows.join("");
+          els.stagedPathList.querySelectorAll("button[data-attack-target]").forEach((btn) => {
+            btn.addEventListener("click", async () => {
+              const h3Index = String(btn.dataset.attackTarget || "").trim();
+              if (!h3Index) return;
+              await stageMoveToCell(h3Index);
+            });
+          });
+          return;
+        }
+        const label = String(state.stagedAttack.label || state.stagedAttack.target_h3 || "Target");
+        els.stagedPathList.innerHTML =
+          `<li class="staged-item"><span>Target: ${label}</span>` +
+          `<button class="staged-remove" data-clear-attack=\"1\" type="button">Clear</button></li>`;
+        const clearBtn = els.stagedPathList.querySelector("button[data-clear-attack]");
+        if (clearBtn) {
+          clearBtn.addEventListener("click", async () => {
+            state.stagedAttack = null;
+            renderStagedPathList();
+            await refreshValidAttackTargets().catch(() => {});
+            renderMap();
+          });
+        }
+        return;
+      }
       if (!state.stagedPath.length) {
         els.stagedPathList.innerHTML = "<li class=\"staged-empty\">No staged march cells.</li>";
         return;
@@ -966,7 +1025,7 @@
           }
           state.stagedPath.splice(idx, 1);
           renderStagedPathList();
-          refreshValidNextMoves()
+          refreshOrderTargets()
             .catch(() => {})
             .finally(() => {
               renderMap();
@@ -979,16 +1038,30 @@
       const maxSteps = maxMarchSteps();
       const isMarch = state.orderMode === "march";
       const isForage = state.orderMode === "forage";
+       const isAttack = state.orderMode === "attack";
+      const isRouting = String(state.view?.current_action?.kind || "").trim().toLowerCase() === "rout";
       els.orderModeSelect.value = state.orderMode;
-      els.queueMoveBtn.disabled = !isMarch;
-      els.stagedPathList.style.display = isMarch ? "" : "none";
-      els.submitOrdersBtn.disabled = isForage && !isNightOrMatinWatch();
+      els.queueMoveBtn.disabled = !(isMarch || isAttack) || isRouting;
+      els.stagedPathList.style.display = (isMarch || isAttack) ? "" : "none";
+      els.queueMoveBtn.textContent = isAttack ? "Stage Attack" : "Stage Move";
+      els.submitOrdersBtn.disabled = isRouting || (isForage && !isNightOrMatinWatch()) || (isAttack && !state.stagedAttack);
       const forageOption = els.orderModeSelect.querySelector("option[value=\"forage\"]");
       if (forageOption) {
         forageOption.disabled = !isNightOrMatinWatch();
       }
+      const attackOption = els.orderModeSelect.querySelector("option[value=\"attack\"]");
+      if (attackOption) {
+        attackOption.disabled = isRouting;
+      }
+      const marchOption = els.orderModeSelect.querySelector("option[value=\"march\"]");
+      if (marchOption) {
+        marchOption.disabled = isRouting;
+      }
       if (state.stagedPath.length > maxSteps) {
         state.stagedPath = state.stagedPath.slice(0, maxSteps);
+      }
+      if (isAttack && state.stagedPath.length) {
+        state.stagedPath = [];
       }
       renderStagedPathList();
       updateStageMoveButtonVisibility(state.hoverH3);
@@ -1017,9 +1090,57 @@
       updateHoveredMoveOutline(state.hoverH3);
     }
 
+    async function refreshValidAttackTargets() {
+      state.validAttackTargets = new Map();
+      if (!state.token || !state.view || state.orderMode !== "attack") {
+        renderStagedPathList();
+        updateStageMoveButtonVisibility(state.hoverH3);
+        updateHoveredMoveOutline(state.hoverH3);
+        return;
+      }
+      const origin = state.view.environs.center_h3;
+      if (!origin) {
+        renderStagedPathList();
+        updateStageMoveButtonVisibility(state.hoverH3);
+        updateHoveredMoveOutline(state.hoverH3);
+        return;
+      }
+      const payload = await api(`/v1/me/actions/valid-attack?origin_h3=${encodeURIComponent(origin)}`, {}, true);
+      const targets = Array.isArray(payload.targets) ? payload.targets : [];
+      for (const row of targets) {
+        const key = String(row?.target_h3 || "").trim();
+        if (!key) continue;
+        state.validAttackTargets.set(key, {
+          target_h3: key,
+          target_army_id: String(row?.target_army_id || "").trim(),
+          faction: String(row?.faction || "").trim(),
+          label: String(row?.label || "").trim(),
+        });
+      }
+      if (state.stagedAttack && !state.validAttackTargets.has(String(state.stagedAttack.target_h3 || ""))) {
+        state.stagedAttack = null;
+      }
+      renderStagedPathList();
+      els.submitOrdersBtn.disabled = String(state.view?.current_action?.kind || "").trim().toLowerCase() === "rout" || !state.stagedAttack;
+      updateStageMoveButtonVisibility(state.hoverH3);
+      updateHoveredMoveOutline(state.hoverH3);
+    }
+
+    async function refreshOrderTargets() {
+      if (state.orderMode === "attack") {
+        await refreshValidAttackTargets();
+      } else {
+        await refreshValidNextMoves();
+      }
+    }
+
     function canStageMove(targetH3) {
       if (!state.view || !targetH3) {
         return { ok: false, reason: "No active view loaded." };
+      }
+      const isRouting = String(state.view?.current_action?.kind || "").trim().toLowerCase() === "rout";
+      if (isRouting) {
+        return { ok: false, reason: "Army is routing; new orders unavailable until regroup." };
       }
       if (state.orderMode !== "march") {
         return { ok: false, reason: "Set orders to March to stage movement." };
@@ -1048,8 +1169,31 @@
       return { ok: true, reason: "" };
     }
 
+    function canStageAttack(targetH3) {
+      if (!state.view || !targetH3) {
+        return { ok: false, reason: "No active view loaded." };
+      }
+      if (state.orderMode !== "attack") {
+        return { ok: false, reason: "Set orders to Attack to stage an attack target." };
+      }
+      const isRouting = String(state.view?.current_action?.kind || "").trim().toLowerCase() === "rout";
+      if (isRouting) {
+        return { ok: false, reason: "Army is routing; new orders unavailable until regroup." };
+      }
+      const visible = new Set((state.view?.environs?.cells || []).map((c) => c.h3));
+      if (!visible.has(targetH3)) {
+        return { ok: false, reason: "Cell is outside your current view." };
+      }
+      const target = state.validAttackTargets.get(String(targetH3));
+      if (!target) {
+        return { ok: false, reason: "Cell is not a valid adjacent enemy target." };
+      }
+      return { ok: true, reason: "" };
+    }
+
     function updateStageMoveButtonVisibility(h3Index) {
-      const shouldShow = !!h3Index && canStageMove(h3Index).ok;
+      const check = state.orderMode === "attack" ? canStageAttack(h3Index) : canStageMove(h3Index);
+      const shouldShow = !!h3Index && check.ok;
       els.queueMoveBtn.style.display = shouldShow ? "" : "none";
     }
 
@@ -1064,7 +1208,8 @@
       if (!canClickStageMode()) {
         return;
       }
-      if (!h3Index || !canStageMove(h3Index).ok) {
+      const check = state.orderMode === "attack" ? canStageAttack(h3Index) : canStageMove(h3Index);
+      if (!h3Index || !check.ok) {
         return;
       }
       const polys = els.mapCanvas.querySelectorAll(".cell-poly");
@@ -1080,7 +1225,10 @@
       if (!state.token || !state.view) {
         return false;
       }
-      if (state.orderMode !== "march") {
+      if (String(state.view?.current_action?.kind || "").trim().toLowerCase() === "rout") {
+        return false;
+      }
+      if (!["march", "attack"].includes(state.orderMode)) {
         return false;
       }
       if (!state.ordersPanelExpanded) {
@@ -1096,6 +1244,28 @@
         }
         return false;
       }
+      if (state.orderMode === "attack") {
+        const check = canStageAttack(h3Index);
+        if (!check.ok) {
+          if (!silent) {
+            setStatus(check.reason, true);
+          }
+          return false;
+        }
+        const target = state.validAttackTargets.get(String(h3Index));
+        if (!target) {
+          if (!silent) {
+            setStatus("No valid target found in selected cell.", true);
+          }
+          return false;
+        }
+        state.stagedAttack = { ...target };
+        renderOrdersPanel();
+        await refreshValidAttackTargets();
+        renderMap();
+        return true;
+      }
+
       const check = canStageMove(h3Index);
       if (!check.ok) {
         if (!silent) {
@@ -1105,7 +1275,7 @@
       }
       state.stagedPath.push(h3Index);
       renderStagedPathList();
-      await refreshValidNextMoves();
+      await refreshOrderTargets();
       renderMap();
       return true;
     }
@@ -1426,16 +1596,34 @@
       let centerPolygon = "";
       const stagedOverlays = [];
       const itineraryOverlays = [];
+      const routOverlays = [];
+      const attackOverlays = [];
       const roadLines = [];
       const strongholdIcons = [];
       const otherArmyIcons = [];
       const centerByH3 = new Map();
+      const stagedAttackH3 = state.orderMode === "attack" && state.stagedAttack
+        ? String(state.stagedAttack.target_h3 || "").trim()
+        : "";
       const stagedIndexByH3 = new Map(state.stagedPath.map((h3Index, idx) => [h3Index, idx + 1]));
+      if (stagedAttackH3) {
+        stagedIndexByH3.set(stagedAttackH3, 1);
+      }
       const itineraryIndexByH3 = new Map(
         state.remainingItinerary
           .filter((h3Index) => !stagedIndexByH3.has(h3Index))
           .map((h3Index, idx) => [h3Index, idx + 1])
       );
+      const routIndexByH3 = new Map(
+        state.remainingRout
+          .filter((h3Index) => !stagedIndexByH3.has(h3Index))
+          .map((h3Index, idx) => [h3Index, idx + 1])
+      );
+      const queuedAttackH3 = String(
+        view?.current_action?.kind === "attack"
+          ? (view?.current_action?.target_h3 || "")
+          : ""
+      ).trim();
 
       for (const item of projected) {
         centerByH3.set(item.cell.h3, item.center);
@@ -1658,6 +1846,21 @@
             `<polygon points="${itineraryPoints}" fill="none" stroke="#2a6ea8" stroke-width="2.0" stroke-dasharray="6 4" stroke-linejoin="round" opacity="0.9" pointer-events="none" />`
           );
         }
+
+        const routNumber = routIndexByH3.get(item.cell.h3);
+        if (routNumber) {
+          const routPoints = item.poly.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+          routOverlays.push(
+            `<polygon points="${routPoints}" fill="none" stroke="#a85a1a" stroke-width="2.0" stroke-dasharray="6 4" stroke-linejoin="round" opacity="0.92" pointer-events="none" />`
+          );
+        }
+
+        if (queuedAttackH3 && item.cell.h3 === queuedAttackH3) {
+          const attackPoints = item.poly.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
+          attackOverlays.push(
+            `<polygon points="${attackPoints}" fill="none" stroke="#b53333" stroke-width="2.2" stroke-dasharray="6 4" stroke-linejoin="round" opacity="0.95" pointer-events="none" />`
+          );
+        }
       }
 
       if (centerPolygon) {
@@ -1669,6 +1872,8 @@
         `<g>${strongholdIcons.join("")}</g>` +
         `<g>${otherArmyIcons.join("")}</g>` +
         `<g>${itineraryOverlays.join("")}</g>` +
+        `<g>${routOverlays.join("")}</g>` +
+        `<g>${attackOverlays.join("")}</g>` +
         `<g>${stagedOverlays.join("")}</g>`;
       bindHoverHandlers();
       updateHoveredMoveOutline(state.hoverH3);
@@ -1761,7 +1966,7 @@
             return;
           }
           const h3Index = poly.dataset.h3 || "";
-          await stageMoveToCell(h3Index, { silent: true });
+          await stageMoveToCell(h3Index, { silent: state.orderMode !== "attack" });
         });
       });
     }
@@ -1789,6 +1994,7 @@
       const borderRoads = await api(`/v1/me/roads/border?cells=${cellsParam}`, {}, true);
       state.view = view;
       state.remainingItinerary = Array.isArray(view?.itinerary?.remaining_moves) ? view.itinerary.remaining_moves.map(String) : [];
+      state.remainingRout = Array.isArray(view?.itinerary?.remaining_rout) ? view.itinerary.remaining_rout.map(String) : [];
       state.borderRoadNeighbors = new Set((borderRoads.roads || []).map((value) => String(value)));
       processStandingOrderState(view);
       updateMetadata(view);
@@ -1796,15 +2002,27 @@
       renderSupplyStatusSection(view);
       renderOrdersStatusSection(view);
       renderOrdersPanel();
-      await refreshValidNextMoves();
+      try {
+        await refreshOrderTargets();
+      } catch (err) {
+        setStatus(`Attack target lookup failed: ${err.message}`, true);
+      }
       renderMap();
     }
 
     async function refreshAllPanels() {
+      if (state.refreshInFlight) {
+        return;
+      }
+      state.refreshInFlight = true;
+      try {
       await refreshView();
       await refreshCorrespondents();
       await refreshInbox();
       await refreshAlerts();
+      } finally {
+        state.refreshInFlight = false;
+      }
     }
 
     function openOrdersPane() {
@@ -1835,15 +2053,31 @@
         renderOrdersPanel();
         return;
       }
-      state.orderMode = nextMode === "forage" ? "forage" : "march";
+      if (nextMode === "attack") {
+        state.orderMode = "attack";
+      } else if (nextMode === "forage") {
+        state.orderMode = "forage";
+      } else {
+        state.orderMode = "march";
+      }
       els.orderModeSelect.value = state.orderMode;
       if (state.orderMode === "forage") {
         state.stagedPath = [];
+        state.stagedAttack = null;
         state.validNextMoves = new Set();
+        state.validAttackTargets = new Map();
+        renderMap();
+      } else if (state.orderMode === "attack") {
+        state.stagedPath = [];
+        state.validNextMoves = new Set();
+        renderMap();
+      } else {
+        state.stagedAttack = null;
+        state.validAttackTargets = new Map();
         renderMap();
       }
       renderOrdersPanel();
-      await refreshValidNextMoves();
+      await refreshOrderTargets();
     }
 
     els.commanderSelect.addEventListener("change", async (event) => {
@@ -1862,8 +2096,11 @@
         state.ordersPanelExpanded = false;
         state.orderMode = "march";
         state.stagedPath = [];
+        state.stagedAttack = null;
         state.remainingItinerary = [];
+        state.remainingRout = [];
         state.validNextMoves = new Set();
+        state.validAttackTargets = new Map();
         updateMetadata(null);
         renderArmyStatusSection(null);
         renderSupplyStatusSection(null);
@@ -1890,8 +2127,11 @@
         await loginCommander(commanderName);
         state.orderMode = "march";
         state.stagedPath = [];
+        state.stagedAttack = null;
         state.remainingItinerary = [];
+        state.remainingRout = [];
         state.validNextMoves = new Set();
+        state.validAttackTargets = new Map();
         state.followRoadEnabled = false;
         state.armyPanelExpanded = false;
         state.supplyPanelExpanded = false;
@@ -1975,14 +2215,34 @@
           renderOrdersPanel();
           return;
         }
-        state.orderMode = nextMode === "forage" ? "forage" : "march";
+        if (nextMode === "attack") {
+          state.orderMode = "attack";
+        } else if (nextMode === "forage") {
+          state.orderMode = "forage";
+        } else {
+          state.orderMode = "march";
+        }
         if (state.orderMode === "forage") {
+          state.stagedPath = [];
+          state.stagedAttack = null;
+          state.validNextMoves = new Set();
+          state.validAttackTargets = new Map();
+          renderMap();
+        } else if (state.orderMode === "attack") {
           state.stagedPath = [];
           state.validNextMoves = new Set();
           renderMap();
+        } else {
+          state.stagedAttack = null;
+          state.validAttackTargets = new Map();
+          renderMap();
         }
         renderOrdersPanel();
-        await refreshValidNextMoves();
+        try {
+          await refreshOrderTargets();
+        } catch (err) {
+          setStatus(`Order target lookup failed: ${err.message}`, true);
+        }
       });
       document.addEventListener("keydown", async (event) => {
         const target = event.target;
@@ -2017,22 +2277,46 @@
           return;
         }
         try {
-          let payload;
-          if (state.orderMode === "forage") {
-            payload = { kind: "forage", path: [] };
+          if (state.orderMode === "attack") {
+            if (!state.stagedAttack) {
+              setStatus("Stage an adjacent enemy target to issue an attack order.", true);
+              return;
+            }
+            await api(
+              "/v1/me/actions",
+              {
+                method: "POST",
+                body: JSON.stringify({
+                  kind: "attack",
+                  target_h3: state.stagedAttack.target_h3,
+                  target_army_id: state.stagedAttack.target_army_id,
+                }),
+              },
+              true
+            );
           } else {
-            payload = { kind: "march", path: state.stagedPath.slice() };
+            const payload = state.orderMode === "forage"
+              ? { kind: "forage", path: [] }
+              : { kind: "march", path: state.stagedPath.slice() };
+            await api(
+              "/v1/me/actions/plan",
+              {
+                method: "POST",
+                body: JSON.stringify(payload),
+              },
+              true
+            );
+            if (state.orderMode === "forage") {
+              setStatus("Forage order issued.");
+            } else {
+              const leagues = state.stagedPath.length;
+              setStatus(leagues ? `${leagues}-league march ordered.` : "Halt ordered.");
+            }
           }
-          await api(
-            "/v1/me/actions/plan",
-            {
-              method: "POST",
-              body: JSON.stringify(payload),
-            },
-            true
-          );
           state.stagedPath = [];
+          state.stagedAttack = null;
           state.validNextMoves = new Set();
+          state.validAttackTargets = new Map();
           renderOrdersPanel();
           await refreshView();
           await refreshAlerts();
