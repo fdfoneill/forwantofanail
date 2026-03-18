@@ -368,7 +368,7 @@ def _apply_supply_loss(army: Army, percent: float) -> int:
     return lost
 
 
-def _apply_random_warrior_loss(army: Army, percent: float) -> int:
+def _apply_random_warrior_loss(session: Session, army: Army, percent: float) -> int:
     detachments = [det for det in army.detachments if int(det.warrior_count or 0) > 0]
     if not detachments:
         return 0
@@ -390,6 +390,7 @@ def _apply_random_warrior_loss(army: Army, percent: float) -> int:
         lost += 1
         if det.warrior_count <= 0:
             available.remove(det)
+            session.delete(det)
     return lost
 
 
@@ -463,7 +464,7 @@ def _run_morale_test_for_army(
         payload["removed_detachments"] = removed_names
     elif roll == 3:
         lost_supply = _apply_supply_loss(army, 0.30)
-        lost_warriors = _apply_random_warrior_loss(army, 0.30)
+        lost_warriors = _apply_random_warrior_loss(session, army, 0.30)
         message = f"Mass desertion! {lost_supply} supply and {lost_warriors} warriors lost."
         payload["lost_supply"] = lost_supply
         payload["lost_warriors"] = lost_warriors
@@ -478,7 +479,7 @@ def _run_morale_test_for_army(
         payload["removed_detachments"] = removed_names
     elif roll == 5:
         lost_supply = _apply_supply_loss(army, 0.20)
-        lost_warriors = _apply_random_warrior_loss(army, 0.20)
+        lost_warriors = _apply_random_warrior_loss(session, army, 0.20)
         message = f"Major desertion! {lost_supply} supply and {lost_warriors} warriors lost."
         payload["lost_supply"] = lost_supply
         payload["lost_warriors"] = lost_warriors
@@ -498,7 +499,7 @@ def _run_morale_test_for_army(
             message = "Mutiny! But no detachments remained to disband."
     elif roll == 8:
         lost_supply = _apply_supply_loss(army, 0.10)
-        lost_warriors = _apply_random_warrior_loss(army, 0.10)
+        lost_warriors = _apply_random_warrior_loss(session, army, 0.10)
         message = f"Desertion! {lost_supply} supply and {lost_warriors} warriors lost."
         payload["lost_supply"] = lost_supply
         payload["lost_warriors"] = lost_warriors
@@ -1512,7 +1513,7 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
                     morale_delta_by_army[army.army_id] -= 2
                 if winner:
                     morale_delta_by_army[army.army_id] += 2
-            casualties_by_army[army.army_id] = _apply_random_warrior_loss(army, casualty_pct)
+            casualties_by_army[army.army_id] = _apply_random_warrior_loss(session, army, casualty_pct)
 
             if loser:
                 retreat_ok = _retreat_one_cell(session, army=army, winner_armies=winner_armies, clock=clock)
