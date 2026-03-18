@@ -1364,6 +1364,7 @@ def _resolve_battles_from_edges(
     disable_surprise_army_ids: set[int] | None = None,
     allow_side_draw: bool = False,
     winner_destination_by_action_id: dict[int, str] | None = None,
+    battle_copy_mode: str = "attack",
 ) -> dict[str, int]:
     if not edges:
         return {"completed": 0, "failed": 0}
@@ -1414,11 +1415,13 @@ def _resolve_battles_from_edges(
         action_ids_in_component: set[int] = set()
         attacker_ids: set[int] = set()
         incoming_by_target: dict[int, list[int]] = defaultdict(list)
+        outgoing_action_ids_by_attacker: dict[int, list[int]] = defaultdict(list)
         for action_id, attacker_id, target_id in edges:
             if attacker_id in participant_ids and target_id in participant_ids:
                 action_ids_in_component.add(action_id)
                 attacker_ids.add(attacker_id)
                 incoming_by_target[target_id].append(action_id)
+                outgoing_action_ids_by_attacker[attacker_id].append(action_id)
 
         sides: dict[str, list[Army]] = defaultdict(list)
         for army in participant_armies:
@@ -1467,7 +1470,7 @@ def _resolve_battles_from_edges(
             ) else 0
             target_h3 = None
             if is_attacker:
-                for action_id in edge_action_ids_by_node.get(army.army_id, set()):
+                for action_id in outgoing_action_ids_by_attacker.get(army.army_id, []):
                     if action_id in action_ids_in_component:
                         target_h3 = target_h3_by_action_id.get(action_id)
                         if target_h3:
@@ -1490,7 +1493,7 @@ def _resolve_battles_from_edges(
             surprise = 0
             if is_attacker and army.army_id not in disable_surprise_army_ids:
                 target_army_id = None
-                for action_id in edge_action_ids_by_node.get(army.army_id, set()):
+                for action_id in outgoing_action_ids_by_attacker.get(army.army_id, []):
                     if action_id in action_ids_in_component:
                         target_army_id = target_army_id_by_action_id.get(action_id)
                         if target_army_id is not None:
@@ -1643,7 +1646,7 @@ def _resolve_battles_from_edges(
 
             # If this army was an attacker, prefer naming the explicit target from submitted attack.
             if army.army_id in attacker_ids:
-                for action_id in edge_action_ids_by_node.get(army.army_id, set()):
+                for action_id in outgoing_action_ids_by_attacker.get(army.army_id, []):
                     if action_id in action_ids_in_component:
                         target_army_id = target_army_id_by_action_id.get(action_id)
                         target_army = session.get(Army, target_army_id) if target_army_id is not None else None
@@ -1699,7 +1702,9 @@ def _resolve_battles_from_edges(
             if int(own_mods.get("out_of_formation", 0) or 0) < 0:
                 battle_position.append("out of formation")
 
-            if army.army_id in attacker_ids:
+            if battle_copy_mode == "meeting":
+                opener = f"Meeting engagement with {enemy_display}"
+            elif army.army_id in attacker_ids:
                 opener = f"Attacked {enemy_display}"
             else:
                 opener = f"Attacked by {enemy_display}"
@@ -1985,6 +1990,7 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
                 disable_surprise_army_ids=disable_surprise_army_ids,
                 allow_side_draw=True,
                 winner_destination_by_action_id=synthetic_winner_destination_by_action_id,
+                battle_copy_mode="meeting",
             )
             batch_completed += int(battle_result.get("completed", 0))
             batch_failed += int(battle_result.get("failed", 0))
