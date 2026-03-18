@@ -10,8 +10,10 @@ class LoginRequest(BaseModel):
 
 
 class ActionCreateRequest(BaseModel):
-    kind: Literal["move", "forage"]
+    kind: Literal["move", "forage", "attack"]
     destination_h3: str | None = None
+    target_h3: str | None = None
+    target_army_id: str | None = None
 
 
 class ActionPlanRequest(BaseModel):
