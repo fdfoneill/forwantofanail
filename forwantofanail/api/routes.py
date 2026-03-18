@@ -1100,8 +1100,26 @@ def _cavalry_count(army: Army) -> int:
     return sum(int(det.warrior_count or 0) for det in army.detachments if det.is_cavalry)
 
 
-def _effective_strength(army: Army) -> int:
-    return _infantry_count(army) + (2 * _cavalry_count(army))
+def _effective_strength(army: Army, *, engagement_type: str = "field") -> int:
+    mode = str(engagement_type or "field").strip().lower()
+    total = 0
+    for det in army.detachments:
+        warriors = int(det.warrior_count or 0)
+        if warriors <= 0:
+            continue
+        if mode == "siege":
+            if det.is_heavy and not det.is_cavalry:
+                total += 2 * warriors
+            else:
+                total += warriors
+            continue
+        if det.is_cavalry and det.is_heavy:
+            total += 4 * warriors
+        elif det.is_cavalry or det.is_heavy:
+            total += 2 * warriors
+        else:
+            total += warriors
+    return total
 
 
 def _ratio_label(numerator: int, denominator: int) -> str | None:
@@ -1385,7 +1403,10 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
                     failed += 1
             continue
 
-        side_strength: dict[str, int] = {faction: sum(_effective_strength(army) for army in armies) for faction, armies in sides.items()}
+        side_strength: dict[str, int] = {
+            faction: sum(_effective_strength(army, engagement_type="field") for army in armies)
+            for faction, armies in sides.items()
+        }
         side_top_roll: dict[str, int] = {}
         army_final_roll: dict[int, int] = {}
         army_modifiers: dict[int, dict[str, int]] = {}
