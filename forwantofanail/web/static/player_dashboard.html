@@ -594,6 +594,7 @@
       supplyPanelExpanded: false,
       ordersPanelExpanded: false,
       refreshInFlight: false,
+      sessionVersion: 0,
     };
 
     const TERRAIN_COLORS = {
@@ -1368,6 +1369,18 @@
       });
       state.token = payload.token;
       state.selectedCommander = payload.commander.name;
+      state.sessionVersion += 1;
+    }
+
+    function snapshotSession() {
+      return {
+        token: state.token,
+        version: state.sessionVersion,
+      };
+    }
+
+    function isCurrentSession(snapshot) {
+      return !!snapshot && snapshot.token === state.token && snapshot.version === state.sessionVersion;
     }
 
     function renderCorrespondents() {
@@ -1391,7 +1404,12 @@
         renderCorrespondents();
         return;
       }
-      state.correspondents = await api("/v1/correspondents", {}, true);
+      const sessionSnapshot = snapshotSession();
+      const correspondents = await api("/v1/correspondents", {}, true);
+      if (!isCurrentSession(sessionSnapshot)) {
+        return;
+      }
+      state.correspondents = correspondents;
       renderCorrespondents();
     }
 
@@ -1445,7 +1463,11 @@
         renderInbox();
         return;
       }
+      const sessionSnapshot = snapshotSession();
       const nextInbox = await api("/v1/me/messages", {}, true);
+      if (!isCurrentSession(sessionSnapshot)) {
+        return;
+      }
       state.inbox = nextInbox;
       renderInbox();
     }
@@ -1456,7 +1478,11 @@
         renderAlerts();
         return;
       }
+      const sessionSnapshot = snapshotSession();
       const rows = await api("/v1/me/alerts?limit=25", {}, true);
+      if (!isCurrentSession(sessionSnapshot)) {
+        return;
+      }
       const currentDay = Number(state.view?.time?.day);
       const currentWatch = Number(state.view?.time?.watch);
       const isCurrentWatchKnown = Number.isFinite(currentDay) && Number.isFinite(currentWatch);
@@ -1989,9 +2015,16 @@
       if (!state.token) {
         return;
       }
+      const sessionSnapshot = snapshotSession();
       const view = await api("/v1/me/view", {}, true);
+      if (!isCurrentSession(sessionSnapshot)) {
+        return;
+      }
       const cellsParam = encodeURIComponent(view.environs.cells.map((cell) => cell.h3).join(","));
       const borderRoads = await api(`/v1/me/roads/border?cells=${cellsParam}`, {}, true);
+      if (!isCurrentSession(sessionSnapshot)) {
+        return;
+      }
       state.view = view;
       state.remainingItinerary = Array.isArray(view?.itinerary?.remaining_moves) ? view.itinerary.remaining_moves.map(String) : [];
       state.remainingRout = Array.isArray(view?.itinerary?.remaining_rout) ? view.itinerary.remaining_rout.map(String) : [];
@@ -2083,6 +2116,7 @@
     els.commanderSelect.addEventListener("change", async (event) => {
       const commanderName = event.target.value;
       if (!commanderName) {
+        state.sessionVersion += 1;
         state.token = null;
         state.selectedCommander = null;
         state.view = null;
