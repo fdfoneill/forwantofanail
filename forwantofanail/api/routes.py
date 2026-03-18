@@ -1499,6 +1499,7 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
         morale_delta_by_army: dict[int, int] = defaultdict(int)
         retreat_by_army: dict[int, dict[str, Any]] = {}
         rout_by_army: dict[int, bool] = defaultdict(bool)
+        supply_transfer_by_army: dict[int, dict[str, int]] = defaultdict(dict)
 
         for army in participant_armies:
             faction = str(army.army_faction)
@@ -1553,8 +1554,12 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
                         rout_by_army[army.army_id] = True
                         supply_loss_pct = random.randint(1, 6) * 0.10
                         lost_supply = _apply_supply_loss(army, supply_loss_pct)
+                        supply_transfer_by_army[army.army_id]["lost"] = int(lost_supply)
                         if winner_top_army is not None:
                             winner_top_army.army_supply = int(winner_top_army.army_supply or 0) + lost_supply
+                            supply_transfer_by_army[winner_top_army.army_id]["looted"] = (
+                                int(supply_transfer_by_army[winner_top_army.army_id].get("looted", 0)) + int(lost_supply)
+                            )
                         extra_steps = random.randint(1, 6)
                         path = _build_rout_path(
                             session,
@@ -1646,8 +1651,6 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
                 battle_position.append(f"with {own_ratio} numerical superiority")
             elif enemy_ratio:
                 battle_position.append(f"outnumbered {enemy_ratio}")
-            if int(own_mods.get("morale_advantage", 0) or 0) > 0:
-                battle_position.append("with superior morale")
             if int(own_mods.get("chosen_battlefield", 0) or 0) > 0:
                 battle_position.append("holding chosen ground")
             if int(own_mods.get("surprise", 0) or 0) > 0:
@@ -1660,12 +1663,12 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
                 battle_position.append("out of formation")
 
             if army.army_id in attacker_ids:
-                opener = f"BATTLE! Attacked {enemy_display}"
+                opener = f"Attacked {enemy_display}"
             else:
-                opener = f"BATTLE! Attacked by {enemy_display}"
+                opener = f"Attacked by {enemy_display}"
             if battle_position:
                 opener = f"{opener} {' and '.join(battle_position)}"
-            opener = f"{opener}."
+            opener = f"BATTLE!\n{opener}."
 
             casualties = int(casualties_by_army.get(army.army_id, 0) or 0)
             enemies_slain = sum(int(casualties_by_army.get(other.army_id, 0) or 0) for other in enemy_armies)
@@ -1679,6 +1682,13 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
             outcome_text = "VICTORY" if own_faction == winner_faction else "DEFEAT"
             enemy_routed = any(bool(rout_by_army.get(other.army_id, False)) for other in enemy_armies)
             own_routed = bool(rout_by_army.get(army.army_id, False))
+            own_supply_lost = int(supply_transfer_by_army.get(army.army_id, {}).get("lost", 0) or 0)
+            own_supply_looted = int(supply_transfer_by_army.get(army.army_id, {}).get("looted", 0) or 0)
+            supply_text = ""
+            if own_supply_lost > 0:
+                supply_text = f" {own_supply_lost} supply lost."
+            elif own_supply_looted > 0:
+                supply_text = f" {own_supply_looted} supply looted."
             if enemy_routed:
                 rout_text = " Enemy routed."
             elif own_routed:
@@ -1686,8 +1696,8 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
             else:
                 rout_text = ""
             message = (
-                f"{opener} {outcome_text}. "
-                f"{casualties} warriors lost, {enemies_slain} enemies slain, {morale_text}{rout_text}"
+                f"{opener}\n{outcome_text}!\n"
+                f"{casualties} warriors lost, {enemies_slain} enemies slain, {morale_text}{supply_text}{rout_text}"
             )
             _create_alert(
                 session,
@@ -1710,6 +1720,8 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
                     "enemy_casualties": enemies_slain,
                     "outcome": outcome_text.lower(),
                     "morale_delta": morale_delta_by_army.get(army.army_id, 0),
+                    "supply_lost": own_supply_lost,
+                    "supply_looted": own_supply_looted,
                     "retreat": retreat_by_army.get(army.army_id, {}),
                     "rout": bool(rout_by_army.get(army.army_id, False)),
                 },
