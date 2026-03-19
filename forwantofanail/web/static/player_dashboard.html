@@ -2124,7 +2124,9 @@
             gatesText = cell.stronghold.siege.gates_open ? "open" : "closed";
           }
         }
-        els.hoverTitle.textContent = String(cell.cell_title || terrain);
+        const hoverTitle = String(cell.cell_title || terrain);
+        const hoverDisplayTitle = cell.stronghold?.under_siege ? `${hoverTitle} (besieged)` : hoverTitle;
+        els.hoverTitle.textContent = hoverDisplayTitle;
         if (hasStronghold) {
           els.hoverTitle.classList.add("stronghold");
         } else {
