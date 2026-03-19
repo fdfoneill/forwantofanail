@@ -1976,7 +1976,7 @@ def _resolve_battles_from_edges(
                 battle_position.append(f"with {own_ratio} numerical superiority")
             elif enemy_ratio:
                 battle_position.append(f"outnumbered {enemy_ratio}")
-            if int(own_mods.get("chosen_battlefield", 0) or 0) > 0:
+            if battle_copy_mode != "siege_assault" and int(own_mods.get("chosen_battlefield", 0) or 0) > 0:
                 battle_position.append("holding chosen ground")
             if int(own_mods.get("surprise", 0) or 0) > 0:
                 battle_position.append("with surprise")
@@ -1991,7 +1991,16 @@ def _resolve_battles_from_edges(
                 opener = f"Meeting engagement with {enemy_display}"
             elif battle_copy_mode == "siege_assault":
                 if army.army_id in attacker_ids:
-                    opener = f"Assaulted {enemy_display}"
+                    assault_target_name = enemy_display
+                    for action_id in outgoing_action_ids_by_attacker.get(army.army_id, []):
+                        if action_id in action_ids_in_component:
+                            target_h3 = str(target_h3_by_action_id.get(action_id) or "").strip()
+                            if target_h3:
+                                target_stronghold = _stronghold_at_h3(session, target_h3)
+                                if target_stronghold is not None:
+                                    assault_target_name = target_stronghold.stronghold_name
+                            break
+                    opener = f"Assaulted {assault_target_name}"
                 else:
                     opener = f"Repelled assault by {enemy_display}"
             elif army.army_id in attacker_ids:
@@ -3461,7 +3470,13 @@ def create_action(
             _start_action_now_if_valid(session, action, army, clock)
 
     if payload.kind == "attack" and action.state in ACTIVE_ACTION_STATES:
-        target_name = attack_target_name or "enemy army"
+        if siege_to_preserve and active_siege is not None:
+            stronghold = session.get(Stronghold, active_siege.stronghold_id)
+            target_name = stronghold.stronghold_name if stronghold is not None else "stronghold"
+            alert_message = f"Assault ordered against {target_name}."
+        else:
+            target_name = attack_target_name or "enemy army"
+            alert_message = f"Attack ordered against {target_name}."
         _create_alert(
             session,
             recipient_commander_id=commander_id,
@@ -3469,7 +3484,7 @@ def create_action(
             signal_kind="event",
             category="orders",
             importance="normal",
-            message=f"Attack ordered against {target_name}.",
+            message=alert_message,
             created_day=clock.day,
             created_watch=clock.watch,
         )
