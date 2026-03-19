@@ -7,3 +7,4 @@ dependencies:
   - h3-py
   - fastapi
   - uvicorn
+  - pytest
