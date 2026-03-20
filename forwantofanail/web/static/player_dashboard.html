@@ -810,6 +810,8 @@
     function armyStatusText(view) {
       const armyName = String(view?.army?.name || "Army").trim() || "Army";
       const kind = String(view?.current_action?.kind || "").trim().toLowerCase();
+      const centerCell = (view?.environs?.cells || []).find((cell) => cell.h3 === view?.environs?.center_h3);
+      const underSiege = !!(centerCell?.stronghold?.under_siege);
       if (kind === "rout") {
         return `${armyName}: Fleeing`;
       }
@@ -828,6 +830,9 @@
       }
       if (kind === "besiege") {
         return `${armyName}: Besieging`;
+      }
+      if (underSiege) {
+        return `${armyName}: Under Siege`;
       }
       return `${armyName}: Holding`;
     }
