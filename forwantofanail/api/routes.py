@@ -1754,7 +1754,7 @@ def _resolve_battles_from_edges(
                 if incoming:
                     target_h3 = target_h3_by_action_id.get(incoming[0])
             rough_terrain = 0
-            if target_h3:
+            if target_h3 and engagement_type != "siege":
                 terrain_row = (
                     session.query(TerrainType.terrain_name)
                     .join(Location, Location.terrain_id == TerrainType.terrain_id)
@@ -3234,6 +3234,9 @@ def get_valid_attack_targets(
     )
     targets = []
     for enemy in enemies:
+        enemy_stronghold = _stronghold_at_h3(session, enemy.location_id)
+        if enemy_stronghold is not None:
+            continue
         label = str(enemy.army_name or f"{enemy.army_faction} army").strip()
         targets.append(
             {
@@ -3375,8 +3378,11 @@ def create_action(
             adjacent = set(h3.grid_ring(army.location_id, 1))
         except Exception:
             adjacent = set()
+        target_stronghold = _stronghold_at_h3(session, target_h3)
         if active_siege is None and target_h3 not in adjacent:
             raise HTTPException(status_code=400, detail="Attack target must be adjacent")
+        if active_siege is None and target_stronghold is not None:
+            raise HTTPException(status_code=400, detail="Occupied strongholds must be besieged before they can be assaulted")
         if active_siege is not None:
             stronghold = session.get(Stronghold, active_siege.stronghold_id)
             if stronghold is None or target_h3 != stronghold.location_id:
