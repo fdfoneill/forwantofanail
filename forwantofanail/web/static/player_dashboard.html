@@ -1102,18 +1102,21 @@
       const isAttack = state.orderMode === "attack";
       const isBesiege = state.orderMode === "besiege";
       const isRouting = String(state.view?.current_action?.kind || "").trim().toLowerCase() === "rout";
+      const centerCell = (state.view?.environs?.cells || []).find((cell) => cell.h3 === state.view?.environs?.center_h3);
+      const attackBlockedByStronghold = !!centerCell?.stronghold;
+      const besiegeBlockedByStronghold = !!centerCell?.stronghold;
       els.orderModeSelect.value = state.orderMode;
       els.queueMoveBtn.disabled = !(isMarch || isAttack || isBesiege) || isRouting;
       els.stagedPathList.style.display = (isMarch || isAttack || isBesiege) ? "" : "none";
       els.queueMoveBtn.textContent = isAttack ? "Stage Attack" : (isBesiege ? "Stage Siege" : "Stage Move");
-      els.submitOrdersBtn.disabled = isRouting || (isForage && !isNightOrMatinWatch()) || (isAttack && !state.stagedAttack) || (isBesiege && !state.stagedSiege);
+      els.submitOrdersBtn.disabled = isRouting || (isForage && !isNightOrMatinWatch()) || (isAttack && (attackBlockedByStronghold || !state.stagedAttack)) || (isBesiege && (besiegeBlockedByStronghold || !state.stagedSiege));
       const forageOption = els.orderModeSelect.querySelector("option[value=\"forage\"]");
       if (forageOption) {
         forageOption.disabled = !isNightOrMatinWatch();
       }
       const attackOption = els.orderModeSelect.querySelector("option[value=\"attack\"]");
       if (attackOption) {
-        attackOption.disabled = isRouting;
+        attackOption.disabled = isRouting || attackBlockedByStronghold;
       }
       const marchOption = els.orderModeSelect.querySelector("option[value=\"march\"]");
       if (marchOption) {
@@ -1121,10 +1124,16 @@
       }
       const besiegeOption = els.orderModeSelect.querySelector("option[value=\"besiege\"]");
       if (besiegeOption) {
-        besiegeOption.disabled = isRouting;
+        besiegeOption.disabled = isRouting || besiegeBlockedByStronghold;
       }
       if (state.stagedPath.length > maxSteps) {
         state.stagedPath = state.stagedPath.slice(0, maxSteps);
+      }
+      if (attackBlockedByStronghold && state.orderMode === "attack") {
+        state.stagedAttack = null;
+      }
+      if (besiegeBlockedByStronghold && state.orderMode === "besiege") {
+        state.stagedSiege = null;
       }
       if (isAttack && state.stagedPath.length) {
         state.stagedPath = [];

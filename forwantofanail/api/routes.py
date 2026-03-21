@@ -749,6 +749,12 @@ def _stronghold_at_h3(session: Session, location_h3: str) -> Stronghold | None:
     )
 
 
+def _army_is_in_stronghold(session: Session, army: Army | None) -> bool:
+    if army is None:
+        return False
+    return _stronghold_at_h3(session, army.location_id) is not None
+
+
 def _max_resistance_for_stronghold(stronghold: Stronghold) -> float:
     return float(SIEGE_RESISTANCE_BY_TYPE.get(str(stronghold.stronghold_type or "").strip().lower(), 10.0))
 
@@ -2130,6 +2136,10 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
             action.state = "failed"
             failed += 1
             continue
+        if _army_is_in_stronghold(session, attacker):
+            action.state = "failed"
+            failed += 1
+            continue
         try:
             params = json.loads(action.parameters_json or "{}")
         except json.JSONDecodeError:
@@ -2437,6 +2447,9 @@ def _start_action_now_if_valid(session: Session, action: Action, army: Army, clo
 
     if action.kind == "attack":
         if clock.watch == int(Watch.NIGHT):
+            return False
+        if _army_is_in_stronghold(session, army):
+            action.state = "failed"
             return False
         try:
             payload = json.loads(action.parameters_json or "{}")
@@ -3316,6 +3329,8 @@ def get_valid_attack_targets(
     session: Session = Depends(_get_session),
 ):
     army = _find_commander_army(session, commander_id)
+    if _army_is_in_stronghold(session, army):
+        return {"origin_h3": army.location_id, "targets": []}
     active_siege = _active_siege_for_besieger(session, army.army_id)
     if active_siege is not None:
         stronghold = session.get(Stronghold, active_siege.stronghold_id)
@@ -3378,6 +3393,8 @@ def get_valid_besiege_targets(
     session: Session = Depends(_get_session),
 ):
     army = _find_commander_army(session, commander_id)
+    if _army_is_in_stronghold(session, army):
+        return {"origin_h3": army.location_id, "targets": []}
     origin = (origin_h3 or army.location_id or "").strip()
     if not origin:
         raise HTTPException(status_code=400, detail="No origin location available")
@@ -3475,6 +3492,8 @@ def create_action(
         for existing in active_actions:
             existing.state = "cancelled"
     elif payload.kind == "attack":
+        if _army_is_in_stronghold(session, army):
+            raise HTTPException(status_code=400, detail="Armies occupying strongholds cannot attack")
         target_h3 = (payload.target_h3 or "").strip()
         if not target_h3:
             raise HTTPException(status_code=400, detail="target_h3 is required for attack actions")
@@ -3525,6 +3544,8 @@ def create_action(
         for existing in active_actions:
             existing.state = "cancelled"
     elif payload.kind == "besiege":
+        if _army_is_in_stronghold(session, army):
+            raise HTTPException(status_code=400, detail="Armies occupying strongholds cannot besiege other strongholds")
         target_stronghold_ref = (payload.target_stronghold_id or "").strip()
         if not target_stronghold_ref:
             raise HTTPException(status_code=400, detail="target_stronghold_id is required for besiege actions")
