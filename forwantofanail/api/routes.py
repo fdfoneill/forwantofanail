@@ -648,6 +648,30 @@ def _emit_enemy_proximity_alerts(session: Session, clock: GameClock) -> None:
     for army in armies:
         if army.commander_id is None:
             continue
+        suppressed_enemy_army_ids: set[int] = set()
+        occupied_stronghold = _stronghold_at_h3(session, army.location_id)
+        if occupied_stronghold is not None:
+            active_siege = _active_siege_for_stronghold(session, occupied_stronghold.stronghold_id)
+            if active_siege is not None:
+                besieger_army = session.get(Army, active_siege.besieger_army_id)
+                if besieger_army is not None and besieger_army.army_faction != army.army_faction:
+                    defender_ids = {
+                        defender.army_id
+                        for defender in _defender_armies_in_stronghold(session, occupied_stronghold, besieger_army.army_faction)
+                    }
+                    if army.army_id in defender_ids:
+                        suppressed_enemy_army_ids.add(besieger_army.army_id)
+                        _create_alert(
+                            session,
+                            recipient_commander_id=army.commander_id,
+                            alert_type="report",
+                            signal_kind="state",
+                            category="contact",
+                            importance="high",
+                            message=f"Under siege by {besieger_army.army_faction} forces",
+                            created_day=clock.day,
+                            created_watch=clock.watch,
+                        )
         radius = _environs_radius_for_army(army)
         disk = set(h3.grid_disk(army.location_id, radius))
         visible_enemies = (
@@ -662,6 +686,8 @@ def _emit_enemy_proximity_alerts(session: Session, clock: GameClock) -> None:
         )
         nearest_by_faction: dict[str, int] = {}
         for enemy in visible_enemies:
+            if enemy.army_id in suppressed_enemy_army_ids:
+                continue
             distance = max(0, _grid_distance(army.location_id, enemy.location_id))
             prior = nearest_by_faction.get(enemy.army_faction)
             if prior is None or distance < prior:
