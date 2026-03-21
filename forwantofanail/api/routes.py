@@ -2453,6 +2453,13 @@ def _start_action_now_if_valid(session: Session, action: Action, army: Army, clo
         if destination_h3 is None:
             action.state = "failed"
             return False
+        if destination_h3 == army.location_id:
+            action.state = "completed"
+            action.started_day = clock.day
+            action.started_watch = clock.watch
+            action.eta_day = clock.day
+            action.eta_watch = clock.watch
+            return True
         try:
             watches_needed = calculate_move_watches(session, army.army_id, destination_h3)
         except ValueError:
@@ -2660,6 +2667,10 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
                 action.state = "failed"
                 failed += 1
                 continue
+            if destination_h3 == army.location_id:
+                action.state = "completed"
+                completed += 1
+                continue
             if destination_h3 not in set(list_valid_destinations(session, army.army_id)):
                 action.state = "failed"
                 failed += 1
@@ -2782,6 +2793,9 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
                     # Night: leave queued; do not advance to next queued action.
                     break
                 failed += 1
+                continue
+            if action.state == "completed":
+                completed += 1
                 continue
             started += 1
             break
