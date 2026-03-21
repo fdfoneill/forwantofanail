@@ -472,10 +472,11 @@
       <div class="meta">
         <div><strong>Time:</strong> <span id="timeText">-</span></div>
         <div><strong>Current Location:</strong> <span id="centerText">-</span></div>
+        <div><strong>Status:</strong> <span id="conditionText">-</span></div>
         <div><strong>Scouting Radius:</strong> <span id="radiusText">-</span></div>
       </div>
       <button id="armyStatusToggle" class="army-status-toggle" type="button">
-        <span id="armyStatusText">Army: -</span>
+        <span id="armyStatusText">Army (- strong)</span>
         <span id="armyStatusChevron">▸</span>
       </button>
       <div id="armyStatusPanel" class="army-status-panel" hidden>
@@ -661,6 +662,7 @@
       statusLine: document.getElementById("statusLine"),
       timeText: document.getElementById("timeText"),
       centerText: document.getElementById("centerText"),
+      conditionText: document.getElementById("conditionText"),
       radiusText: document.getElementById("radiusText"),
       supplyCurrentText: document.getElementById("supplyCurrentText"),
       supplyCapacityText: document.getElementById("supplyCapacityText"),
@@ -807,39 +809,38 @@
       );
     }
 
-    function armyStatusText(view) {
-      const armyName = String(view?.army?.name || "Army").trim() || "Army";
+    function armyConditionText(view) {
       const kind = String(view?.current_action?.kind || "").trim().toLowerCase();
       const centerCell = (view?.environs?.cells || []).find((cell) => cell.h3 === view?.environs?.center_h3);
       const underSiege = !!(centerCell?.stronghold?.under_siege);
       if (kind === "rout") {
-        return `${armyName}: Fleeing`;
+        return "Fleeing";
       }
       const watch = Number(view?.time?.watch);
       if (watch === 0) {
-        return `${armyName}: Encamped`;
+        return "Encamped";
       }
       if (kind === "move") {
-        return `${armyName}: Marching`;
+        return "Marching";
       }
       if (kind === "forage") {
-        return `${armyName}: Foraging`;
+        return "Foraging";
       }
       if (kind === "attack") {
-        return `${armyName}: Attacking`;
+        return "Attacking";
       }
       if (kind === "besiege") {
-        return `${armyName}: Besieging`;
+        return "Besieging";
       }
       if (underSiege) {
-        return `${armyName}: Under Siege`;
+        return "Under Siege";
       }
-      return `${armyName}: Holding`;
+      return "Holding";
     }
 
     function renderArmyStatusSection(view) {
       if (!view?.army) {
-        els.armyStatusText.textContent = "Army: -";
+        els.armyStatusText.textContent = "Army (- strong)";
         els.armyMoraleText.textContent = "Morale: - | - noncombattants";
         els.armySummaryText.textContent = "-";
         els.armyCompositionBody.innerHTML = "";
@@ -848,11 +849,12 @@
         return;
       }
 
-      els.armyStatusText.textContent = armyStatusText(view);
+      const armyName = String(view?.army?.name || "Army").trim() || "Army";
       const moraleCurrent = String(view?.army?.morale?.current ?? "-");
       const noncombatants = String(view?.army?.composition?.noncombatants ?? "-");
       els.armyMoraleText.textContent = `Morale: ${moraleCurrent} | ${noncombatants} noncombattants`;
       const detachments = Array.isArray(view?.army?.composition?.detachments) ? view.army.composition.detachments : [];
+      let totalWarriors = 0;
       let infantry = 0;
       let cavalry = 0;
       let wagons = 0;
@@ -860,6 +862,7 @@
       for (const det of detachments) {
         const warriors = Number(det?.warriors ?? 0) || 0;
         const wagonCount = Number(det?.wagons ?? 0) || 0;
+        totalWarriors += warriors;
         if (det?.is_cavalry) {
           cavalry += warriors;
         } else {
@@ -876,6 +879,7 @@
         );
       }
 
+      els.armyStatusText.textContent = `${armyName} (${totalWarriors.toLocaleString()} strong)`;
       els.armySummaryText.textContent = `${infantry} infantry | ${cavalry} cavalry | ${wagons} wagons`;
       if (rows.length) {
         els.armyCompositionBody.innerHTML = rows.join("");
@@ -2196,6 +2200,7 @@
       if (!view) {
         els.timeText.textContent = "-";
         els.centerText.textContent = "-";
+        els.conditionText.textContent = "-";
         els.radiusText.textContent = "-";
         return;
       }
@@ -2203,6 +2208,7 @@
       els.timeText.textContent = `${calendarDate}, ${watchDisplayName(view.time.watch)}`;
       const centerCell = (view.environs.cells || []).find((cell) => cell.h3 === view.environs.center_h3);
       els.centerText.textContent = String(centerCell?.cell_title || view.environs.center_h3 || "-");
+      els.conditionText.textContent = armyConditionText(view);
       els.radiusText.textContent = `${view.environs.radius} leagues`;
     }
 
