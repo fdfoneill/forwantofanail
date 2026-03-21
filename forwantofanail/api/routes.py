@@ -2230,7 +2230,15 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
                 continue
             winner_faction = winner_faction_by_action_id.get(action_id)
             if winner_faction is not None and str(winner_faction) == str(attacker.army_faction):
-                _execute_move_to_destination(session, clock, attacker, stronghold.location_id)
+                if not _clear_remaining_defenders_for_capture(
+                    session,
+                    clock=clock,
+                    stronghold=stronghold,
+                    attacker=attacker,
+                ):
+                    continue
+                if not _execute_move_to_destination(session, clock, attacker, stronghold.location_id):
+                    continue
                 siege_length = max(0, int(siege.matin_ticks_elapsed or 0))
                 loot_roll = random.randint(1, 6)
                 loot_scale = int(SIEGE_LOOT_SCALE_BY_TYPE.get(str(stronghold.stronghold_type or "").strip().lower(), 0))
@@ -2410,6 +2418,30 @@ def _occupy_all_abandoned_sieged_strongholds(session: Session, *, clock: GameClo
                 session.flush()
         if not changed:
             break
+
+
+def _clear_remaining_defenders_for_capture(
+    session: Session,
+    *,
+    clock: GameClock,
+    stronghold: Stronghold,
+    attacker: Army,
+) -> bool:
+    remaining_defenders = _defender_armies_in_stronghold(session, stronghold, attacker.army_faction)
+    remaining_defenders = [army for army in remaining_defenders if army.army_faction != attacker.army_faction]
+    for defender in remaining_defenders:
+        result = _retreat_one_cell_with_wagon_drop(
+            session,
+            army=defender,
+            winner_armies=[attacker],
+            clock=clock,
+        )
+        if not result.get("retreated") and not result.get("destroyed"):
+            return False
+    session.flush()
+    blockers = _defender_armies_in_stronghold(session, stronghold, attacker.army_faction)
+    blockers = [army for army in blockers if army.army_faction != attacker.army_faction]
+    return not blockers
 
 
 def _start_action_now_if_valid(session: Session, action: Action, army: Army, clock: GameClock) -> bool:
