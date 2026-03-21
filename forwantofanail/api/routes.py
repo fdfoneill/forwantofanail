@@ -2971,7 +2971,7 @@ def _serialize_environs(
                 {
                     "name": other_army.army_name,
                     "commander": (
-                        other_army.commander.commander_name
+                        _commander_display_name(other_army.commander)
                         if other_army.commander is not None
                         else None
                     ),
