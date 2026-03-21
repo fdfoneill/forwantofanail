@@ -482,6 +482,7 @@
       <div id="armyStatusPanel" class="army-status-panel" hidden>
         <div id="armyMoraleText" class="army-summary">Morale: -</div>
         <div id="armySummaryText" class="army-summary">-</div>
+        <div id="armySummaryExtraText" class="army-summary">-</div>
         <table class="army-table">
           <tbody id="armyCompositionBody"></tbody>
         </table>
@@ -650,6 +651,7 @@
       armyStatusPanel: document.getElementById("armyStatusPanel"),
       armyMoraleText: document.getElementById("armyMoraleText"),
       armySummaryText: document.getElementById("armySummaryText"),
+      armySummaryExtraText: document.getElementById("armySummaryExtraText"),
       armyCompositionBody: document.getElementById("armyCompositionBody"),
       supplyStatusToggle: document.getElementById("supplyStatusToggle"),
       supplyStatusText: document.getElementById("supplyStatusText"),
@@ -841,8 +843,9 @@
     function renderArmyStatusSection(view) {
       if (!view?.army) {
         els.armyStatusText.textContent = "Army (- strong)";
-        els.armyMoraleText.textContent = "Morale: - | - noncombattants";
+        els.armyMoraleText.textContent = "Morale: -";
         els.armySummaryText.textContent = "-";
+        els.armySummaryExtraText.textContent = "-";
         els.armyCompositionBody.innerHTML = "";
         els.armyStatusPanel.setAttribute("hidden", "");
         els.armyStatusChevron.textContent = "▸";
@@ -852,7 +855,7 @@
       const armyName = String(view?.army?.name || "Army").trim() || "Army";
       const moraleCurrent = String(view?.army?.morale?.current ?? "-");
       const noncombatants = String(view?.army?.composition?.noncombatants ?? "-");
-      els.armyMoraleText.textContent = `Morale: ${moraleCurrent} | ${noncombatants} noncombattants`;
+      els.armyMoraleText.textContent = `Morale: ${moraleCurrent}`;
       const detachments = Array.isArray(view?.army?.composition?.detachments) ? view.army.composition.detachments : [];
       let totalWarriors = 0;
       let infantry = 0;
@@ -880,7 +883,8 @@
       }
 
       els.armyStatusText.textContent = `${armyName} (${totalWarriors.toLocaleString()} strong)`;
-      els.armySummaryText.textContent = `${infantry} infantry | ${cavalry} cavalry | ${wagons} wagons`;
+      els.armySummaryText.textContent = `${infantry.toLocaleString()} infantry | ${cavalry.toLocaleString()} cavalry`;
+      els.armySummaryExtraText.textContent = `${Number(noncombatants || 0).toLocaleString()} noncombatants | ${wagons.toLocaleString()} wagons`;
       if (rows.length) {
         els.armyCompositionBody.innerHTML = rows.join("");
       } else {
