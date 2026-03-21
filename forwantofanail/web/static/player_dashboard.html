@@ -359,6 +359,16 @@
       color: var(--ink);
       line-height: 1.35;
     }
+    .alerts-heading {
+      margin: 0 0 4px;
+      color: var(--muted);
+      font-size: 11px;
+      font-style: italic;
+      line-height: 1.25;
+    }
+    .alerts-message {
+      margin: 0;
+    }
     .alerts-item.high {
       background: #ffe9e9;
       border-color: #efc3c3;
@@ -702,13 +712,15 @@
       }
       const rows = state.alerts.map((item) => {
         const message = typeof item === "string" ? item : String(item?.message || "");
+        const heading = typeof item === "string" ? "" : String(item?.heading || "");
         const importance = String(item?.importance || "").toLowerCase();
         const cls = importance === "high"
           ? "alerts-item high"
           : importance === "moderate"
             ? "alerts-item moderate"
             : "alerts-item";
-        return `<li class="${cls}">${message}</li>`;
+        const headingHtml = heading ? `<div class="alerts-heading">${heading}</div>` : "";
+        return `<li class="${cls}">${headingHtml}<div class="alerts-message">${message}</div></li>`;
       });
       els.alertList.innerHTML = rows.join("");
     }
@@ -1674,6 +1686,7 @@
           }
           stateCurrent.push({
             message: normalizeAlertMessage(rawMessage),
+            heading: "",
             importance,
             signal_kind: "state",
           });
@@ -1688,11 +1701,12 @@
         }
 
         const hasCreatedStamp = Number.isFinite(createdDay) && Number.isFinite(createdWatch);
-        const eventPrefix = hasCreatedStamp
-          ? `${formatScenarioDateNoYear(createdDay)}, ${formatWatchLabelLower(createdWatch)}: `
+        const eventHeading = hasCreatedStamp
+          ? `${formatScenarioDateNoYear(createdDay)}, ${formatWatchLabelLower(createdWatch)}`
           : "";
         events.push({
-          message: `${eventPrefix}${normalizeAlertMessage(rawMessage)}`,
+          message: normalizeAlertMessage(rawMessage),
+          heading: eventHeading,
           importance,
           signal_kind: "event",
         });
