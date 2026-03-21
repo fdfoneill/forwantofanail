@@ -756,6 +756,14 @@
       return "unknown army";
     }
 
+    function cellArmyFactionLabel(armyInfo) {
+      if (!armyInfo || typeof armyInfo !== "object") {
+        return "unknown";
+      }
+      const faction = String(armyInfo.faction || "").trim();
+      return faction || "unknown";
+    }
+
     function buildHoverTitleHtml(cell) {
       const terrain = String(cell?.terrain_type || "unknown");
       const plainTitle = String(cell?.cell_title || terrain);
@@ -764,6 +772,15 @@
       const underSiegeSuffix = cell?.stronghold?.under_siege ? " (besieged)" : "";
       const otherArmies = Array.isArray(cell?.other_armies) ? cell.other_armies : [];
       const firstArmy = otherArmies.length ? otherArmies[0] : null;
+      if (otherArmies.length > 1 && hasStronghold) {
+        return (
+          `Multiple ` +
+          `<span class="hover-title-emph">${escapeHtml(cellArmyFactionLabel(firstArmy))}</span>` +
+          ` armies occupying ` +
+          `<span class="hover-title-emph">${escapeHtml(strongholdName)}</span>` +
+          `${escapeHtml(underSiegeSuffix)}`
+        );
+      }
       if (firstArmy && hasStronghold) {
         return (
           `<span class="hover-title-emph">${escapeHtml(cellArmyDisplayName(firstArmy))}</span>` +
