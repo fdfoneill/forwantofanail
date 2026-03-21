@@ -192,6 +192,7 @@ def _cell_title(
     terrain_type: str,
     has_road: bool,
     stronghold_name: str | None,
+    region_name: str | None,
     other_armies: list[dict[str, Any]],
 ) -> str:
     first_army = other_armies[0] if other_armies else None
@@ -205,6 +206,10 @@ def _cell_title(
         return "bridge"
     if has_road:
         return "road"
+    if terrain_type.strip().lower() == "open water":
+        region_name = str(region_name or "").strip()
+        if region_name:
+            return region_name
     return terrain_type
 
 
@@ -3021,6 +3026,7 @@ def _serialize_environs(
                     terrain_type=terrain_type,
                     has_road=bool(location.is_road),
                     stronghold_name=stronghold_name,
+                    region_name=location.region,
                     other_armies=other_armies,
                 ),
                 "region": location.region,
