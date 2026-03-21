@@ -402,6 +402,9 @@
       margin-bottom: 6px;
     }
     .hover-title.stronghold {
+      color: var(--ink);
+    }
+    .hover-title-emph {
       font-weight: 700;
       color: var(--ink);
     }
@@ -723,6 +726,62 @@
         return `<li class="${cls}">${headingHtml}<div class="alerts-message">${message}</div></li>`;
       });
       els.alertList.innerHTML = rows.join("");
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/\"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+    }
+
+    function cellArmyDisplayName(armyInfo) {
+      if (!armyInfo || typeof armyInfo !== "object") {
+        return "unknown army";
+      }
+      const name = String(armyInfo.name || "").trim();
+      if (name) {
+        return name;
+      }
+      const commander = String(armyInfo.commander || "").trim();
+      if (commander) {
+        return `${commander}'s army`;
+      }
+      const faction = String(armyInfo.faction || "").trim();
+      if (faction) {
+        return `${faction} army`;
+      }
+      return "unknown army";
+    }
+
+    function buildHoverTitleHtml(cell) {
+      const terrain = String(cell?.terrain_type || "unknown");
+      const plainTitle = String(cell?.cell_title || terrain);
+      const strongholdName = String(cell?.stronghold?.name || "").trim();
+      const hasStronghold = !!strongholdName;
+      const underSiegeSuffix = cell?.stronghold?.under_siege ? " (besieged)" : "";
+      const otherArmies = Array.isArray(cell?.other_armies) ? cell.other_armies : [];
+      const firstArmy = otherArmies.length ? otherArmies[0] : null;
+      if (firstArmy && hasStronghold) {
+        return (
+          `<span class="hover-title-emph">${escapeHtml(cellArmyDisplayName(firstArmy))}</span>` +
+          ` occupying ` +
+          `<span class="hover-title-emph">${escapeHtml(strongholdName)}</span>` +
+          `${escapeHtml(underSiegeSuffix)}`
+        );
+      }
+      if (firstArmy) {
+        return `<span class="hover-title-emph">${escapeHtml(cellArmyDisplayName(firstArmy))}</span>`;
+      }
+      if (hasStronghold) {
+        return (
+          `<span class="hover-title-emph">${escapeHtml(strongholdName)}</span>` +
+          `${escapeHtml(underSiegeSuffix)}`
+        );
+      }
+      return escapeHtml(plainTitle);
     }
 
     function renderStandingOrderToggle() {
@@ -2175,9 +2234,7 @@
             gatesText = cell.stronghold.siege.gates_open ? "open" : "closed";
           }
         }
-        const hoverTitle = String(cell.cell_title || terrain);
-        const hoverDisplayTitle = cell.stronghold?.under_siege ? `${hoverTitle} (besieged)` : hoverTitle;
-        els.hoverTitle.textContent = hoverDisplayTitle;
+        els.hoverTitle.innerHTML = buildHoverTitleHtml(cell);
         if (hasStronghold) {
           els.hoverTitle.classList.add("stronghold");
         } else {
