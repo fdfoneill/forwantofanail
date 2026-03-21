@@ -2233,6 +2233,8 @@
         const settlementText = cell.settlement == null ? "0" : String(cell.settlement);
         const foragedText = cell.foraged_this_season ? "yes" : "no";
         const hasStronghold = !!(cell.stronghold && cell.stronghold.name);
+        const otherArmies = Array.isArray(cell.other_armies) ? cell.other_armies : [];
+        const primaryArmy = otherArmies.length ? otherArmies[0] : null;
         let strongholdTypeText = "none";
         let strongholdFactionText = "none";
         let siegeText = "no";
@@ -2257,14 +2259,33 @@
         } else {
           els.hoverTitle.classList.remove("stronghold");
         }
-        els.hoverMeta.innerHTML =
-          `<div><span class=\"k\">Terrain:</span>${terrain}</div>` +
-          `<div><span class=\"k\">Stronghold Type:</span>${strongholdTypeText}</div>` +
-          `<div><span class=\"k\">Faction:</span>${strongholdFactionText}</div>` +
-          `<div><span class=\"k\">Under Siege:</span>${siegeText}</div>` +
-          `${siegeText === "yes" ? `<div><span class=\"k\">Gates:</span>${gatesText}</div>` : ""}` +
-          `<div><span class=\"k\">Settlement:</span>${settlementText}</div>` +
-          `<div><span class=\"k\">Foraged This Season:</span>${foragedText}</div>`;
+        const metaRows = [];
+        if (primaryArmy) {
+          if (Number.isFinite(Number(primaryArmy.infantry)) || Number.isFinite(Number(primaryArmy.cavalry))) {
+            const infantry = Number(primaryArmy.infantry) || 0;
+            const cavalry = Number(primaryArmy.cavalry) || 0;
+            metaRows.push(`<div><span class=\"k\">Strength:</span>${(infantry + cavalry).toLocaleString()}</div>`);
+          } else if (Number.isFinite(Number(primaryArmy.strength_rounded))) {
+            metaRows.push(`<div><span class=\"k\">Strength:</span>${Number(primaryArmy.strength_rounded).toLocaleString()}</div>`);
+          }
+          if (primaryArmy.commander) {
+            metaRows.push(`<div><span class=\"k\">Commanded By:</span>${escapeHtml(String(primaryArmy.commander))}</div>`);
+          }
+        }
+        metaRows.push(
+          `<div><span class=\"k\">Terrain:</span>${escapeHtml(terrain)}</div>`,
+          `<div><span class=\"k\">Stronghold Type:</span>${escapeHtml(strongholdTypeText)}</div>`,
+          `<div><span class=\"k\">Faction:</span>${escapeHtml(strongholdFactionText)}</div>`,
+          `<div><span class=\"k\">Under Siege:</span>${escapeHtml(siegeText)}</div>`
+        );
+        if (siegeText === "yes") {
+          metaRows.push(`<div><span class=\"k\">Gates:</span>${escapeHtml(gatesText)}</div>`);
+        }
+        metaRows.push(
+          `<div><span class=\"k\">Settlement:</span>${escapeHtml(settlementText)}</div>`,
+          `<div><span class=\"k\">Foraged This Season:</span>${escapeHtml(foragedText)}</div>`
+        );
+        els.hoverMeta.innerHTML = metaRows.join("");
         updateStageMoveButtonVisibility(h3Index);
         updateHoveredMoveOutline(h3Index);
       } else {
