@@ -801,6 +801,26 @@
       return escapeHtml(plainTitle);
     }
 
+    function visibleArmyStrengthTotal(otherArmies) {
+      const armies = Array.isArray(otherArmies) ? otherArmies : [];
+      let total = 0;
+      let hasAny = false;
+      for (const army of armies) {
+        if (Number.isFinite(Number(army?.infantry)) || Number.isFinite(Number(army?.cavalry))) {
+          const infantry = Number(army?.infantry) || 0;
+          const cavalry = Number(army?.cavalry) || 0;
+          total += infantry + cavalry;
+          hasAny = true;
+          continue;
+        }
+        if (Number.isFinite(Number(army?.strength_rounded))) {
+          total += Number(army?.strength_rounded) || 0;
+          hasAny = true;
+        }
+      }
+      return hasAny ? total : null;
+    }
+
     function renderStandingOrderToggle() {
       const enabled = !!state.followRoadEnabled;
       els.followRoadToggleInput.checked = enabled;
@@ -2261,12 +2281,10 @@
         }
         const metaRows = [];
         if (primaryArmy) {
-          if (Number.isFinite(Number(primaryArmy.infantry)) || Number.isFinite(Number(primaryArmy.cavalry))) {
-            const infantry = Number(primaryArmy.infantry) || 0;
-            const cavalry = Number(primaryArmy.cavalry) || 0;
-            metaRows.push(`<div><span class=\"k\">Strength:</span>${(infantry + cavalry).toLocaleString()}</div>`);
-          } else if (Number.isFinite(Number(primaryArmy.strength_rounded))) {
-            metaRows.push(`<div><span class=\"k\">Strength:</span>${Number(primaryArmy.strength_rounded).toLocaleString()}</div>`);
+          const visibleStrength = visibleArmyStrengthTotal(otherArmies);
+          if (visibleStrength !== null) {
+            const strengthLabel = hasStronghold ? "Garrison:" : "Strength:";
+            metaRows.push(`<div><span class=\"k\">${strengthLabel}</span>${visibleStrength.toLocaleString()}</div>`);
           }
           if (primaryArmy.commander) {
             metaRows.push(`<div><span class=\"k\">Commanded By:</span>${escapeHtml(String(primaryArmy.commander))}</div>`);
