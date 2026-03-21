@@ -1679,6 +1679,8 @@
         const category = String(item?.category || "").toLowerCase();
         const createdDay = Number(item?.created_watch?.day);
         const createdWatch = Number(item?.created_watch?.watch);
+        const deliveredDay = Number(item?.delivered_watch?.day);
+        const deliveredWatch = Number(item?.delivered_watch?.watch);
 
         if (signalKind === "state") {
           if (!isCurrentWatchKnown || createdDay !== currentDay || createdWatch !== currentWatch) {
@@ -1700,9 +1702,9 @@
           }
         }
 
-        const hasCreatedStamp = Number.isFinite(createdDay) && Number.isFinite(createdWatch);
-        const eventHeading = hasCreatedStamp
-          ? `${formatScenarioDateNoYear(createdDay)}, ${formatWatchLabelLower(createdWatch)}`
+        const hasDeliveredStamp = Number.isFinite(deliveredDay) && Number.isFinite(deliveredWatch);
+        const eventHeading = hasDeliveredStamp
+          ? `${formatScenarioDateNoYear(deliveredDay)}, ${formatWatchLabelLower(deliveredWatch)}`
           : "";
         events.push({
           message: normalizeAlertMessage(rawMessage),
