@@ -2685,11 +2685,24 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
         if action.kind == "forage":
             gain, visible_locations = _forage_supply_gain_for_army(session, army)
             capacity = supply_stats(army).capacity
+            supply_before = int(army.army_supply or 0)
             army.army_supply = min(capacity, army.army_supply + gain)
+            applied_gain = max(0, int(army.army_supply or 0) - supply_before)
             for location in visible_locations:
                 if int(location.settlement or 0) > 0:
                     location.foraged_this_season = True
             action.state = "completed"
+            _create_alert(
+                session,
+                recipient_commander_id=action.commander_id,
+                alert_type="action",
+                signal_kind="event",
+                category="action",
+                importance="normal",
+                message=f"{applied_gain} supply foraged",
+                created_day=clock.day,
+                created_watch=clock.watch,
+            )
             completed += 1
             continue
 
