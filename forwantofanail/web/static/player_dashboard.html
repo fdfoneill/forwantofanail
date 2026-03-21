@@ -1612,7 +1612,7 @@
         );
       });
       els.inboxList.innerHTML = rows.join("");
-      els.inboxList.querySelectorAll(".inbox-btn[data-msg-id]").forEach((btn) => {
+        els.inboxList.querySelectorAll(".inbox-btn[data-msg-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const messageId = btn.dataset.msgId;
           try {
@@ -1628,6 +1628,7 @@
               `Delivered: ${deliveredDateText}, ${deliveredWatchName}\n\n` +
               `${message.content}`;
             await refreshInbox();
+            await refreshAlerts();
           } catch (err) {
             setStatus(`Read failed: ${err.message}`, true);
           }
@@ -1669,6 +1670,9 @@
 
       const stateCurrent = [];
       const events = [];
+      const unreadInboxCount = state.inbox.reduce((count, message) => (
+        message && message.is_read === false ? count + 1 : count
+      ), 0);
       for (const item of rows) {
         const rawMessage = String(item?.message || "").trim();
         if (!rawMessage) {
@@ -1711,6 +1715,15 @@
           heading: eventHeading,
           importance,
           signal_kind: "event",
+        });
+      }
+
+      if (unreadInboxCount > 0) {
+        stateCurrent.unshift({
+          message: unreadInboxCount >= 5 ? "5+ unread letters" : `${unreadInboxCount} unread letters`,
+          heading: "",
+          importance: unreadInboxCount >= 5 ? "high" : "moderate",
+          signal_kind: "state",
         });
       }
 
