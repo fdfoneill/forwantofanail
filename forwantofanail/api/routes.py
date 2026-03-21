@@ -802,19 +802,29 @@ def _emit_siege_world_event(
 
 
 def _emit_siege_start_alerts(session: Session, *, stronghold: Stronghold, faction: str, clock: GameClock) -> None:
+    event_date = _scenario_date_for_day(clock.day)
+    watch_name = WATCH_LABELS.get(Watch(int(clock.watch)), "watch").capitalize()
     _emit_siege_world_event(
         session,
         stronghold=stronghold,
-        message=f"{stronghold.stronghold_name} under siege by {faction} forces.",
+        message=(
+            f"{stronghold.stronghold_name} was besieged by {faction} forces "
+            f"on {event_date.strftime('%B %d, %Y')}, {watch_name} Watch"
+        ),
         clock=clock,
     )
 
 
 def _emit_siege_lifted_alerts(session: Session, *, stronghold: Stronghold, clock: GameClock) -> None:
+    event_date = _scenario_date_for_day(clock.day)
+    watch_name = WATCH_LABELS.get(Watch(int(clock.watch)), "watch").capitalize()
     _emit_siege_world_event(
         session,
         stronghold=stronghold,
-        message=f"Siege lifted on {stronghold.stronghold_name}",
+        message=(
+            f"The siege on {stronghold.stronghold_name} was lifted "
+            f"on {event_date.strftime('%B %d, %Y')}, {watch_name} Watch"
+        ),
         clock=clock,
     )
 
