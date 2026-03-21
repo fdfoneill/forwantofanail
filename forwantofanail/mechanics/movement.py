@@ -55,6 +55,21 @@ def _is_stronghold_location(session: Session, location_id: str) -> bool:
     return row is not None
 
 
+def _stronghold_has_hostile_occupants(session: Session, destination: Location, army: Army) -> bool:
+    if not _is_stronghold_location(session, destination.location_id):
+        return False
+    blocker = (
+        session.query(Army.army_id)
+        .filter(
+            Army.location_id == destination.location_id,
+            Army.army_id != army.army_id,
+            Army.army_faction != army.army_faction,
+        )
+        .first()
+    )
+    return blocker is not None
+
+
 def _is_river(terrain: TerrainType) -> bool:
     return terrain.terrain_name.strip().lower() == RIVER_TERRAIN_NAME.lower()
 
@@ -72,6 +87,8 @@ def _movement_cost(session: Session, army: Army, origin: Location, destination: 
     effective_on_road = on_road or moving_into_stronghold or moving_out_stronghold_to_road
 
     has_wagons = _has_wagons(army)
+    if _stronghold_has_hostile_occupants(session, destination, army):
+        raise ValueError("Hostile occupied strongholds must be besieged or assaulted.")
     if not effective_on_road and has_wagons:
         raise ValueError("Armies with wagons cannot move off-road.")
 
