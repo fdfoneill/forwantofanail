@@ -59,6 +59,8 @@ Run this when starting a new game state from CSVs or after schema changes:
 python -m forwantofanail.core.initialize_db --reset
 ```
 
+This reset also auto-generates one garrison army for every stronghold based on its type.
+
 If you want to keep existing scenario/world rows and only ensure runtime tables exist:
 
 ```bash
@@ -105,11 +107,13 @@ Table: armies
 - army_name VARCHAR(100)
 - army_faction VARCHAR(100)
 - commander_id INT FOREIGN KEY REFERENCES commanders(commander_id)
+- garrison_stronghold_id INT NULL FOREIGN KEY REFERENCES strongholds(stronghold_id)
 - army_supply INT
 - army_morale INT
+- army_resting_morale INT
 - is_embarked BOOL
 - is_garrison BOOL
-- noncombattant_count INT
+- noncombattant_percent FLOAT
 
 Table: detachments 
 - detachment_id INT PRIMARY KEY
