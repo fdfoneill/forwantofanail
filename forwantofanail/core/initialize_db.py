@@ -73,6 +73,20 @@ def _clamp_noncombatant_percent(value: float | None, default: float = 0.25) -> f
     return max(0.0, float(value))
 
 
+def _generated_garrison_composition(stronghold_type: str) -> list[dict[str, object]]:
+    normalized = str(stronghold_type or "").strip().lower()
+    if normalized == "town":
+        return [{"suffix": "Infantry", "warriors": 250, "is_cavalry": False}]
+    if normalized == "city":
+        return [{"suffix": "Infantry", "warriors": 500, "is_cavalry": False}]
+    if normalized == "fortress":
+        return [
+            {"suffix": "Infantry", "warriors": 250, "is_cavalry": False},
+            {"suffix": "Cavalry", "warriors": 50, "is_cavalry": True},
+        ]
+    return [{"suffix": "Infantry", "warriors": 250, "is_cavalry": False}]
+
+
 def _load_csv(model_cls, csv_path: Path, converters: dict[str, callable]):
     with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
@@ -226,6 +240,50 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
                 },
             )
         )
+        session.flush()
+
+        strongholds = session.query(Stronghold).order_by(Stronghold.stronghold_id.asc()).all()
+        next_army_id = max((int(army.army_id or 0) for army in armies), default=0) + 1
+        next_detachment_id = max((int(det.detachment_id or 0) for det in detachments), default=0) + 1
+        generated_garrison_armies: list[Army] = []
+        generated_garrison_detachments: list[Detachment] = []
+        for stronghold in strongholds:
+            garrison_army = Army(
+                army_id=next_army_id,
+                location_id=stronghold.location_id,
+                army_name=f"{stronghold.stronghold_name} Garrison",
+                army_faction=stronghold.control,
+                commander_id=None,
+                garrison_stronghold_id=stronghold.stronghold_id,
+                army_supply=0,
+                army_morale=9,
+                army_resting_morale=9,
+                is_embarked=False,
+                is_garrison=True,
+                noncombattant_percent=0.0,
+            )
+            generated_garrison_armies.append(garrison_army)
+            next_army_id += 1
+            for row in _generated_garrison_composition(stronghold.stronghold_type):
+                generated_garrison_detachments.append(
+                    Detachment(
+                        detachment_id=next_detachment_id,
+                        detachment_name=f"{stronghold.stronghold_name} Garrison {row['suffix']}",
+                        army_id=garrison_army.army_id,
+                        is_heavy=False,
+                        is_cavalry=bool(row["is_cavalry"]),
+                        wagon_count=0,
+                        warrior_count=int(row["warriors"]),
+                        is_mercenary=False,
+                    )
+                )
+                next_detachment_id += 1
+        if generated_garrison_armies:
+            session.add_all(generated_garrison_armies)
+            armies.extend(generated_garrison_armies)
+        if generated_garrison_detachments:
+            session.add_all(generated_garrison_detachments)
+            detachments.extend(generated_garrison_detachments)
         movements_path = data_dir / "movements.csv"
         if movements_path.exists():
             session.add_all(
