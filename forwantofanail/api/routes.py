@@ -29,6 +29,7 @@ from forwantofanail.core.models import (
     Army,
     AuthToken,
     Commander,
+    Detachment,
     GameClock,
     Location,
     Message,
