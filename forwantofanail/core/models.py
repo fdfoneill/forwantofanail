@@ -110,6 +110,7 @@ class Army(Base):
     army_name = Column(String(100), nullable=False)
     army_faction = Column(String(100), nullable=False)
     commander_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=True)
+    garrison_stronghold_id = Column(Integer, ForeignKey("strongholds.stronghold_id"), nullable=True, unique=True)
     army_supply = Column(Integer, nullable=False, default=0)
     army_morale = Column(Integer, nullable=False, default=9)
     army_resting_morale = Column(Integer, nullable=False, default=9)
@@ -119,6 +120,7 @@ class Army(Base):
 
     location = relationship("Location", back_populates="armies")
     commander = relationship("Commander", back_populates="armies")
+    garrison_stronghold = relationship("Stronghold", foreign_keys=[garrison_stronghold_id])
     detachments = relationship("Detachment", back_populates="army", cascade="all, delete-orphan")
     movements = relationship("Movement", back_populates="army", cascade="all, delete-orphan")
 

@@ -2280,10 +2280,14 @@
           els.hoverTitle.classList.remove("stronghold");
         }
         const metaRows = [];
+        const strongholdDefenderStrength = Number(cell?.stronghold?.defender_strength);
+        if (hasStronghold && Number.isFinite(strongholdDefenderStrength)) {
+          metaRows.push(`<div><span class=\"k\">Garrison:</span>${strongholdDefenderStrength.toLocaleString()}</div>`);
+        }
         if (primaryArmy) {
           const visibleStrength = visibleArmyStrengthTotal(otherArmies);
-          if (visibleStrength !== null) {
-            const strengthLabel = hasStronghold ? "Garrison:" : "Strength:";
+          if (visibleStrength !== null && !hasStronghold) {
+            const strengthLabel = "Strength:";
             metaRows.push(`<div><span class=\"k\">${strengthLabel}</span>${visibleStrength.toLocaleString()}</div>`);
           }
           if (primaryArmy.commander) {

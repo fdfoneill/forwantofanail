@@ -29,6 +29,7 @@ from forwantofanail.core.models import (
     Army,
     AuthToken,
     Commander,
+    Detachment,
     GameClock,
     Location,
     Message,
@@ -211,6 +212,18 @@ def _cell_title(
         if region_name:
             return region_name
     return terrain_type
+
+
+def _army_has_live_detachments(army: Army | None) -> bool:
+    if army is None:
+        return False
+    return any(int(det.warrior_count or 0) > 0 for det in army.detachments)
+
+
+def _live_warrior_count(army: Army | None) -> int:
+    if army is None:
+        return 0
+    return sum(int(det.warrior_count or 0) for det in army.detachments if int(det.warrior_count or 0) > 0)
 
 
 def _get_session():
@@ -480,6 +493,8 @@ def _run_morale_test_for_army(
     clock: GameClock,
     category: str,
 ) -> None:
+    if army.is_garrison:
+        return
     current_morale = _clamp_morale(army.army_morale)
     roll = random.randint(1, 6) + random.randint(1, 6)
     if roll <= current_morale:
@@ -780,6 +795,49 @@ def _stronghold_at_h3(session: Session, location_h3: str) -> Stronghold | None:
     )
 
 
+def _garrison_for_stronghold(session: Session, stronghold: Stronghold | None) -> Army | None:
+    if stronghold is None:
+        return None
+    return (
+        session.query(Army)
+        .options(joinedload(Army.detachments))
+        .filter(Army.garrison_stronghold_id == stronghold.stronghold_id, Army.is_garrison.is_(True))
+        .first()
+    )
+
+
+def _set_stronghold_control(
+    session: Session,
+    *,
+    stronghold: Stronghold,
+    new_faction: str,
+    clock: GameClock | None = None,
+) -> None:
+    previous_faction = str(stronghold.control or "").strip()
+    new_faction = str(new_faction or "").strip()
+    if previous_faction == new_faction:
+        garrison = _garrison_for_stronghold(session, stronghold)
+        if garrison is not None:
+            garrison.army_faction = new_faction
+            garrison.location_id = stronghold.location_id
+            garrison.location = stronghold.location
+        return
+    stronghold.control = new_faction
+    garrison = _garrison_for_stronghold(session, stronghold)
+    if garrison is not None:
+        garrison.army_faction = new_faction
+        garrison.location_id = stronghold.location_id
+        garrison.location = stronghold.location
+    if clock is not None:
+        _emit_stronghold_conquest_alerts(
+            session,
+            stronghold=stronghold,
+            previous_faction=previous_faction,
+            new_faction=new_faction,
+            clock=clock,
+        )
+
+
 def _army_is_in_stronghold(session: Session, army: Army | None) -> bool:
     if army is None:
         return False
@@ -896,9 +954,16 @@ def _emit_gates_open_alerts(
         )
 
 
-def _defender_armies_in_stronghold(session: Session, stronghold: Stronghold, enemy_faction: str) -> list[Army]:
-    return (
+def _defender_armies_in_stronghold(
+    session: Session,
+    stronghold: Stronghold,
+    enemy_faction: str,
+    *,
+    include_empty: bool = False,
+) -> list[Army]:
+    armies = (
         session.query(Army)
+        .options(joinedload(Army.detachments), joinedload(Army.commander))
         .filter(
             Army.location_id == stronghold.location_id,
             Army.army_faction != enemy_faction,
@@ -906,6 +971,9 @@ def _defender_armies_in_stronghold(session: Session, stronghold: Stronghold, ene
         .order_by(Army.army_id.asc())
         .all()
     )
+    if include_empty:
+        return armies
+    return [army for army in armies if _army_has_live_detachments(army)]
 
 
 def _end_siege(
@@ -1480,11 +1548,13 @@ def _ratio_label(numerator: int, denominator: int) -> str | None:
 
 def _is_enemy_occupied(session: Session, *, destination_h3: str, moving_army: Army) -> bool:
     blocker = (
-        session.query(Army)
+        session.query(Army.army_id)
+        .join(Detachment, Detachment.army_id == Army.army_id)
         .filter(
             Army.location_id == destination_h3,
             Army.army_id != moving_army.army_id,
             Army.army_faction != moving_army.army_faction,
+            Detachment.warrior_count > 0,
         )
         .first()
     )
@@ -1515,6 +1585,8 @@ def _active_non_attack_kind(session: Session, commander_id: int, exclude_action_
 
 
 def _apply_morale_delta(army: Army, delta: int) -> None:
+    if army.is_garrison:
+        return
     army.army_morale = _clamp_morale(int(army.army_morale or 0) + int(delta))
 
 
@@ -1583,6 +1655,9 @@ def _retreat_one_cell(
     winner_armies: list[Army],
     clock: GameClock,
 ) -> bool:
+    if army.is_garrison:
+        _destroy_army(session, army)
+        return False
     current_h3 = army.location_id
     current_distance = _nearest_distance_to_armies(current_h3, winner_armies)
     candidates = []
@@ -1599,6 +1674,10 @@ def _retreat_one_cell(
 
 
 def _destroy_army(session: Session, army: Army) -> None:
+    if army.is_garrison:
+        for det in list(army.detachments):
+            session.delete(det)
+        return
     for det in list(army.detachments):
         session.delete(det)
     session.delete(army)
@@ -1616,6 +1695,9 @@ def _retreat_one_cell_with_wagon_drop(
     winner_armies: list[Army],
     clock: GameClock,
 ) -> dict[str, Any]:
+    if army.is_garrison:
+        _destroy_army(session, army)
+        return {"retreated": False, "dropped_wagons": False, "destroyed": True, "garrison_destroyed": True}
     retreat_ok = _retreat_one_cell(session, army=army, winner_armies=winner_armies, clock=clock)
     if retreat_ok:
         return {"retreated": True, "dropped_wagons": False, "destroyed": False}
@@ -1701,10 +1783,12 @@ def _execute_move_to_destination(session: Session, clock: GameClock, army: Army,
     if stronghold is not None:
         hostile_occupant = (
             session.query(Army.army_id)
+            .join(Detachment, Detachment.army_id == Army.army_id)
             .filter(
                 Army.location_id == destination_h3,
                 Army.army_id != army.army_id,
                 Army.army_faction != army.army_faction,
+                Detachment.warrior_count > 0,
             )
             .first()
         )
@@ -1721,15 +1805,7 @@ def _execute_move_to_destination(session: Session, clock: GameClock, army: Army,
         )
     )
     if stronghold is not None and stronghold.control != army.army_faction:
-        previous_faction = stronghold.control
-        stronghold.control = army.army_faction
-        _emit_stronghold_conquest_alerts(
-            session,
-            stronghold=stronghold,
-            previous_faction=previous_faction,
-            new_faction=army.army_faction,
-            clock=clock,
-        )
+        _set_stronghold_control(session, stronghold=stronghold, new_faction=army.army_faction, clock=clock)
     if army.commander_id is not None:
         active_siege = _active_siege_for_besieger(session, army.army_id)
         if active_siege is not None:
@@ -1850,8 +1926,16 @@ def _resolve_battles_from_edges(
             enemy_side_strength = max((side_strength.get(f, 1) for f in enemy_factions), default=1)
             own_side_strength = max(1, side_strength.get(faction, 1))
             numerical_adv = max(0, int(math.floor((own_side_strength / max(enemy_side_strength, 1)) - 1.0)))
-            highest_enemy_morale = max((_clamp_morale(enemy.army_morale) for f in enemy_factions for enemy in sides.get(f, [])), default=2)
-            morale_adv = max(0, _clamp_morale(army.army_morale) - highest_enemy_morale)
+            highest_enemy_morale = max(
+                (
+                    _clamp_morale(enemy.army_morale)
+                    for f in enemy_factions
+                    for enemy in sides.get(f, [])
+                    if not enemy.is_garrison
+                ),
+                default=2,
+            )
+            morale_adv = 0 if army.is_garrison else max(0, _clamp_morale(army.army_morale) - highest_enemy_morale)
             is_attacker = army.army_id in attacker_ids
             active_kind = "attack" if is_attacker else (
                 _active_non_attack_kind(
@@ -1949,29 +2033,29 @@ def _resolve_battles_from_edges(
             casualty_pct = 0.0
             if diff == 0:
                 casualty_pct = 0.05
-                if army.army_id in attacker_ids:
+                if army.army_id in attacker_ids and not army.is_garrison:
                     morale_delta_by_army[army.army_id] -= 1
             elif diff == 1:
                 casualty_pct = 0.10
-                if loser:
+                if loser and not army.is_garrison:
                     morale_delta_by_army[army.army_id] -= 1
             elif diff in {2, 3}:
                 casualty_pct = 0.05 if winner else 0.10
-                if loser:
+                if loser and not army.is_garrison:
                     morale_delta_by_army[army.army_id] -= 2
-                if winner:
+                if winner and not army.is_garrison:
                     morale_delta_by_army[army.army_id] += 1
             elif diff in {4, 5}:
                 casualty_pct = 0.05 if winner else 0.15
-                if loser:
+                if loser and not army.is_garrison:
                     morale_delta_by_army[army.army_id] -= 2
-                if winner:
+                if winner and not army.is_garrison:
                     morale_delta_by_army[army.army_id] += 2
             else:
                 casualty_pct = 0.05 if winner else 0.20
-                if loser:
+                if loser and not army.is_garrison:
                     morale_delta_by_army[army.army_id] -= 2
-                if winner:
+                if winner and not army.is_garrison:
                     morale_delta_by_army[army.army_id] += 2
             if loser_extra_casualty_pct > 0.0 and loser:
                 casualty_pct += max(0.0, float(loser_extra_casualty_pct))
@@ -1986,7 +2070,13 @@ def _resolve_battles_from_edges(
                 else:
                     retreat_ok = _retreat_one_cell(session, army=army, winner_armies=winner_armies, clock=clock)
                     retreat_by_army[army.army_id] = {"retreated": retreat_ok}
-                    if not retreat_ok:
+                    if not retreat_ok and army.is_garrison:
+                        retreat_by_army[army.army_id] = {
+                            "retreated": False,
+                            "destroyed": True,
+                            "garrison_destroyed": True,
+                        }
+                    elif not retreat_ok:
                         lost_w, lost_s = _halve_army(session, army)
                         retreat_by_army[army.army_id] = {
                             "retreated": False,
@@ -1994,7 +2084,7 @@ def _resolve_battles_from_edges(
                             "lost_warriors": lost_w,
                             "lost_supply": lost_s,
                         }
-                    else:
+                    elif not army.is_garrison:
                         check = random.randint(1, 6) + random.randint(1, 6)
                         if check > _clamp_morale(army.army_morale):
                             rout_by_army[army.army_id] = True
@@ -3019,6 +3109,13 @@ def _serialize_environs(
         int(siege.stronghold_id): siege
         for siege in session.query(Siege).filter(Siege.state == "active").all()
     }
+    armies_in_disk = (
+        session.query(Army)
+        .options(joinedload(Army.detachments), joinedload(Army.commander))
+        .filter(Army.location_id.in_(disk))
+        .order_by(Army.army_id.asc())
+        .all()
+    )
     region_names = {loc.region for loc in locations if loc.region}
     region_control_by_name = {}
     if region_names:
@@ -3027,15 +3124,14 @@ def _serialize_environs(
             for sh in session.query(Stronghold).filter(Stronghold.stronghold_name.in_(region_names)).all()
         }
     other_armies_by_location: dict[str, list[dict[str, Any]]] = {}
-    other_armies_query = (
-        session.query(Army)
-        .options(joinedload(Army.detachments), joinedload(Army.commander))
-        .filter(Army.location_id.in_(disk), Army.is_garrison.is_(False))
-        .order_by(Army.army_id.asc())
-    )
-    if exclude_army_id is not None:
-        other_armies_query = other_armies_query.filter(Army.army_id != exclude_army_id)
-    for other_army in other_armies_query.all():
+    armies_by_location: dict[str, list[Army]] = {}
+    for located_army in armies_in_disk:
+        armies_by_location.setdefault(located_army.location_id, []).append(located_army)
+        if located_army.is_garrison:
+            continue
+        if exclude_army_id is not None and located_army.army_id == exclude_army_id:
+            continue
+        other_army = located_army
         location_bucket = other_armies_by_location.setdefault(other_army.location_id, [])
         infantry = sum(det.warrior_count for det in other_army.detachments if not det.is_cavalry)
         cavalry = sum(det.warrior_count for det in other_army.detachments if det.is_cavalry)
@@ -3073,9 +3169,20 @@ def _serialize_environs(
         stronghold = strongholds.get(location.location_id)
         siege = active_sieges_by_stronghold_id.get(int(stronghold.stronghold_id)) if stronghold else None
         other_armies = other_armies_by_location.get(location.location_id, [])
+        located_armies = armies_by_location.get(location.location_id, [])
         stronghold_name = stronghold.stronghold_name if stronghold else None
         terrain_type = terrain.terrain_name if terrain else "unknown"
         siege_payload = None
+        defender_strength = 0
+        has_live_defenders = False
+        if stronghold is not None:
+            defending_armies = [
+                army
+                for army in located_armies
+                if str(army.army_faction or "").strip() == str(stronghold.control or "").strip()
+            ]
+            defender_strength = sum(_live_warrior_count(army) for army in defending_armies)
+            has_live_defenders = any(_army_has_live_detachments(army) for army in defending_armies)
         if stronghold and siege:
             besieger_army = session.get(Army, siege.besieger_army_id)
             defender_commander_ids = {
@@ -3118,6 +3225,8 @@ def _serialize_environs(
                         "name": stronghold.stronghold_name,
                         "type": stronghold.stronghold_type,
                         "faction": stronghold.control,
+                        "defender_strength": defender_strength,
+                        "has_live_defenders": has_live_defenders,
                         "under_siege": bool(siege),
                         "siege": siege_payload,
                     }
@@ -3505,11 +3614,14 @@ def get_valid_attack_targets(
         raise HTTPException(status_code=400, detail=f"Unable to determine adjacent cells: {exc}") from exc
     enemies = (
         session.query(Army)
+        .join(Detachment, Detachment.army_id == Army.army_id)
         .filter(
             Army.location_id.in_(list(neighbors)),
             Army.army_id != army.army_id,
             Army.army_faction != army.army_faction,
+            Detachment.warrior_count > 0,
         )
+        .distinct()
         .order_by(Army.army_id.asc())
         .all()
     )
@@ -3648,6 +3760,8 @@ def create_action(
         target_army = session.get(Army, target_army_id)
         if target_army is None:
             raise HTTPException(status_code=400, detail={"message": "Unknown target_army_id", "target_army_id": target_army_ref})
+        if not _army_has_live_detachments(target_army):
+            raise HTTPException(status_code=400, detail="Cannot attack an army with no live detachments")
         if target_army.army_faction == army.army_faction:
             raise HTTPException(status_code=400, detail="Cannot attack a friendly army")
         if target_army.location_id != target_h3:
