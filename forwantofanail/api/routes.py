@@ -1166,6 +1166,10 @@ def _next_road_cell(
     current_h3: str,
     last_h3: str,
 ) -> tuple[str | None, str | None, str | None]:
+    current_location = session.get(Location, current_h3)
+    if current_location is None or not bool(current_location.is_road):
+        return None, "off_road", "Road march halted: army is no longer on a road."
+
     try:
         adjacent = set(h3.grid_ring(current_h3, 1))
     except Exception:
