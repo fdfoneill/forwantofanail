@@ -60,10 +60,12 @@ def _stronghold_has_hostile_occupants(session: Session, destination: Location, a
         return False
     blocker = (
         session.query(Army.army_id)
+        .join(Detachment, Detachment.army_id == Army.army_id)
         .filter(
             Army.location_id == destination.location_id,
             Army.army_id != army.army_id,
             Army.army_faction != army.army_faction,
+            Detachment.warrior_count > 0,
         )
         .first()
     )

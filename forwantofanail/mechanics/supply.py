@@ -16,6 +16,7 @@ INFANTRY_DAILY_CONSUMPTION = 1
 NONCOMBATANT_DAILY_CONSUMPTION = 1
 CAVALRY_DAILY_CONSUMPTION = 10
 WAGON_DAILY_CONSUMPTION = 10
+GARRISONS_CONSUME_SUPPLY = False
 
 
 @dataclass(frozen=True)
@@ -61,6 +62,8 @@ def supply_capacity(army: Army) -> int:
 
 
 def daily_supply_consumption(army: Army) -> int:
+    if army.is_garrison and not GARRISONS_CONSUME_SUPPLY:
+        return 0
     infantry = _infantry_count(army)
     cavalry = _cavalry_count(army)
     wagons = _wagon_count(army)
