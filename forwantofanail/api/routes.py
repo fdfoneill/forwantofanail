@@ -341,6 +341,9 @@ def _create_alert(
     normalized_type = alert_type.strip().lower()
     if normalized_type not in ALERT_TYPES:
         normalized_type = "report"
+    normalized_message = str(message or "").strip()
+    if normalized_type == "world event" and normalized_message and not normalized_message.startswith("NEWS:"):
+        normalized_message = f"NEWS: {normalized_message}"
     normalized_signal_kind = signal_kind.strip().lower()
     if normalized_signal_kind not in {"event", "state"}:
         normalized_signal_kind = "event"
@@ -350,7 +353,7 @@ def _create_alert(
         signal_kind=normalized_signal_kind,
         category=(category or "general").strip().lower(),
         importance=(importance or "normal").strip().lower(),
-        message=message,
+        message=normalized_message,
         payload_json=json.dumps(payload or {}),
         created_day=created_day,
         created_watch=created_watch,
