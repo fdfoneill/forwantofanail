@@ -846,6 +846,7 @@
         server: null,
         draft: null,
         drag: null,
+        focus: null,
       },
     };
 
@@ -1362,6 +1363,7 @@
         state.armyManagement.note = note;
         state.armyManagement.error = "";
         state.armyManagement.dirty = false;
+        state.armyManagement.focus = null;
         renderArmyManagementModal();
         return;
       }
@@ -1377,6 +1379,7 @@
       state.armyManagement.error = "";
       state.armyManagement.dirty = false;
       state.armyManagement.drag = null;
+      state.armyManagement.focus = null;
       renderArmyManagementModal();
     }
 
@@ -1506,26 +1509,75 @@
         renderArmyManagementModal();
         return;
       }
+      const leftStats = managementArmySupplyStats(draft.left);
+      const rightStats = managementArmySupplyStats(draft.right);
       if (direction === "right") {
-        if (draft.left.supply_current < amount) {
-          state.armyManagement.error = "Left army does not have that much supply.";
+        const room = Math.max(0, rightStats.capacity - draft.right.supply_current);
+        const applied = Math.min(amount, draft.left.supply_current, room);
+        if (applied < 1) {
+          state.armyManagement.error = room < 1
+            ? "Right army is already at maximum supply capacity."
+            : "Left army does not have that much supply.";
           renderArmyManagementModal();
           return;
         }
-        draft.left.supply_current -= amount;
-        draft.right.supply_current += amount;
+        draft.left.supply_current -= applied;
+        draft.right.supply_current += applied;
       } else if (direction === "left") {
-        if (draft.right.supply_current < amount) {
-          state.armyManagement.error = "Right army does not have that much supply.";
+        const room = Math.max(0, leftStats.capacity - draft.left.supply_current);
+        const applied = Math.min(amount, draft.right.supply_current, room);
+        if (applied < 1) {
+          state.armyManagement.error = room < 1
+            ? "Left army is already at maximum supply capacity."
+            : "Right army does not have that much supply.";
           renderArmyManagementModal();
           return;
         }
-        draft.right.supply_current -= amount;
-        draft.left.supply_current += amount;
+        draft.right.supply_current -= applied;
+        draft.left.supply_current += applied;
       }
       state.armyManagement.dirty = true;
       state.armyManagement.error = "";
       renderArmyManagementModal();
+    }
+
+    function captureArmyManagementFocus() {
+      if (!state.armyManagement.open || !els.armyMgmtOverlay) {
+        return null;
+      }
+      const active = document.activeElement;
+      if (!active || !els.armyMgmtOverlay.contains(active)) {
+        return null;
+      }
+      let selector = "";
+      if (active.id) {
+        selector = `#${active.id}`;
+      } else if (active.dataset?.armyMgmtName) {
+        selector = `[data-army-mgmt-name="${active.dataset.armyMgmtName}"]`;
+      }
+      if (!selector) {
+        return null;
+      }
+      const focusState = { selector };
+      if (typeof active.selectionStart === "number" && typeof active.selectionEnd === "number") {
+        focusState.selectionStart = active.selectionStart;
+        focusState.selectionEnd = active.selectionEnd;
+      }
+      return focusState;
+    }
+
+    function restoreArmyManagementFocus(focusState) {
+      if (!focusState || !els.armyMgmtOverlay) {
+        return;
+      }
+      const target = els.armyMgmtOverlay.querySelector(focusState.selector);
+      if (!target || typeof target.focus !== "function") {
+        return;
+      }
+      target.focus();
+      if (typeof focusState.selectionStart === "number" && typeof target.setSelectionRange === "function") {
+        target.setSelectionRange(focusState.selectionStart, focusState.selectionEnd ?? focusState.selectionStart);
+      }
     }
 
     function swapManagementCommanders() {
@@ -1632,6 +1684,8 @@
         overlay.classList.remove("open");
         return;
       }
+      const priorFocus = captureArmyManagementFocus() || mgmt.focus;
+      mgmt.focus = priorFocus;
       overlay.classList.add("open");
       const draft = mgmt.draft;
       const right = draft?.right || null;
@@ -1688,6 +1742,7 @@
           }
           mgmt.dirty = true;
           mgmt.error = "";
+          mgmt.focus = captureArmyManagementFocus();
         });
       });
       const commanderTitleInput = body.querySelector("#armyMgmtNewCommanderTitle");
@@ -1696,6 +1751,7 @@
           draft.right.new_commander.title = commanderTitleInput.value;
           mgmt.dirty = true;
           mgmt.error = "";
+          mgmt.focus = captureArmyManagementFocus();
         });
       }
       const commanderNameInput = body.querySelector("#armyMgmtNewCommanderName");
@@ -1704,8 +1760,12 @@
           draft.right.new_commander.name = commanderNameInput.value;
           mgmt.dirty = true;
           mgmt.error = "";
+          mgmt.focus = captureArmyManagementFocus();
         });
       }
+      els.armyMgmtTransferAmount?.addEventListener("input", () => {
+        mgmt.focus = captureArmyManagementFocus();
+      });
       body.querySelector("#armyMgmtTransferLeftBtn")?.addEventListener("click", () => transferManagementSupply("left"));
       body.querySelector("#armyMgmtTransferRightBtn")?.addEventListener("click", () => transferManagementSupply("right"));
       body.querySelector("#armyMgmtSwapBtn")?.addEventListener("click", () => swapManagementCommanders());
@@ -1733,6 +1793,7 @@
           state.armyManagement.drag = null;
         });
       });
+      restoreArmyManagementFocus(priorFocus);
     }
 
     function closeArmyManagementModal(force = false) {
@@ -1747,6 +1808,7 @@
       state.armyManagement.note = "";
       state.armyManagement.error = "";
       state.armyManagement.drag = null;
+      state.armyManagement.focus = null;
       renderArmyManagementModal();
       return true;
     }
@@ -1853,6 +1915,10 @@
         );
         state.armyManagement.dirty = false;
         closeArmyManagementModal(true);
+        await loadCommanders();
+        if (state.selectedCommander) {
+          els.commanderSelect.value = state.selectedCommander;
+        }
         await refreshAllPanels();
       } catch (err) {
         state.armyManagement.error = readableErrorMessage(err);
@@ -3414,6 +3480,7 @@
           server: null,
           draft: null,
           drag: null,
+          focus: null,
         };
         updateMetadata(null);
         renderArmyStatusSection(null);
@@ -3459,6 +3526,7 @@
           server: null,
           draft: null,
           drag: null,
+          focus: null,
         };
         state.followRoadEnabled = false;
         state.armyPanelExpanded = false;
