@@ -3523,6 +3523,17 @@ def _management_supply_payload(current: int, *, detachments: list[Detachment], n
     }
 
 
+def _management_supply_capacity(*, detachments: list[Detachment], noncombatant_percent: float) -> int:
+    return int(
+        _management_supply_payload(
+            0,
+            detachments=detachments,
+            noncombatant_percent=noncombatant_percent,
+        )["capacity"]
+        or 0
+    )
+
+
 def _management_alert(session: Session, *, commander_id: int | None, army_name: str, clock: GameClock) -> None:
     if commander_id is None:
         return
@@ -3701,6 +3712,31 @@ def _validate_and_apply_management_transaction(
     detachment_by_id = {det.detachment_id: det for det in detachment_rows}
     if set(detachment_by_id) != source_det_ids:
         raise _army_management_error("Detachment assignment is stale or invalid.")
+
+    left_detachments_final = [detachment_by_id[det_id] for det_id in sorted(left_det_ids)]
+    right_detachments_final = [detachment_by_id[det_id] for det_id in sorted(right_det_ids)]
+
+    left_capacity_final = _management_supply_capacity(
+        detachments=left_detachments_final,
+        noncombatant_percent=float(left_army.noncombattant_percent or 0.0),
+    )
+    if left_supply > left_capacity_final:
+        raise _army_management_error("Left army supply exceeds its maximum carrying capacity.")
+
+    if right_mode == "existing" and right_existing is not None and not right_existing.is_garrison:
+        right_capacity_final = _management_supply_capacity(
+            detachments=right_detachments_final,
+            noncombatant_percent=float(right_existing.noncombattant_percent or 0.0),
+        )
+        if right_supply > right_capacity_final:
+            raise _army_management_error("Right army supply exceeds its maximum carrying capacity.")
+    elif right_mode == "new":
+        right_capacity_final = _management_supply_capacity(
+            detachments=right_detachments_final,
+            noncombatant_percent=float(left_army.noncombattant_percent or 0.0),
+        )
+        if right_supply > right_capacity_final:
+            raise _army_management_error("New army supply exceeds its maximum carrying capacity.")
 
     affected_existing_field_armies = [left_army]
     if right_existing is not None and not right_existing.is_garrison:
