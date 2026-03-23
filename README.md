@@ -93,6 +93,8 @@ The dev dashboard includes an Admin Token field for this.
 * `GET /v1/me/actions/valid-next` returns valid march destinations from an origin cell for client-side staging validation.
 * `POST /v1/me/actions/plan` replaces active queue with either forage, a staged march path, or halt (empty march path).
 * `GET /v1/me/orders/standing` and `POST /v1/me/orders/standing/follow-road` manage standing-order state.
+* `GET /v1/me/army-management` returns the active army plus same-cell same-faction armies/garrison for the army-management modal.
+* `POST /v1/me/army-management/apply` atomically applies same-hex army reorganization, including detachment transfers, supply transfers, renames, commander swaps, and new-army creation.
 * `GET /v1/me/alerts` returns delivered alerts for the active commander, including global alerts.
 * `follow-road` standing order cannot be enabled while the army is holding (no active action).
 * Actions support queueing: multiple `queued` actions per commander, one `in_progress`.

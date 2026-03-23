@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+import hashlib
 import math
 import os
 import json
@@ -16,6 +17,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from forwantofanail.api.schemas import (
     ActionCreateRequest,
+    ArmyManagementApplyRequest,
     ActionPlanRequest,
     LoginRequest,
     MessageCreateRequest,
@@ -156,6 +158,15 @@ def _parse_stronghold_ref(value: str) -> int:
         return int(value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="target_stronghold_id must be an integer or sh_<id>") from exc
+
+
+def _parse_detachment_ref(value: str) -> int:
+    if value.startswith("det_"):
+        value = value[4:]
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="detachment_id must be an integer or det_<id>") from exc
 
 
 def _commander_display_name(commander: Commander) -> str:
@@ -3088,6 +3099,137 @@ def _serialize_army(army: Army) -> dict[str, Any]:
     }
 
 
+def _serialize_management_commander(commander: Commander | None) -> dict[str, Any] | None:
+    if commander is None:
+        return None
+    return {
+        "id": _commander_ref(commander.commander_id),
+        "name": commander.commander_name,
+        "title": commander.commander_title,
+        "display_name": _commander_display_name(commander),
+    }
+
+
+def _serialize_management_army(army: Army) -> dict[str, Any]:
+    supply_payload = None
+    if not army.is_garrison:
+        stats = supply_stats(army)
+        supply_payload = {
+            "current": int(army.army_supply or 0),
+            "capacity": int(stats.capacity or 0),
+            "daily_consumption": int(stats.daily_consumption or 0),
+            "days_estimate": stats.days_estimate,
+        }
+    return {
+        "army_id": _army_ref(army.army_id),
+        "name": army.army_name,
+        "location_h3": army.location_id,
+        "faction": army.army_faction,
+        "is_garrison": bool(army.is_garrison),
+        "commander": _serialize_management_commander(army.commander),
+        "commander_id": _commander_ref(army.commander_id) if army.commander_id is not None else None,
+        "supply": supply_payload,
+        "noncombatant_percent": float(army.noncombattant_percent or 0.0),
+        "morale": {
+            "current": _clamp_morale(army.army_morale),
+            "resting": _clamp_morale(army.army_resting_morale, default=_clamp_morale(army.army_morale)),
+        },
+        "detachments": [
+            {
+                "id": _detachment_ref(det.detachment_id),
+                "name": det.detachment_name,
+                "warriors": int(det.warrior_count or 0),
+                "wagons": int(det.wagon_count or 0),
+                "is_cavalry": bool(det.is_cavalry),
+                "is_heavy": bool(det.is_heavy),
+                "type": _detachment_display_type(det),
+            }
+            for det in sorted(army.detachments, key=lambda row: row.detachment_id)
+        ],
+    }
+
+
+def _eligible_management_armies(session: Session, left_army: Army) -> list[Army]:
+    return (
+        session.query(Army)
+        .options(
+            joinedload(Army.commander),
+            joinedload(Army.detachments).joinedload(Detachment.specials),
+        )
+        .filter(
+            Army.location_id == left_army.location_id,
+            Army.army_faction == left_army.army_faction,
+            Army.army_id != left_army.army_id,
+        )
+        .order_by(Army.is_garrison.asc(), Army.army_name.asc(), Army.army_id.asc())
+        .all()
+    )
+
+
+def _army_management_snapshot_hash(left_army: Army, candidates: list[Army]) -> str:
+    snapshot = {
+        "left_army_id": int(left_army.army_id),
+        "location_h3": str(left_army.location_id or ""),
+        "faction": str(left_army.army_faction or ""),
+        "left": {
+            "name": str(left_army.army_name or ""),
+            "commander_id": int(left_army.commander_id) if left_army.commander_id is not None else None,
+            "supply": int(left_army.army_supply or 0),
+            "detachments": sorted(int(det.detachment_id) for det in left_army.detachments),
+        },
+        "candidates": [
+            {
+                "army_id": int(army.army_id),
+                "name": str(army.army_name or ""),
+                "commander_id": int(army.commander_id) if army.commander_id is not None else None,
+                "supply": None if army.is_garrison else int(army.army_supply or 0),
+                "detachments": sorted(int(det.detachment_id) for det in army.detachments),
+                "is_garrison": bool(army.is_garrison),
+            }
+            for army in sorted(candidates, key=lambda row: row.army_id)
+        ],
+    }
+    return hashlib.sha256(json.dumps(snapshot, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _army_is_routing(session: Session, army: Army | None) -> bool:
+    if army is None or army.commander_id is None:
+        return False
+    current_action = _get_current_action_row(session, army.commander_id)
+    return current_action is not None and current_action.state == "in_progress" and current_action.kind == "rout"
+
+
+def _commander_has_active_siege(session: Session, commander_id: int | None) -> bool:
+    if commander_id is None:
+        return False
+    return _find_active_siege_for_commander(session, commander_id) is not None
+
+
+def _cancel_non_siege_actions_for_commander(session: Session, commander_id: int | None) -> dict[str, Any]:
+    if commander_id is None:
+        return {"cancelled": 0, "kinds": {}}
+    rows = (
+        session.query(Action)
+        .filter(Action.commander_id == commander_id, Action.state.in_(ACTIVE_ACTION_STATES))
+        .order_by(Action.accepted_at.asc(), Action.action_id.asc())
+        .all()
+    )
+    cancelled = 0
+    kinds: dict[str, int] = {}
+    for row in rows:
+        if str(row.kind or "").strip().lower() == "besiege":
+            continue
+        row.state = "cancelled"
+        kind = str(row.kind or "unknown").strip().lower() or "unknown"
+        kinds[kind] = kinds.get(kind, 0) + 1
+        cancelled += 1
+    return {"cancelled": cancelled, "kinds": kinds}
+
+
+def _army_management_error(message: str, *, status_code: int = 400) -> HTTPException:
+    return HTTPException(status_code=status_code, detail=message)
+
+
 def _serialize_environs(
     session: Session,
     center_h3: str,
@@ -3340,6 +3482,319 @@ def _serialize_remaining_itinerary(session: Session, commander_id: int) -> dict[
     }
 
 
+def _normalized_name(value: str | None) -> str:
+    return " ".join(str(value or "").strip().split())
+
+
+def _commander_name_exists(session: Session, name: str, *, exclude_commander_id: int | None = None) -> bool:
+    normalized = _normalized_name(name)
+    if not normalized:
+        return False
+    query = session.query(Commander).filter(Commander.commander_name.ilike(normalized))
+    if exclude_commander_id is not None:
+        query = query.filter(Commander.commander_id != exclude_commander_id)
+    return query.first() is not None
+
+
+def _army_name_exists(session: Session, name: str, *, exclude_army_ids: set[int] | None = None) -> bool:
+    normalized = _normalized_name(name)
+    if not normalized:
+        return False
+    query = session.query(Army).filter(Army.army_name.ilike(normalized))
+    if exclude_army_ids:
+        query = query.filter(~Army.army_id.in_(sorted(exclude_army_ids)))
+    return query.first() is not None
+
+
+def _management_supply_payload(current: int, *, detachments: list[Detachment], noncombatant_percent: float) -> dict[str, Any]:
+    class _DraftArmy:
+        pass
+
+    draft = _DraftArmy()
+    draft.detachments = detachments
+    draft.noncombattant_percent = float(noncombatant_percent or 0.0)
+    draft.army_supply = int(current or 0)
+    stats = supply_stats(draft)
+    return {
+        "current": int(current or 0),
+        "capacity": int(stats.capacity or 0),
+        "daily_consumption": int(stats.daily_consumption or 0),
+        "days_estimate": stats.days_estimate,
+    }
+
+
+def _management_alert(session: Session, *, commander_id: int | None, army_name: str, clock: GameClock) -> None:
+    if commander_id is None:
+        return
+    _create_alert(
+        session,
+        recipient_commander_id=commander_id,
+        alert_type="action",
+        signal_kind="event",
+        category="army-management",
+        importance="normal",
+        message=f"Composition of {army_name} changed",
+        created_day=clock.day,
+        created_watch=clock.watch,
+    )
+
+
+def _validate_and_apply_management_transaction(
+    session: Session,
+    *,
+    commander_id: int,
+    clock: GameClock,
+    payload: ArmyManagementApplyRequest,
+) -> dict[str, Any]:
+    left_army = (
+        session.query(Army)
+        .options(
+            joinedload(Army.commander),
+            joinedload(Army.detachments).joinedload(Detachment.specials),
+        )
+        .filter(Army.commander_id == commander_id)
+        .first()
+    )
+    if left_army is None:
+        raise _army_management_error("No army found for commander", status_code=404)
+    submitted_left_army_id = _parse_army_ref(payload.left_army.army_id or "")
+    if submitted_left_army_id != left_army.army_id:
+        raise _army_management_error("Army management state is stale; reopen and try again.", status_code=409)
+    if left_army.is_garrison:
+        raise _army_management_error("Garrison armies cannot initiate army management.")
+    if _army_is_routing(session, left_army):
+        raise _army_management_error("Army is routing; new orders unavailable until regroup.", status_code=409)
+
+    candidates = _eligible_management_armies(session, left_army)
+    current_hash = _army_management_snapshot_hash(left_army, candidates)
+    if str(payload.baseline_hash or "").strip() != current_hash:
+        raise _army_management_error("Army management state is stale; reopen and try again.", status_code=409)
+
+    existing_by_id = {army.army_id: army for army in candidates}
+    right_mode = str(payload.right_target.mode or "").strip().lower()
+    right_existing: Army | None = None
+    if right_mode == "existing":
+        submitted_right_id = _parse_army_ref(payload.right_target.army_id or "")
+        right_existing = existing_by_id.get(submitted_right_id)
+        if right_existing is None:
+            raise _army_management_error("Selected army is no longer eligible for management.", status_code=409)
+        submitted_right_army_id = _parse_army_ref(payload.right_army.army_id or "")
+        if submitted_right_army_id != submitted_right_id:
+            raise _army_management_error("Army management state is stale; reopen and try again.", status_code=409)
+        if right_existing.commander_id is not None and _army_is_routing(session, right_existing):
+            raise _army_management_error("Army is routing; new orders unavailable until regroup.", status_code=409)
+    elif right_mode != "new":
+        raise _army_management_error("right_target.mode must be 'existing' or 'new'.")
+
+    original_left_det_ids = {int(det.detachment_id) for det in left_army.detachments}
+    original_right_det_ids = {int(det.detachment_id) for det in right_existing.detachments} if right_existing is not None else set()
+    source_det_ids = original_left_det_ids | original_right_det_ids
+
+    left_det_ids = {_parse_detachment_ref(value) for value in payload.left_army.detachment_ids}
+    right_det_ids = {_parse_detachment_ref(value) for value in payload.right_army.detachment_ids}
+    if left_det_ids & right_det_ids:
+        raise _army_management_error("Detachment lists may not overlap.")
+    if left_det_ids | right_det_ids != source_det_ids:
+        raise _army_management_error("Detachment assignment is stale or invalid.")
+    if not left_det_ids:
+        raise _army_management_error("Your army must retain at least one detachment.")
+    if right_mode == "existing" and right_existing is not None and not right_existing.is_garrison and not right_det_ids:
+        raise _army_management_error("Each army must have at least one detachment.")
+    if right_mode == "new" and not right_det_ids:
+        raise _army_management_error("A new army must have at least one detachment.")
+
+    left_name = _normalized_name(payload.left_army.name)
+    if not left_name:
+        raise _army_management_error("Left army name is required.")
+    right_name = _normalized_name(payload.right_army.name)
+    if right_mode == "existing":
+        if right_existing is not None and not right_existing.is_garrison and not right_name:
+            raise _army_management_error("Right army name is required.")
+    else:
+        if not right_name:
+            raise _army_management_error("New army name is required.")
+
+    exclude_army_ids = {left_army.army_id}
+    if right_existing is not None:
+        exclude_army_ids.add(right_existing.army_id)
+    seen_names: set[str] = set()
+    for army_name in [left_name, right_name if right_mode == "new" or (right_existing is not None and not right_existing.is_garrison) else None]:
+        if army_name is None:
+            continue
+        lowered = army_name.lower()
+        if lowered in seen_names:
+            raise _army_management_error("Army names must be unique.")
+        seen_names.add(lowered)
+        if _army_name_exists(session, army_name, exclude_army_ids=exclude_army_ids):
+            raise _army_management_error("Army names must be globally unique.")
+
+    if right_mode == "existing" and right_existing is not None:
+        if right_existing.is_garrison:
+            if payload.right_army.commander_id not in {None, ""}:
+                raise _army_management_error("Cannot assign a commander to a garrison.")
+            if payload.right_army.supply_current not in {None, int(right_existing.army_supply or 0), ""}:
+                raise _army_management_error("Supply cannot be transferred to or from a garrison.")
+            if int(payload.left_army.supply_current or 0) != int(left_army.army_supply or 0):
+                raise _army_management_error("Supply cannot be transferred to or from a garrison.")
+        else:
+            original_supply_sum = int(left_army.army_supply or 0) + int(right_existing.army_supply or 0)
+            left_supply = int(payload.left_army.supply_current or 0)
+            right_supply = int(payload.right_army.supply_current or 0)
+            if left_supply < 0 or right_supply < 0:
+                raise _army_management_error("Supply values may not be negative.")
+            if left_supply + right_supply != original_supply_sum:
+                raise _army_management_error("Supply totals must be conserved between the two armies.")
+    else:
+        left_supply = int(payload.left_army.supply_current or 0)
+        right_supply = int(payload.right_army.supply_current or 0)
+        if left_supply < 0 or right_supply < 0:
+            raise _army_management_error("Supply values may not be negative.")
+        if left_supply + right_supply != int(left_army.army_supply or 0):
+            raise _army_management_error("Supply totals must be conserved when creating a new army.")
+
+    right_commander_after_id: int | None = None
+    left_commander_after_id: int | None = left_army.commander_id
+    create_new_commander = right_mode == "new"
+    if right_mode == "existing" and right_existing is not None:
+        if right_existing.is_garrison:
+            if payload.right_army.commander_id not in {None, ""}:
+                raise _army_management_error("Cannot swap commanders with a garrison.")
+        else:
+            original_commander_ids = {
+                int(value)
+                for value in [left_army.commander_id, right_existing.commander_id]
+                if value is not None
+            }
+            submitted_left_commander_id = _parse_commander_ref(payload.left_army.commander_id or "") if payload.left_army.commander_id else None
+            submitted_right_commander_id = _parse_commander_ref(payload.right_army.commander_id or "") if payload.right_army.commander_id else None
+            final_commander_ids = {
+                int(value)
+                for value in [submitted_left_commander_id, submitted_right_commander_id]
+                if value is not None
+            }
+            if final_commander_ids != original_commander_ids:
+                raise _army_management_error("Commander assignments are invalid.")
+            if submitted_left_commander_id == right_existing.commander_id and submitted_right_commander_id == left_army.commander_id:
+                if _commander_has_active_siege(session, left_army.commander_id) or _commander_has_active_siege(session, right_existing.commander_id):
+                    raise _army_management_error("Cannot swap commanders while an involved army is maintaining a siege.")
+            elif submitted_left_commander_id != left_army.commander_id or submitted_right_commander_id != right_existing.commander_id:
+                raise _army_management_error("Commander assignments are invalid.")
+            left_commander_after_id = submitted_left_commander_id
+            right_commander_after_id = submitted_right_commander_id
+    else:
+        new_commander = payload.right_army.new_commander
+        if new_commander is None:
+            raise _army_management_error("New army commander details are required.")
+        commander_name = _normalized_name(new_commander.name)
+        commander_title = _normalized_name(new_commander.title)
+        if not commander_name or not commander_title:
+            raise _army_management_error("New commander title and name are required.")
+        if _commander_name_exists(session, commander_name):
+            raise _army_management_error("Commander names must be globally unique.")
+
+    detachment_rows = (
+        session.query(Detachment)
+        .options(joinedload(Detachment.specials))
+        .filter(Detachment.detachment_id.in_(sorted(source_det_ids)))
+        .all()
+    )
+    detachment_by_id = {det.detachment_id: det for det in detachment_rows}
+    if set(detachment_by_id) != source_det_ids:
+        raise _army_management_error("Detachment assignment is stale or invalid.")
+
+    affected_existing_field_armies = [left_army]
+    if right_existing is not None and not right_existing.is_garrison:
+        affected_existing_field_armies.append(right_existing)
+
+    cancelled_actions: dict[str, Any] = {}
+    for army in affected_existing_field_armies:
+        cancelled_actions[_army_ref(army.army_id)] = _cancel_non_siege_actions_for_commander(session, army.commander_id)
+
+    created_commander: Commander | None = None
+    created_army: Army | None = None
+    if create_new_commander:
+        new_commander = payload.right_army.new_commander
+        assert new_commander is not None
+        created_commander = Commander(
+            commander_name=_normalized_name(new_commander.name),
+            commander_title=_normalized_name(new_commander.title),
+            commander_age=30,
+        )
+        session.add(created_commander)
+        session.flush()
+        created_army = Army(
+            location_id=left_army.location_id,
+            army_name=right_name,
+            army_faction=left_army.army_faction,
+            commander_id=created_commander.commander_id,
+            garrison_stronghold_id=None,
+            army_supply=right_supply,
+            army_morale=int(left_army.army_morale or 9),
+            army_resting_morale=int(left_army.army_resting_morale or left_army.army_morale or 9),
+            is_embarked=False,
+            is_garrison=False,
+            noncombattant_percent=float(left_army.noncombattant_percent or 0.0),
+        )
+        session.add(created_army)
+        session.flush()
+        right_existing = created_army
+        right_commander_after_id = created_commander.commander_id
+    assert right_existing is not None
+
+    left_army.army_name = left_name
+    if not right_existing.is_garrison:
+        right_existing.army_name = right_name
+
+    if not right_existing.is_garrison:
+        left_army.army_supply = left_supply
+        right_existing.army_supply = right_supply
+
+    if create_new_commander:
+        left_army.commander_id = left_commander_after_id
+    elif not right_existing.is_garrison:
+        left_army.commander_id = left_commander_after_id
+        right_existing.commander_id = right_commander_after_id
+
+    for det_id in left_det_ids:
+        det = detachment_by_id[det_id]
+        det.army_id = left_army.army_id
+        det.army = left_army
+    for det_id in right_det_ids:
+        det = detachment_by_id[det_id]
+        det.army_id = right_existing.army_id
+        det.army = right_existing
+
+    alert_pairs: list[tuple[int | None, str]] = []
+    refreshed_left_commander_id = left_army.commander_id
+    alert_pairs.append((refreshed_left_commander_id, left_army.army_name))
+    if right_existing.commander_id is not None:
+        alert_pairs.append((right_existing.commander_id, right_existing.army_name))
+    seen_alert_targets: set[tuple[int | None, str]] = set()
+    for alert_commander_id, alert_army_name in alert_pairs:
+        key = (alert_commander_id, alert_army_name)
+        if key in seen_alert_targets:
+            continue
+        seen_alert_targets.add(key)
+        _management_alert(session, commander_id=alert_commander_id, army_name=alert_army_name, clock=clock)
+
+    session.flush()
+    active_commander_army = _find_commander_army(session, commander_id)
+    return {
+        "result": "ok",
+        "left_army_id": _army_ref(left_army.army_id),
+        "right_army_id": _army_ref(right_existing.army_id),
+        "created_army_id": _army_ref(created_army.army_id) if created_army is not None else None,
+        "created_commander_id": _commander_ref(created_commander.commander_id) if created_commander is not None else None,
+        "active_commander_army_id": _army_ref(active_commander_army.army_id),
+        "cancelled_actions": cancelled_actions,
+        "alerts_created_for": [
+            _commander_ref(commander_value)
+            for commander_value, _ in seen_alert_targets
+            if commander_value is not None
+        ],
+    }
+
+
 def _environs_radius_for_army(army: Army) -> int:
     return 4 if any(detachment.is_cavalry for detachment in army.detachments) else 2
 
@@ -3515,6 +3970,68 @@ def get_my_view(
         "itinerary": _serialize_remaining_itinerary(session, commander_id),
         "standing_orders": _serialize_standing_orders(standing_order),
     }
+
+
+@router.get("/me/army-management")
+def get_army_management_state(
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    clock = _get_or_create_clock(session)
+    left_army = (
+        session.query(Army)
+        .options(
+            joinedload(Army.commander),
+            joinedload(Army.detachments).joinedload(Detachment.specials),
+        )
+        .filter(Army.commander_id == commander_id)
+        .first()
+    )
+    if left_army is None:
+        raise HTTPException(status_code=404, detail="No army found for commander")
+    eligible = _eligible_management_armies(session, left_army)
+    baseline_hash = _army_management_snapshot_hash(left_army, eligible)
+    return {
+        "time": {
+            "day": clock.day,
+            "watch": clock.watch,
+            "watch_name": WATCH_LABELS.get(Watch(int(clock.watch)), "unknown").capitalize(),
+        },
+        "active_commander": _serialize_management_commander(left_army.commander),
+        "left_army": _serialize_management_army(left_army),
+        "other_armies": [_serialize_management_army(army) for army in eligible],
+        "new_army_template": {
+            "default_name": "",
+            "default_commander_name": "",
+            "default_commander_title": "",
+            "supply": {"current": 0, "capacity": 0, "daily_consumption": 0, "days_estimate": None},
+            "detachments": [],
+        },
+        "baseline": {
+            "left_army_id": _army_ref(left_army.army_id),
+            "location_h3": left_army.location_id,
+            "faction": left_army.army_faction,
+            "pair_options": [_army_ref(army.army_id) for army in eligible] + ["NEW_ARMY"],
+            "snapshot_hash": baseline_hash,
+        },
+    }
+
+
+@router.post("/me/army-management/apply")
+def apply_army_management(
+    payload: ArmyManagementApplyRequest,
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    clock = _get_or_create_clock(session)
+    result = _validate_and_apply_management_transaction(
+        session,
+        commander_id=commander_id,
+        clock=clock,
+        payload=payload,
+    )
+    session.commit()
+    return result
 
 
 @router.get("/me/roads/border")

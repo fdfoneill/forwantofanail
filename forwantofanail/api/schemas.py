@@ -41,3 +41,29 @@ class TimePayload(BaseModel):
 
 class StandingFollowRoadUpdateRequest(BaseModel):
     enabled: bool
+
+
+class ArmyManagementCommanderCreateRequest(BaseModel):
+    name: str
+    title: str
+
+
+class ArmyManagementArmySideRequest(BaseModel):
+    army_id: str | None = None
+    name: str
+    commander_id: str | None = None
+    supply_current: int | None = None
+    detachment_ids: list[str] = []
+    new_commander: ArmyManagementCommanderCreateRequest | None = None
+
+
+class ArmyManagementRightTargetRequest(BaseModel):
+    mode: Literal["existing", "new"]
+    army_id: str | None = None
+
+
+class ArmyManagementApplyRequest(BaseModel):
+    baseline_hash: str
+    left_army: ArmyManagementArmySideRequest
+    right_target: ArmyManagementRightTargetRequest
+    right_army: ArmyManagementArmySideRequest
