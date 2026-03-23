@@ -1294,7 +1294,7 @@
         current,
         capacity,
         daily_consumption: daily,
-        days_estimate: daily > 0 ? Number((current / daily).toFixed(2)) : null,
+        days_estimate: daily > 0 ? Math.max(0, Math.floor(current / daily)) : null,
       };
     }
 
@@ -1548,9 +1548,6 @@
       if (!armyDraft) {
         return "<div class=\"army-mgmt-empty\">Select another army or create a new one.</div>";
       }
-      if (!armyDraft.detachments.length) {
-        return "<div class=\"army-mgmt-empty\">No detachments assigned.</div>";
-      }
       const rows = armyDraft.detachments.map((det) => (
         `<li class="army-mgmt-detachment" draggable="true" data-side="${side}" data-detachment-id="${escapeHtml(det.id)}">` +
           `<strong>${escapeHtml(det.name)}</strong>` +
@@ -1558,6 +1555,9 @@
           `<div>${Number(det.wagons || 0).toLocaleString()} wagons</div>` +
         `</li>`
       ));
+      if (!rows.length) {
+        rows.push(`<li class="army-mgmt-empty">No detachments assigned.</li>`);
+      }
       return `<ul class="army-mgmt-detachment-list" data-drop-side="${side}">${rows.join("")}</ul>`;
     }
 
