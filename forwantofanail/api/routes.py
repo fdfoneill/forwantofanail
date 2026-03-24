@@ -3585,25 +3585,33 @@ def _validate_and_apply_management_transaction(
     existing_by_id = {army.army_id: army for army in candidates}
     right_mode = str(payload.right_target.mode or "").strip().lower()
     right_existing: Army | None = None
+    right_army_payload = payload.right_army
     if right_mode == "existing":
+        if right_army_payload is None:
+            raise _army_management_error("Right army payload is required for existing-army management.")
         submitted_right_id = _parse_army_ref(payload.right_target.army_id or "")
         right_existing = existing_by_id.get(submitted_right_id)
         if right_existing is None:
             raise _army_management_error("Selected army is no longer eligible for management.", status_code=409)
-        submitted_right_army_id = _parse_army_ref(payload.right_army.army_id or "")
+        submitted_right_army_id = _parse_army_ref(right_army_payload.army_id or "")
         if submitted_right_army_id != submitted_right_id:
             raise _army_management_error("Army management state is stale; reopen and try again.", status_code=409)
         if right_existing.commander_id is not None and _army_is_routing(session, right_existing):
             raise _army_management_error("Army is routing; new orders unavailable until regroup.", status_code=409)
+    elif right_mode == "none":
+        if right_army_payload is not None:
+            submitted_none_ids = {str(value).strip() for value in right_army_payload.detachment_ids if str(value).strip()}
+            if submitted_none_ids:
+                raise _army_management_error("Cannot assign detachments without selecting another army.")
     elif right_mode != "new":
-        raise _army_management_error("right_target.mode must be 'existing' or 'new'.")
+        raise _army_management_error("right_target.mode must be 'existing', 'new', or 'none'.")
 
     original_left_det_ids = {int(det.detachment_id) for det in left_army.detachments}
     original_right_det_ids = {int(det.detachment_id) for det in right_existing.detachments} if right_existing is not None else set()
     source_det_ids = original_left_det_ids | original_right_det_ids
 
     left_det_ids = {_parse_detachment_ref(value) for value in payload.left_army.detachment_ids}
-    right_det_ids = {_parse_detachment_ref(value) for value in payload.right_army.detachment_ids}
+    right_det_ids = {_parse_detachment_ref(value) for value in (right_army_payload.detachment_ids if right_army_payload is not None else [])}
     if left_det_ids & right_det_ids:
         raise _army_management_error("Detachment lists may not overlap.")
     if left_det_ids | right_det_ids != source_det_ids:
@@ -3618,11 +3626,11 @@ def _validate_and_apply_management_transaction(
     left_name = _normalized_name(payload.left_army.name)
     if not left_name:
         raise _army_management_error("Left army name is required.")
-    right_name = _normalized_name(payload.right_army.name)
+    right_name = _normalized_name(right_army_payload.name if right_army_payload is not None else "")
     if right_mode == "existing":
         if right_existing is not None and not right_existing.is_garrison and not right_name:
             raise _army_management_error("Right army name is required.")
-    else:
+    elif right_mode == "new":
         if not right_name:
             raise _army_management_error("New army name is required.")
 
@@ -3642,34 +3650,39 @@ def _validate_and_apply_management_transaction(
 
     if right_mode == "existing" and right_existing is not None:
         if right_existing.is_garrison:
-            if payload.right_army.commander_id not in {None, ""}:
+            if right_army_payload is not None and right_army_payload.commander_id not in {None, ""}:
                 raise _army_management_error("Cannot assign a commander to a garrison.")
-            if payload.right_army.supply_current not in {None, int(right_existing.army_supply or 0), ""}:
+            if right_army_payload is not None and right_army_payload.supply_current not in {None, int(right_existing.army_supply or 0), ""}:
                 raise _army_management_error("Supply cannot be transferred to or from a garrison.")
             if int(payload.left_army.supply_current or 0) != int(left_army.army_supply or 0):
                 raise _army_management_error("Supply cannot be transferred to or from a garrison.")
         else:
             original_supply_sum = int(left_army.army_supply or 0) + int(right_existing.army_supply or 0)
             left_supply = int(payload.left_army.supply_current or 0)
-            right_supply = int(payload.right_army.supply_current or 0)
+            right_supply = int((right_army_payload.supply_current if right_army_payload is not None else 0) or 0)
             if left_supply < 0 or right_supply < 0:
                 raise _army_management_error("Supply values may not be negative.")
             if left_supply + right_supply != original_supply_sum:
                 raise _army_management_error("Supply totals must be conserved between the two armies.")
-    else:
+    elif right_mode == "new":
         left_supply = int(payload.left_army.supply_current or 0)
-        right_supply = int(payload.right_army.supply_current or 0)
+        right_supply = int((right_army_payload.supply_current if right_army_payload is not None else 0) or 0)
         if left_supply < 0 or right_supply < 0:
             raise _army_management_error("Supply values may not be negative.")
         if left_supply + right_supply != int(left_army.army_supply or 0):
             raise _army_management_error("Supply totals must be conserved when creating a new army.")
+    else:
+        left_supply = int(payload.left_army.supply_current or 0)
+        right_supply = 0
+        if left_supply != int(left_army.army_supply or 0):
+            raise _army_management_error("Supply cannot be transferred without selecting another army.")
 
     right_commander_after_id: int | None = None
     left_commander_after_id: int | None = left_army.commander_id
     create_new_commander = right_mode == "new"
     if right_mode == "existing" and right_existing is not None:
         if right_existing.is_garrison:
-            if payload.right_army.commander_id not in {None, ""}:
+            if right_army_payload is not None and right_army_payload.commander_id not in {None, ""}:
                 raise _army_management_error("Cannot swap commanders with a garrison.")
         else:
             original_commander_ids = {
@@ -3678,7 +3691,7 @@ def _validate_and_apply_management_transaction(
                 if value is not None
             }
             submitted_left_commander_id = _parse_commander_ref(payload.left_army.commander_id or "") if payload.left_army.commander_id else None
-            submitted_right_commander_id = _parse_commander_ref(payload.right_army.commander_id or "") if payload.right_army.commander_id else None
+            submitted_right_commander_id = _parse_commander_ref(right_army_payload.commander_id or "") if right_army_payload is not None and right_army_payload.commander_id else None
             final_commander_ids = {
                 int(value)
                 for value in [submitted_left_commander_id, submitted_right_commander_id]
@@ -3693,8 +3706,8 @@ def _validate_and_apply_management_transaction(
                 raise _army_management_error("Commander assignments are invalid.")
             left_commander_after_id = submitted_left_commander_id
             right_commander_after_id = submitted_right_commander_id
-    else:
-        new_commander = payload.right_army.new_commander
+    elif create_new_commander:
+        new_commander = right_army_payload.new_commander if right_army_payload is not None else None
         if new_commander is None:
             raise _army_management_error("New army commander details are required.")
         commander_name = _normalized_name(new_commander.name)
@@ -3750,7 +3763,7 @@ def _validate_and_apply_management_transaction(
     created_commander: Commander | None = None
     created_army: Army | None = None
     if create_new_commander:
-        new_commander = payload.right_army.new_commander
+        new_commander = right_army_payload.new_commander if right_army_payload is not None else None
         assert new_commander is not None
         created_commander = Commander(
             commander_name=_normalized_name(new_commander.name),
@@ -3776,19 +3789,22 @@ def _validate_and_apply_management_transaction(
         session.flush()
         right_existing = created_army
         right_commander_after_id = created_commander.commander_id
-    assert right_existing is not None
+    if right_mode != "none":
+        assert right_existing is not None
 
     left_army.army_name = left_name
-    if not right_existing.is_garrison:
+    if right_existing is not None and not right_existing.is_garrison:
         right_existing.army_name = right_name
 
-    if not right_existing.is_garrison:
+    if right_existing is not None and not right_existing.is_garrison:
         left_army.army_supply = left_supply
         right_existing.army_supply = right_supply
+    else:
+        left_army.army_supply = left_supply
 
     if create_new_commander:
         left_army.commander_id = left_commander_after_id
-    elif not right_existing.is_garrison:
+    elif right_existing is not None and not right_existing.is_garrison:
         left_army.commander_id = left_commander_after_id
         right_existing.commander_id = right_commander_after_id
 
@@ -3796,15 +3812,16 @@ def _validate_and_apply_management_transaction(
         det = detachment_by_id[det_id]
         det.army_id = left_army.army_id
         det.army = left_army
-    for det_id in right_det_ids:
-        det = detachment_by_id[det_id]
-        det.army_id = right_existing.army_id
-        det.army = right_existing
+    if right_existing is not None:
+        for det_id in right_det_ids:
+            det = detachment_by_id[det_id]
+            det.army_id = right_existing.army_id
+            det.army = right_existing
 
     alert_pairs: list[tuple[int | None, str]] = []
     refreshed_left_commander_id = left_army.commander_id
     alert_pairs.append((refreshed_left_commander_id, left_army.army_name))
-    if right_existing.commander_id is not None:
+    if right_existing is not None and right_existing.commander_id is not None:
         alert_pairs.append((right_existing.commander_id, right_existing.army_name))
     seen_alert_targets: set[tuple[int | None, str]] = set()
     for alert_commander_id, alert_army_name in alert_pairs:
@@ -3819,7 +3836,7 @@ def _validate_and_apply_management_transaction(
     return {
         "result": "ok",
         "left_army_id": _army_ref(left_army.army_id),
-        "right_army_id": _army_ref(right_existing.army_id),
+        "right_army_id": _army_ref(right_existing.army_id) if right_existing is not None else None,
         "created_army_id": _army_ref(created_army.army_id) if created_army is not None else None,
         "created_commander_id": _commander_ref(created_commander.commander_id) if created_commander is not None else None,
         "active_commander_army_id": _army_ref(active_commander_army.army_id),
