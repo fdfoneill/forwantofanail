@@ -3514,6 +3514,7 @@ def _management_supply_payload(current: int, *, detachments: list[Detachment], n
     draft.detachments = detachments
     draft.noncombattant_percent = float(noncombatant_percent or 0.0)
     draft.army_supply = int(current or 0)
+    draft.is_garrison = False
     stats = supply_stats(draft)
     return {
         "current": int(current or 0),
