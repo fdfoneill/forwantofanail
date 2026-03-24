@@ -1866,8 +1866,8 @@
 
     function buildArmyManagementPayload() {
       const draft = state.armyManagement.draft;
-      if (!draft || !draft.rightTarget.mode || !draft.right) {
-        throw new Error("Select another army or choose NEW ARMY.");
+      if (!draft) {
+        throw new Error("Army management draft is unavailable.");
       }
       const leftPayload = {
         army_id: draft.left.army_id,
@@ -1876,6 +1876,17 @@
         supply_current: Number(draft.left.supply_current || 0) || 0,
         detachment_ids: draft.left.detachments.map((det) => det.id),
       };
+      if (!draft.rightTarget.mode) {
+        return {
+          baseline_hash: draft.baseline_hash,
+          left_army: leftPayload,
+          right_target: { mode: "none" },
+          right_army: null,
+        };
+      }
+      if (!draft.right) {
+        throw new Error("Select another army or choose NEW ARMY.");
+      }
       const rightTarget = draft.rightTarget.mode === "new"
         ? { mode: "new" }
         : { mode: "existing", army_id: draft.rightTarget.army_id };
