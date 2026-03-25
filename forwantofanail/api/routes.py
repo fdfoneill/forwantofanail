@@ -6,6 +6,7 @@ import hashlib
 import math
 import os
 import json
+from pathlib import Path
 import random
 import secrets
 from typing import Any
@@ -55,6 +56,7 @@ from forwantofanail.mechanics.supply import (
 from forwantofanail.mechanics.time import Watch
 
 router = APIRouter(prefix="/v1")
+ARMY_MANAGEMENT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "data" / "army_management_templates.json"
 
 WATCH_LABELS = {
     Watch.NIGHT: "night",
@@ -3110,6 +3112,48 @@ def _serialize_management_commander(commander: Commander | None) -> dict[str, An
     }
 
 
+def _load_army_management_templates() -> dict[str, Any]:
+    if not ARMY_MANAGEMENT_TEMPLATE_PATH.exists():
+        return {}
+    try:
+        return json.loads(ARMY_MANAGEMENT_TEMPLATE_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _random_unused_template_option(options: list[str], used_values: set[str]) -> str:
+    available = [str(value).strip() for value in options if str(value).strip() and str(value).strip().lower() not in used_values]
+    if not available:
+        return ""
+    return random.choice(available)
+
+
+def _army_management_new_army_template(session: Session, faction: str) -> dict[str, Any]:
+    templates = _load_army_management_templates()
+    faction_templates = templates.get(str(faction or "").strip(), {}) if isinstance(templates, dict) else {}
+    commander_titles = list(faction_templates.get("commander_titles") or [])
+    commander_names = list(faction_templates.get("commander_names") or [])
+    army_names = list(faction_templates.get("army_names") or [])
+    used_commander_names = {
+        str(row[0]).strip().lower()
+        for row in session.query(Commander.commander_name).all()
+        if str(row[0] or "").strip()
+    }
+    used_army_names = {
+        str(row[0]).strip().lower()
+        for row in session.query(Army.army_name).all()
+        if str(row[0] or "").strip()
+    }
+    title = random.choice([str(value).strip() for value in commander_titles if str(value).strip()]) if commander_titles else ""
+    return {
+        "default_name": _random_unused_template_option(army_names, used_army_names),
+        "default_commander_name": _random_unused_template_option(commander_names, used_commander_names),
+        "default_commander_title": title,
+        "supply": {"current": 0, "capacity": 0, "daily_consumption": 0, "days_estimate": None},
+        "detachments": [],
+    }
+
+
 def _serialize_management_army(army: Army) -> dict[str, Any]:
     supply_payload = None
     if not army.is_garrison:
@@ -4056,13 +4100,7 @@ def get_army_management_state(
         "active_commander": _serialize_management_commander(left_army.commander),
         "left_army": _serialize_management_army(left_army),
         "other_armies": [_serialize_management_army(army) for army in eligible],
-        "new_army_template": {
-            "default_name": "",
-            "default_commander_name": "",
-            "default_commander_title": "",
-            "supply": {"current": 0, "capacity": 0, "daily_consumption": 0, "days_estimate": None},
-            "detachments": [],
-        },
+        "new_army_template": _army_management_new_army_template(session, left_army.army_faction),
         "baseline": {
             "left_army_id": _army_ref(left_army.army_id),
             "location_h3": left_army.location_id,
@@ -4071,6 +4109,19 @@ def get_army_management_state(
             "snapshot_hash": baseline_hash,
         },
     }
+
+
+@router.get("/me/army-management/new-army-template")
+def get_army_management_new_army_template(
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    left_army = _find_commander_army(session, commander_id)
+    if left_army is None:
+        raise HTTPException(status_code=404, detail="No army found for commander")
+    if left_army.is_garrison:
+        raise HTTPException(status_code=400, detail="Garrison armies cannot initiate army management.")
+    return _army_management_new_army_template(session, left_army.army_faction)
 
 
 @router.post("/me/army-management/apply")
