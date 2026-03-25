@@ -61,6 +61,18 @@ python -m forwantofanail.core.initialize_db --reset
 
 This reset also auto-generates one garrison army for every stronghold based on its type.
 
+Army-management suggestions live in:
+
+* [forwantofanail/data/army_management_templates.json](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/data/army_management_templates.json)
+
+That file is keyed by faction name and supports:
+
+* `commander_titles`: random title suggestions for `NEW ARMY`
+* `commander_names`: random unused commander-name suggestions
+* `army_names`: random unused army-name suggestions
+
+If all configured names in a field have already been used, the modal leaves that field blank.
+
 If you want to keep existing scenario/world rows and only ensure runtime tables exist:
 
 ```bash
@@ -93,6 +105,8 @@ The dev dashboard includes an Admin Token field for this.
 * `GET /v1/me/actions/valid-next` returns valid march destinations from an origin cell for client-side staging validation.
 * `POST /v1/me/actions/plan` replaces active queue with either forage, a staged march path, or halt (empty march path).
 * `GET /v1/me/orders/standing` and `POST /v1/me/orders/standing/follow-road` manage standing-order state.
+* `GET /v1/me/army-management` returns the active army plus same-cell same-faction armies/garrison for the army-management modal.
+* `POST /v1/me/army-management/apply` atomically applies same-hex army reorganization, including detachment transfers, supply transfers, renames, commander swaps, and new-army creation.
 * `GET /v1/me/alerts` returns delivered alerts for the active commander, including global alerts.
 * `follow-road` standing order cannot be enabled while the army is holding (no active action).
 * Actions support queueing: multiple `queued` actions per commander, one `in_progress`.
