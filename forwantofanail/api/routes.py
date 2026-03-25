@@ -432,6 +432,14 @@ def _apply_supply_loss(army: Army, percent: float) -> int:
     return lost
 
 
+def _clamp_army_supply_to_capacity(army: Army) -> int:
+    capacity = max(0, int(supply_stats(army).capacity or 0))
+    current = max(0, int(army.army_supply or 0))
+    clamped = min(current, capacity)
+    army.army_supply = clamped
+    return clamped
+
+
 def _apply_random_warrior_loss(session: Session, army: Army, percent: float) -> int:
     detachments = [det for det in army.detachments if int(det.warrior_count or 0) > 0]
     if not detachments:
@@ -2114,6 +2122,7 @@ def _resolve_battles_from_edges(
                             supply_transfer_by_army[army.army_id]["lost"] = int(lost_supply)
                             if winner_top_army is not None:
                                 winner_top_army.army_supply = int(winner_top_army.army_supply or 0) + lost_supply
+                                _clamp_army_supply_to_capacity(winner_top_army)
                                 supply_transfer_by_army[winner_top_army.army_id]["looted"] = (
                                     int(supply_transfer_by_army[winner_top_army.army_id].get("looted", 0)) + int(lost_supply)
                                 )
@@ -2664,6 +2673,7 @@ def _finalize_siege_capture(
         loot_scale = int(SIEGE_LOOT_SCALE_BY_TYPE.get(str(stronghold.stronghold_type or "").strip().lower(), 0))
         looted_supply = max(0, int((loot_roll - siege_length) * loot_scale))
         attacker.army_supply = int(attacker.army_supply or 0) + looted_supply
+        _clamp_army_supply_to_capacity(attacker)
         attacker.army_morale = _clamp_morale(int(attacker.army_morale or 0) + 2)
         nc_gain = float(SIEGE_NONCOMBATANT_GAIN_BY_TYPE.get(str(stronghold.stronghold_type or "").strip().lower(), 0.0))
         attacker.noncombattant_percent = max(0.0, float(attacker.noncombattant_percent or 0.0) + nc_gain)
@@ -3902,8 +3912,11 @@ def _validate_and_apply_management_transaction(
     if right_existing is not None and not right_existing.is_garrison:
         left_army.army_supply = left_supply
         right_existing.army_supply = right_supply
+        _clamp_army_supply_to_capacity(left_army)
+        _clamp_army_supply_to_capacity(right_existing)
     else:
         left_army.army_supply = left_supply
+        _clamp_army_supply_to_capacity(left_army)
 
     if create_new_commander:
         left_army.commander_id = left_commander_after_id
