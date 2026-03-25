@@ -193,6 +193,28 @@ class Siege(Base):
     stronghold = relationship("Stronghold", back_populates="sieges")
     besieger_army = relationship("Army", foreign_keys=[besieger_army_id])
     besieger_commander = relationship("Commander", foreign_keys=[besieger_commander_id])
+    participants = relationship("SiegeParticipant", back_populates="siege", cascade="all, delete-orphan")
+
+
+class SiegeParticipant(Base):
+    __tablename__ = "siege_participants"
+    __table_args__ = (
+        PrimaryKeyConstraint("siege_id", "besieger_army_id"),
+    )
+
+    siege_id = Column(Integer, ForeignKey("sieges.siege_id"), nullable=False)
+    besieger_army_id = Column(Integer, ForeignKey("armies.army_id"), nullable=False, index=True)
+    besieger_commander_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=True, index=True)
+    started_day = Column(Integer, nullable=False)
+    started_watch = Column(Integer, nullable=False)
+    state = Column(String(20), nullable=False, default="active", index=True)
+    ended_day = Column(Integer, nullable=True)
+    ended_watch = Column(Integer, nullable=True)
+    ended_reason = Column(String(40), nullable=True)
+
+    siege = relationship("Siege", back_populates="participants")
+    besieger_army = relationship("Army", foreign_keys=[besieger_army_id])
+    besieger_commander = relationship("Commander", foreign_keys=[besieger_commander_id])
 
 
 class Movement(Base):
