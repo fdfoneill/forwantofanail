@@ -851,6 +851,8 @@
       },
     };
 
+    let armyManagementSuggestionRequestId = 0;
+
     const TERRAIN_COLORS = {
       "open ground": "var(--open-ground)",
       "forest": "var(--forest)",
@@ -1428,7 +1430,7 @@
       return Array.isArray(serverPayload.other_armies) ? serverPayload.other_armies : [];
     }
 
-    function setArmyManagementTarget(selectionValue) {
+    async function setArmyManagementTarget(selectionValue) {
       const serverPayload = state.armyManagement.server;
       const draft = state.armyManagement.draft;
       if (!serverPayload || !draft) {
@@ -1441,6 +1443,27 @@
       } else if (selected === "NEW_ARMY") {
         draft.rightTarget = { mode: "new", army_id: "" };
         draft.right = managementNewArmyDraft(draft.left);
+        const requestId = ++armyManagementSuggestionRequestId;
+        renderArmyManagementModal();
+        try {
+          const template = await api("/v1/me/army-management/new-army-template", {}, true);
+          if (!state.armyManagement.draft || state.armyManagement.draft !== draft) {
+            return;
+          }
+          if (armyManagementSuggestionRequestId !== requestId) {
+            return;
+          }
+          if (draft.rightTarget.mode !== "new" || !draft.right) {
+            return;
+          }
+          draft.right.name = String(template?.default_name || "");
+          draft.right.new_commander = {
+            title: String(template?.default_commander_title || ""),
+            name: String(template?.default_commander_name || ""),
+          };
+        } catch (_) {
+          // Leave fields blank if suggestion lookup fails.
+        }
       } else {
         const match = armyManagementCurrentRightTargetOptions().find((army) => String(army.army_id || "") === selected);
         if (!match) {
@@ -1770,7 +1793,9 @@
       els.armyMgmtTransferAmount = body.querySelector("#armyMgmtTransferAmount");
       const targetSelect = body.querySelector("#armyMgmtTargetSelect");
       if (targetSelect) {
-        targetSelect.addEventListener("change", () => setArmyManagementTarget(targetSelect.value));
+        targetSelect.addEventListener("change", async () => {
+          await setArmyManagementTarget(targetSelect.value);
+        });
       }
       body.querySelectorAll("input[data-army-mgmt-name]").forEach((input) => {
         input.addEventListener("input", () => {
