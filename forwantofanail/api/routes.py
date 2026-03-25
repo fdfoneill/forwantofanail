@@ -1692,9 +1692,11 @@ def _retreat_one_cell(
 def _destroy_army(session: Session, army: Army) -> None:
     if army.is_garrison:
         for det in list(army.detachments):
+            det.warrior_count = 0
             session.delete(det)
         return
     for det in list(army.detachments):
+        det.warrior_count = 0
         session.delete(det)
     session.delete(army)
 
