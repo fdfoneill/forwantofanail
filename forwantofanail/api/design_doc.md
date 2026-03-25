@@ -118,7 +118,7 @@ GET /v1/me/view
   "time": {
     "day": 14,
     "watch": 2,
-    "watch_label": "midday"
+    "watch_label": "sixbell"
   },
 
   "army": {
@@ -370,7 +370,7 @@ Response:
 {
   "day": 14,
   "watch": 2,
-  "watch_label": "midday"
+  "watch_label": "sixbell"
 }
 ```
 
