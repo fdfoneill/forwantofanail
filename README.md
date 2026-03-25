@@ -245,13 +245,13 @@ Table: alerts
 - created_at DATETIME
 
 # Turn Structure and Movement
-Each in-game day is divided into five Watches: Matin, Prime, Noon, Vesper, and Night. In the current implementation, movement actions do not start during watch 0 (Night), but an in-progress move may complete at Night if its ETA is reached.
+Each in-game day is divided into five Watches: Matin, Prime, Sixbell, Vesper, and Night. In the current implementation, movement actions do not start during watch 0 (Night), but an in-progress move may complete at Night if its ETA is reached.
 
 The LOCATIONS table divides the game map into a collection of discrete locations. This can be visualized as overlaying a tiling of hexagonal cells onto the region. The LOCATION_ID field contains h3 indices, which can be used to determine adjacency between cells. The h3 values are only used for graph connectivity; the scale is set at 1 league per cell. 
 
 When moving between two locations where IS_ROAD==TRUE ("on-road"), an army can move 1 league (1 cell) per Watch. Off-road, an army can move 1 league every other watch (half-speed). Wagons cannot move off-road at all.
 
-Whenever an army enters a new cell, a record is added to the MOVEMENTS table, recording the army_id, location_id of the cell it entered, date, and watch (as INT where Night=0, Matin=1, Prime=2, Noon=3, Vesper=4).
+Whenever an army enters a new cell, a record is added to the MOVEMENTS table, recording the army_id, location_id of the cell it entered, date, and watch (as INT where Night=0, Matin=1, Prime=2, Sixbell=3, Vesper=4).
 
 # Supply
 

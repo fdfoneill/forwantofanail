@@ -63,7 +63,7 @@ WATCH_LABELS = {
     Watch.NIGHT: "night",
     Watch.MATIN: "matin",
     Watch.PRIME: "prime",
-    Watch.NOON: "midday",
+    Watch.NOON: "sixbell",
     Watch.VESPER: "vesper",
 }
 ACTIVE_ACTION_STATES = {"queued", "in_progress"}
