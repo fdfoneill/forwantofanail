@@ -112,6 +112,17 @@
       color: var(--ink);
     }
     .army-status-panel[hidden] { display: none; }
+    .secondary-btn {
+      width: 100%;
+      margin-top: 8px;
+      margin-bottom: 0;
+      background: #f7f1e7;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .secondary-btn:hover {
+      background: #f2e9db;
+    }
     .army-summary {
       margin: 0 0 8px;
       color: var(--muted);
@@ -467,9 +478,221 @@
       stroke: #ffffff;
       stroke-width: 2.6;
     }
+    .army-mgmt-overlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 22px;
+      background: rgba(27, 26, 24, 0.48);
+      z-index: 20;
+    }
+    .army-mgmt-overlay.open {
+      display: flex;
+    }
+    .army-mgmt-modal {
+      width: min(1160px, 100%);
+      max-height: calc(100vh - 44px);
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.24);
+      padding: 16px;
+    }
+    .army-mgmt-header {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 12px;
+    }
+    .army-mgmt-header h2 {
+      margin: 0;
+      font-size: 22px;
+    }
+    .army-mgmt-subtitle {
+      margin: 4px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .army-mgmt-close {
+      width: auto;
+      margin: 0;
+      padding: 8px 10px;
+      background: #f7f1e7;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .army-mgmt-note,
+    .army-mgmt-error {
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 13px;
+      margin-bottom: 10px;
+    }
+    .army-mgmt-note {
+      border: 1px solid #d8ccae;
+      background: #fff5e0;
+      color: #6f5630;
+    }
+    .army-mgmt-error {
+      border: 1px solid #e0b8b8;
+      background: #ffe9e9;
+      color: #8a2222;
+    }
+    .army-mgmt-topbar {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: end;
+      margin-bottom: 12px;
+    }
+    .army-mgmt-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 5px;
+    }
+    .army-mgmt-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 170px minmax(0, 1fr);
+      gap: 12px;
+      align-items: start;
+    }
+    .army-mgmt-card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      padding: 12px;
+      min-width: 0;
+    }
+    .army-mgmt-card h3 {
+      margin: 0 0 10px;
+      font-size: 16px;
+    }
+    .army-mgmt-field {
+      margin-bottom: 10px;
+    }
+    .army-mgmt-field input,
+    .army-mgmt-field select {
+      width: 100%;
+      margin: 0;
+    }
+    .army-mgmt-readonly {
+      min-height: 40px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #faf7f1;
+      color: var(--ink);
+      font-size: 14px;
+    }
+    .army-mgmt-readonly.muted {
+      color: var(--muted);
+    }
+    .army-mgmt-supply {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+      font-size: 12px;
+      color: var(--ink);
+    }
+    .army-mgmt-supply div {
+      padding: 8px 10px;
+      border: 1px solid #eee7dd;
+      border-radius: 10px;
+      background: #faf7f1;
+    }
+    .army-mgmt-detachments {
+      margin-top: 10px;
+    }
+    .army-mgmt-detachment-list {
+      margin: 0;
+      padding: 0;
+      list-style: none;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      min-height: 220px;
+      max-height: 360px;
+      overflow: auto;
+    }
+    .army-mgmt-detachment-list.drag-over {
+      outline: 2px dashed #d7891f;
+      outline-offset: -3px;
+      background: #fff8ec;
+    }
+    .army-mgmt-detachment {
+      padding: 9px 10px;
+      border-bottom: 1px solid #eee7dd;
+      cursor: grab;
+      font-size: 12px;
+      line-height: 1.4;
+      background: #fff;
+    }
+    .army-mgmt-detachment:last-child {
+      border-bottom: 0;
+    }
+    .army-mgmt-detachment strong {
+      display: block;
+      font-size: 13px;
+      margin-bottom: 2px;
+    }
+    .army-mgmt-empty {
+      padding: 12px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .army-mgmt-middle {
+      display: grid;
+      gap: 10px;
+      align-content: start;
+      padding-top: 64px;
+    }
+    .army-mgmt-transfer {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+      padding: 10px;
+    }
+    .army-mgmt-transfer input {
+      margin: 0 0 10px;
+      width: 100%;
+    }
+    .army-mgmt-transfer-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .army-mgmt-transfer-buttons button,
+    .army-mgmt-middle button {
+      margin: 0;
+    }
+    .army-mgmt-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .army-mgmt-footer button {
+      width: auto;
+      margin: 0;
+      min-width: 150px;
+    }
     @media (max-width: 980px) {
       .shell { grid-template-columns: 1fr; }
       .map-panel { min-height: 62vh; }
+      .army-mgmt-grid {
+        grid-template-columns: 1fr;
+      }
+      .army-mgmt-middle {
+        grid-template-columns: 1fr 1fr;
+        padding-top: 0;
+      }
     }
   </style>
 </head>
@@ -614,7 +837,21 @@
       ordersPanelExpanded: false,
       refreshInFlight: false,
       sessionVersion: 0,
+      armyManagement: {
+        open: false,
+        loading: false,
+        dirty: false,
+        note: "",
+        error: "",
+        server: null,
+        draft: null,
+        drag: null,
+        focus: null,
+        scroll: null,
+      },
     };
+
+    let armyManagementSuggestionRequestId = 0;
 
     const TERRAIN_COLORS = {
       "open ground": "var(--open-ground)",
@@ -655,6 +892,15 @@
       "January", "February", "March", "April", "May", "June",
       "July", "August", "September", "October", "November", "December",
     ];
+    const MGMT_INFANTRY_CAPACITY = 15;
+    const MGMT_NONCOMBATANT_CAPACITY = 15;
+    const MGMT_CAVALRY_CAPACITY = 75;
+    const MGMT_WAGON_CAPACITY = 1000;
+    const MGMT_INFANTRY_DAILY = 1;
+    const MGMT_NONCOMBATANT_DAILY = 1;
+    const MGMT_CAVALRY_DAILY = 10;
+    const MGMT_WAGON_DAILY = 10;
+    const MGMT_GARRISONS_CONSUME_SUPPLY = false;
 
     const els = {
       commanderSelect: document.getElementById("commanderSelect"),
@@ -957,6 +1203,9 @@
         els.armyCompositionBody.innerHTML = "";
         els.armyStatusPanel.setAttribute("hidden", "");
         els.armyStatusChevron.textContent = "▸";
+        if (els.manageArmyBtn) {
+          els.manageArmyBtn.disabled = true;
+        }
         return;
       }
 
@@ -1006,6 +1255,804 @@
         els.armyStatusPanel.setAttribute("hidden", "");
         els.armyStatusChevron.textContent = "▸";
       }
+      if (els.manageArmyBtn) {
+        els.manageArmyBtn.disabled = !view?.army;
+      }
+    }
+
+    function managementArmySupplyStats(armyDraft) {
+      if (!armyDraft || armyDraft.is_garrison) {
+        return { current: 0, capacity: 0, daily_consumption: 0, days_estimate: null };
+      }
+      const detachments = Array.isArray(armyDraft.detachments) ? armyDraft.detachments : [];
+      let infantry = 0;
+      let cavalry = 0;
+      let wagons = 0;
+      for (const det of detachments) {
+        const warriors = Number(det?.warriors || 0) || 0;
+        if (det?.is_cavalry) {
+          cavalry += warriors;
+        } else {
+          infantry += warriors;
+        }
+        wagons += Number(det?.wagons || 0) || 0;
+      }
+      const noncombatantPercent = Math.max(0, Number(armyDraft.noncombatant_percent || 0) || 0);
+      const noncombatants = Math.round((infantry + cavalry) * noncombatantPercent);
+      const capacity =
+        (infantry * MGMT_INFANTRY_CAPACITY) +
+        (noncombatants * MGMT_NONCOMBATANT_CAPACITY) +
+        (cavalry * MGMT_CAVALRY_CAPACITY) +
+        (wagons * MGMT_WAGON_CAPACITY);
+      const daily =
+        (armyDraft.is_garrison && !MGMT_GARRISONS_CONSUME_SUPPLY)
+          ? 0
+          : (
+            (infantry * MGMT_INFANTRY_DAILY) +
+            (noncombatants * MGMT_NONCOMBATANT_DAILY) +
+            (cavalry * MGMT_CAVALRY_DAILY) +
+            (wagons * MGMT_WAGON_DAILY)
+          );
+      const current = Math.max(0, Number(armyDraft.supply_current || 0) || 0);
+      return {
+        current,
+        capacity,
+        daily_consumption: daily,
+        days_estimate: daily > 0 ? Math.max(0, Math.floor(current / daily)) : null,
+      };
+    }
+
+    function managementCloneArmy(army) {
+      if (!army) {
+        return null;
+      }
+      return {
+        army_id: String(army.army_id || ""),
+        name: String(army.name || ""),
+        location_h3: String(army.location_h3 || ""),
+        faction: String(army.faction || ""),
+        is_garrison: !!army.is_garrison,
+        commander: army.commander ? {
+          id: String(army.commander.id || ""),
+          name: String(army.commander.name || ""),
+          title: String(army.commander.title || ""),
+          display_name: String(army.commander.display_name || ""),
+        } : null,
+        commander_id: army.commander_id ? String(army.commander_id) : "",
+        supply_current: Number(army?.supply?.current || 0) || 0,
+        noncombatant_percent: Number(army?.noncombatant_percent || 0) || 0,
+        morale: army?.morale ? {
+          current: Number(army.morale.current || 0) || 0,
+          resting: Number(army.morale.resting || 0) || 0,
+        } : { current: 0, resting: 0 },
+        detachments: Array.isArray(army.detachments)
+          ? army.detachments.map((det) => ({
+            id: String(det.id || ""),
+            name: String(det.name || ""),
+            warriors: Number(det.warriors || 0) || 0,
+            wagons: Number(det.wagons || 0) || 0,
+            is_cavalry: !!det.is_cavalry,
+            is_heavy: !!det.is_heavy,
+            type: String(det.type || ""),
+          }))
+          : [],
+      };
+    }
+
+    function managementNewArmyDraft(sourceArmy) {
+      return {
+        army_id: "",
+        name: "",
+        location_h3: String(sourceArmy?.location_h3 || ""),
+        faction: String(sourceArmy?.faction || ""),
+        is_garrison: false,
+        commander: null,
+        commander_id: "",
+        new_commander: { title: "", name: "" },
+        supply_current: 0,
+        noncombatant_percent: Number(sourceArmy?.noncombatant_percent || 0) || 0,
+        morale: sourceArmy?.morale ? {
+          current: Number(sourceArmy.morale.current || 0) || 0,
+          resting: Number(sourceArmy.morale.resting || 0) || 0,
+        } : { current: 0, resting: 0 },
+        detachments: [],
+      };
+    }
+
+    function resetArmyManagementDraft(serverPayload, note = "") {
+      if (!serverPayload?.left_army) {
+        state.armyManagement.draft = null;
+        state.armyManagement.server = serverPayload || null;
+        state.armyManagement.note = note;
+        state.armyManagement.error = "";
+        state.armyManagement.dirty = false;
+        state.armyManagement.focus = null;
+        state.armyManagement.scroll = null;
+        renderArmyManagementModal();
+        return;
+      }
+      const leftArmy = managementCloneArmy(serverPayload.left_army);
+      state.armyManagement.server = serverPayload;
+      state.armyManagement.draft = {
+        baseline_hash: String(serverPayload?.baseline?.snapshot_hash || ""),
+        left: leftArmy,
+        rightTarget: { mode: "", army_id: "" },
+        right: null,
+      };
+      state.armyManagement.note = note;
+      state.armyManagement.error = "";
+      state.armyManagement.dirty = false;
+      state.armyManagement.drag = null;
+      state.armyManagement.focus = null;
+      state.armyManagement.scroll = null;
+      renderArmyManagementModal();
+    }
+
+    function armyManagementSelectedKey() {
+      const draft = state.armyManagement.draft;
+      if (!draft) {
+        return "";
+      }
+      if (draft.rightTarget.mode === "new") {
+        return "NEW_ARMY";
+      }
+      if (draft.rightTarget.mode === "existing") {
+        return String(draft.rightTarget.army_id || "");
+      }
+      return "";
+    }
+
+    function armyManagementSelectionStillEligible(serverPayload) {
+      const draft = state.armyManagement.draft;
+      if (!draft || !serverPayload?.left_army) {
+        return false;
+      }
+      if (String(serverPayload.left_army.army_id || "") !== String(draft.left?.army_id || "")) {
+        return false;
+      }
+      if (String(serverPayload.left_army.location_h3 || "") !== String(draft.left?.location_h3 || "")) {
+        return false;
+      }
+      const selectedKey = armyManagementSelectedKey();
+      if (!selectedKey || selectedKey === "NEW_ARMY") {
+        return true;
+      }
+      return (Array.isArray(serverPayload.other_armies) ? serverPayload.other_armies : []).some((army) => (
+        String(army.army_id || "") === selectedKey
+      ));
+    }
+
+    function armyManagementCurrentRightTargetOptions() {
+      const serverPayload = state.armyManagement.server;
+      if (!serverPayload) {
+        return [];
+      }
+      return Array.isArray(serverPayload.other_armies) ? serverPayload.other_armies : [];
+    }
+
+    async function setArmyManagementTarget(selectionValue) {
+      const serverPayload = state.armyManagement.server;
+      const draft = state.armyManagement.draft;
+      if (!serverPayload || !draft) {
+        return;
+      }
+      const selected = String(selectionValue || "");
+      if (!selected) {
+        draft.rightTarget = { mode: "", army_id: "" };
+        draft.right = null;
+      } else if (selected === "NEW_ARMY") {
+        draft.rightTarget = { mode: "new", army_id: "" };
+        draft.right = managementNewArmyDraft(draft.left);
+        const requestId = ++armyManagementSuggestionRequestId;
+        renderArmyManagementModal();
+        try {
+          const template = await api("/v1/me/army-management/new-army-template", {}, true);
+          if (!state.armyManagement.draft || state.armyManagement.draft !== draft) {
+            return;
+          }
+          if (armyManagementSuggestionRequestId !== requestId) {
+            return;
+          }
+          if (draft.rightTarget.mode !== "new" || !draft.right) {
+            return;
+          }
+          draft.right.name = String(template?.default_name || "");
+          draft.right.new_commander = {
+            title: String(template?.default_commander_title || ""),
+            name: String(template?.default_commander_name || ""),
+          };
+        } catch (_) {
+          // Leave fields blank if suggestion lookup fails.
+        }
+      } else {
+        const match = armyManagementCurrentRightTargetOptions().find((army) => String(army.army_id || "") === selected);
+        if (!match) {
+          draft.rightTarget = { mode: "", army_id: "" };
+          draft.right = null;
+        } else {
+          draft.rightTarget = { mode: "existing", army_id: String(match.army_id || "") };
+          draft.right = managementCloneArmy(match);
+        }
+      }
+      state.armyManagement.dirty = true;
+      state.armyManagement.error = "";
+      renderArmyManagementModal();
+    }
+
+    function managementCommanderLabel(sideDraft) {
+      if (!sideDraft) {
+        return "-";
+      }
+      if (sideDraft.is_garrison) {
+        return "No commander";
+      }
+      if (sideDraft.commander && sideDraft.commander.display_name) {
+        return sideDraft.commander.display_name;
+      }
+      if (sideDraft.new_commander) {
+        const title = String(sideDraft.new_commander.title || "").trim();
+        const name = String(sideDraft.new_commander.name || "").trim();
+        return [title, name].filter(Boolean).join(" ") || "Unassigned";
+      }
+      return "Unassigned";
+    }
+
+    function moveManagementDetachment(detachmentId, targetSide) {
+      const draft = state.armyManagement.draft;
+      if (!draft || !draft.right || !detachmentId || !["left", "right"].includes(targetSide)) {
+        return;
+      }
+      const sourceSide = draft.left.detachments.some((det) => det.id === detachmentId) ? "left"
+        : draft.right.detachments.some((det) => det.id === detachmentId) ? "right"
+        : "";
+      if (!sourceSide || sourceSide === targetSide) {
+        return;
+      }
+      const sourceList = sourceSide === "left" ? draft.left.detachments : draft.right.detachments;
+      const targetList = targetSide === "left" ? draft.left.detachments : draft.right.detachments;
+      const idx = sourceList.findIndex((det) => det.id === detachmentId);
+      if (idx < 0) {
+        return;
+      }
+      const [detachment] = sourceList.splice(idx, 1);
+      targetList.push(detachment);
+      state.armyManagement.dirty = true;
+      state.armyManagement.error = "";
+      renderArmyManagementModal();
+    }
+
+    function transferManagementSupply(direction) {
+      const draft = state.armyManagement.draft;
+      const amountRaw = Number(els.armyMgmtTransferAmount?.value || 0);
+      const amount = Math.max(0, Math.floor(amountRaw));
+      if (!draft || !draft.right || amount < 1) {
+        state.armyManagement.error = "Enter a positive supply amount to transfer.";
+        renderArmyManagementModal();
+        return;
+      }
+      if (draft.right.is_garrison) {
+        state.armyManagement.error = "Supply cannot be transferred to or from a garrison.";
+        renderArmyManagementModal();
+        return;
+      }
+      const leftStats = managementArmySupplyStats(draft.left);
+      const rightStats = managementArmySupplyStats(draft.right);
+      if (direction === "right") {
+        const room = Math.max(0, rightStats.capacity - draft.right.supply_current);
+        const applied = Math.min(amount, draft.left.supply_current, room);
+        if (applied < 1) {
+          state.armyManagement.error = room < 1
+            ? "Right army is already at maximum supply capacity."
+            : "Left army does not have that much supply.";
+          renderArmyManagementModal();
+          return;
+        }
+        draft.left.supply_current -= applied;
+        draft.right.supply_current += applied;
+      } else if (direction === "left") {
+        const room = Math.max(0, leftStats.capacity - draft.left.supply_current);
+        const applied = Math.min(amount, draft.right.supply_current, room);
+        if (applied < 1) {
+          state.armyManagement.error = room < 1
+            ? "Left army is already at maximum supply capacity."
+            : "Right army does not have that much supply.";
+          renderArmyManagementModal();
+          return;
+        }
+        draft.right.supply_current -= applied;
+        draft.left.supply_current += applied;
+      }
+      state.armyManagement.dirty = true;
+      state.armyManagement.error = "";
+      renderArmyManagementModal();
+    }
+
+    function captureArmyManagementFocus() {
+      if (!state.armyManagement.open || !els.armyMgmtOverlay) {
+        return null;
+      }
+      const active = document.activeElement;
+      if (!active || !els.armyMgmtOverlay.contains(active)) {
+        return null;
+      }
+      let selector = "";
+      if (active.id) {
+        selector = `#${active.id}`;
+      } else if (active.dataset?.armyMgmtName) {
+        selector = `[data-army-mgmt-name="${active.dataset.armyMgmtName}"]`;
+      }
+      if (!selector) {
+        return null;
+      }
+      const focusState = { selector };
+      if (typeof active.selectionStart === "number" && typeof active.selectionEnd === "number") {
+        focusState.selectionStart = active.selectionStart;
+        focusState.selectionEnd = active.selectionEnd;
+      }
+      return focusState;
+    }
+
+    function restoreArmyManagementFocus(focusState) {
+      if (!focusState || !els.armyMgmtOverlay) {
+        return;
+      }
+      const target = els.armyMgmtOverlay.querySelector(focusState.selector);
+      if (!target || typeof target.focus !== "function") {
+        return;
+      }
+      target.focus();
+      if (typeof focusState.selectionStart === "number" && typeof target.setSelectionRange === "function") {
+        target.setSelectionRange(focusState.selectionStart, focusState.selectionEnd ?? focusState.selectionStart);
+      }
+    }
+
+    function captureArmyManagementScroll() {
+      if (!state.armyManagement.open || !els.armyMgmtOverlay) {
+        return null;
+      }
+      const scrollState = {
+        modalTop: els.armyMgmtModal ? els.armyMgmtModal.scrollTop : 0,
+      };
+      els.armyMgmtOverlay.querySelectorAll(".army-mgmt-detachment-list[data-drop-side]").forEach((list) => {
+        const side = String(list.dataset.dropSide || "");
+        if (!side) {
+          return;
+        }
+        scrollState[side] = list.scrollTop;
+      });
+      return scrollState;
+    }
+
+    function restoreArmyManagementScroll(scrollState) {
+      if (!scrollState || !els.armyMgmtOverlay) {
+        return;
+      }
+      if (els.armyMgmtModal && typeof scrollState.modalTop === "number") {
+        els.armyMgmtModal.scrollTop = scrollState.modalTop;
+      }
+      els.armyMgmtOverlay.querySelectorAll(".army-mgmt-detachment-list[data-drop-side]").forEach((list) => {
+        const side = String(list.dataset.dropSide || "");
+        if (!side) {
+          return;
+        }
+        const top = scrollState[side];
+        if (typeof top === "number") {
+          list.scrollTop = top;
+        }
+      });
+    }
+
+    function swapManagementCommanders() {
+      const draft = state.armyManagement.draft;
+      if (!draft || !draft.right || draft.right.is_garrison || draft.rightTarget.mode !== "existing") {
+        return;
+      }
+      const leftCommander = draft.left.commander;
+      const leftCommanderId = draft.left.commander_id;
+      draft.left.commander = draft.right.commander;
+      draft.left.commander_id = draft.right.commander_id;
+      draft.right.commander = leftCommander;
+      draft.right.commander_id = leftCommanderId;
+      state.armyManagement.dirty = true;
+      state.armyManagement.error = "";
+      renderArmyManagementModal();
+    }
+
+    function renderArmyManagementDetachmentList(side, armyDraft) {
+      if (!armyDraft) {
+        return "<div class=\"army-mgmt-empty\">Select another army or create a new one.</div>";
+      }
+      const rows = armyDraft.detachments.map((det) => (
+        `<li class="army-mgmt-detachment" draggable="true" data-side="${side}" data-detachment-id="${escapeHtml(det.id)}">` +
+          `<strong>${escapeHtml(det.name)}</strong>` +
+          `<div>${Number(det.warriors || 0).toLocaleString()} ${escapeHtml(det.type || (det.is_cavalry ? "cavalry" : "infantry"))}</div>` +
+          `<div>${Number(det.wagons || 0).toLocaleString()} wagons</div>` +
+        `</li>`
+      ));
+      if (!rows.length) {
+        rows.push(`<li class="army-mgmt-empty">No detachments assigned.</li>`);
+      }
+      return `<ul class="army-mgmt-detachment-list" data-drop-side="${side}">${rows.join("")}</ul>`;
+    }
+
+    function renderArmyManagementSide(side, armyDraft) {
+      const isLeft = side === "left";
+      const title = isLeft ? "Active Army" : "Target Army";
+      if (!armyDraft) {
+        return (
+          `<div class="army-mgmt-card">` +
+            `<h3>${title}</h3>` +
+            `<div class="army-mgmt-empty">Select another army in the same hex, or choose NEW ARMY.</div>` +
+          `</div>`
+        );
+      }
+      const supply = managementArmySupplyStats(armyDraft);
+      const commanderLabel = managementCommanderLabel(armyDraft);
+      const supplyBlock = armyDraft.is_garrison
+        ? `<div class="army-mgmt-readonly muted">Supply locked for garrisons.</div>`
+        : (
+          `<div class="army-mgmt-supply">` +
+            `<div><strong>Current</strong><br>${supply.current.toLocaleString()}</div>` +
+            `<div><strong>Capacity</strong><br>${supply.capacity.toLocaleString()}</div>` +
+            `<div><strong>Daily Use</strong><br>${supply.daily_consumption.toLocaleString()}</div>` +
+            `<div><strong>Days</strong><br>${supply.days_estimate == null ? "-" : String(supply.days_estimate)}</div>` +
+          `</div>`
+        );
+      const nameInputDisabled = !isLeft && armyDraft.is_garrison ? " disabled" : "";
+      const commanderField = (!isLeft && state.armyManagement.draft?.rightTarget.mode === "new")
+        ? (
+          `<div class="army-mgmt-field">` +
+            `<div class="army-mgmt-label">Commander Title</div>` +
+            `<input id="armyMgmtNewCommanderTitle" type="text" value="${escapeHtml(armyDraft?.new_commander?.title || "")}" placeholder="Captain" />` +
+          `</div>` +
+          `<div class="army-mgmt-field">` +
+            `<div class="army-mgmt-label">Commander Name</div>` +
+            `<input id="armyMgmtNewCommanderName" type="text" value="${escapeHtml(armyDraft?.new_commander?.name || "")}" placeholder="Belon" />` +
+          `</div>`
+        )
+        : (
+          `<div class="army-mgmt-field">` +
+            `<div class="army-mgmt-label">Commander</div>` +
+            `<div class="army-mgmt-readonly${armyDraft.is_garrison ? " muted" : ""}">${escapeHtml(commanderLabel)}</div>` +
+          `</div>`
+        );
+      return (
+        `<div class="army-mgmt-card">` +
+          `<h3>${title}</h3>` +
+          `<div class="army-mgmt-field">` +
+            `<div class="army-mgmt-label">Army Name</div>` +
+            `<input data-army-mgmt-name="${side}" type="text" value="${escapeHtml(armyDraft.name || "")}"${nameInputDisabled} />` +
+          `</div>` +
+          `${commanderField}` +
+          `<div class="army-mgmt-field">` +
+            `<div class="army-mgmt-label">Supply</div>` +
+            `${supplyBlock}` +
+          `</div>` +
+          `<div class="army-mgmt-detachments">` +
+            `<div class="army-mgmt-label">Detachments</div>` +
+            `${renderArmyManagementDetachmentList(side, armyDraft)}` +
+          `</div>` +
+        `</div>`
+      );
+    }
+
+    function renderArmyManagementModal() {
+      const overlay = els.armyMgmtOverlay;
+      if (!overlay) {
+        return;
+      }
+      const mgmt = state.armyManagement;
+      if (!mgmt.open) {
+        overlay.classList.remove("open");
+        return;
+      }
+      const priorFocus = captureArmyManagementFocus() || mgmt.focus;
+      const priorScroll = captureArmyManagementScroll() || mgmt.scroll;
+      mgmt.focus = priorFocus;
+      mgmt.scroll = priorScroll;
+      overlay.classList.add("open");
+      const draft = mgmt.draft;
+      const right = draft?.right || null;
+      const options = [
+        `<option value="">Select army...</option>`,
+        ...armyManagementCurrentRightTargetOptions().map((army) => (
+          `<option value="${escapeHtml(String(army.army_id || ""))}"${armyManagementSelectedKey() === String(army.army_id || "") ? " selected" : ""}>` +
+          `${escapeHtml(String(army.name || "Army"))}${army.is_garrison ? " (Garrison)" : ""}` +
+          `</option>`
+        )),
+        `<option value="NEW_ARMY"${armyManagementSelectedKey() === "NEW_ARMY" ? " selected" : ""}>NEW ARMY</option>`,
+      ];
+      const transferDisabled = !draft || !right || right.is_garrison;
+      els.armyMgmtBody.innerHTML =
+        (mgmt.note ? `<div class="army-mgmt-note">${escapeHtml(mgmt.note)}</div>` : "") +
+        (mgmt.error ? `<div class="army-mgmt-error">${escapeHtml(mgmt.error)}</div>` : "") +
+        `<div class="army-mgmt-topbar">` +
+          `<div>` +
+            `<div class="army-mgmt-label">Pair With</div>` +
+            `<select id="armyMgmtTargetSelect">${options.join("")}</select>` +
+          `</div>` +
+          `<div class="army-mgmt-label">${mgmt.loading ? "Loading..." : (mgmt.dirty ? "Draft changed" : "No unapplied changes")}</div>` +
+        `</div>` +
+        `<div class="army-mgmt-grid">` +
+          `${renderArmyManagementSide("left", draft?.left || null)}` +
+          `<div class="army-mgmt-middle">` +
+            `<div class="army-mgmt-transfer">` +
+              `<div class="army-mgmt-label">Transfer Supply</div>` +
+              `<input id="armyMgmtTransferAmount" type="number" min="1" step="1" value="${escapeHtml(String(els.armyMgmtTransferAmount?.value || "1000"))}"${transferDisabled ? " disabled" : ""} />` +
+              `<div class="army-mgmt-transfer-buttons">` +
+                `<button id="armyMgmtTransferLeftBtn" type="button"${transferDisabled ? " disabled" : ""}>← Supply</button>` +
+                `<button id="armyMgmtTransferRightBtn" type="button"${transferDisabled ? " disabled" : ""}>Supply →</button>` +
+              `</div>` +
+            `</div>` +
+            `<button id="armyMgmtSwapBtn" class="secondary-btn" type="button"${(!right || right.is_garrison || draft?.rightTarget.mode !== "existing") ? " disabled" : ""}>Swap Commanders</button>` +
+          `</div>` +
+          `${renderArmyManagementSide("right", right)}` +
+        `</div>`;
+
+      const body = els.armyMgmtBody;
+      els.armyMgmtTransferAmount = body.querySelector("#armyMgmtTransferAmount");
+      const targetSelect = body.querySelector("#armyMgmtTargetSelect");
+      if (targetSelect) {
+        targetSelect.addEventListener("change", async () => {
+          await setArmyManagementTarget(targetSelect.value);
+        });
+      }
+      body.querySelectorAll("input[data-army-mgmt-name]").forEach((input) => {
+        input.addEventListener("input", () => {
+          const side = String(input.dataset.armyMgmtName || "");
+          if (!draft) return;
+          if (side === "left") {
+            draft.left.name = input.value;
+          } else if (side === "right" && draft.right) {
+            draft.right.name = input.value;
+          }
+          mgmt.dirty = true;
+          mgmt.error = "";
+          mgmt.focus = captureArmyManagementFocus();
+        });
+      });
+      const commanderTitleInput = body.querySelector("#armyMgmtNewCommanderTitle");
+      if (commanderTitleInput && draft?.right?.new_commander) {
+        commanderTitleInput.addEventListener("input", () => {
+          draft.right.new_commander.title = commanderTitleInput.value;
+          mgmt.dirty = true;
+          mgmt.error = "";
+          mgmt.focus = captureArmyManagementFocus();
+        });
+      }
+      const commanderNameInput = body.querySelector("#armyMgmtNewCommanderName");
+      if (commanderNameInput && draft?.right?.new_commander) {
+        commanderNameInput.addEventListener("input", () => {
+          draft.right.new_commander.name = commanderNameInput.value;
+          mgmt.dirty = true;
+          mgmt.error = "";
+          mgmt.focus = captureArmyManagementFocus();
+        });
+      }
+      els.armyMgmtTransferAmount?.addEventListener("input", () => {
+        mgmt.focus = captureArmyManagementFocus();
+      });
+      body.querySelector("#armyMgmtTransferLeftBtn")?.addEventListener("click", () => transferManagementSupply("left"));
+      body.querySelector("#armyMgmtTransferRightBtn")?.addEventListener("click", () => transferManagementSupply("right"));
+      body.querySelector("#armyMgmtSwapBtn")?.addEventListener("click", () => swapManagementCommanders());
+      body.querySelectorAll(".army-mgmt-detachment").forEach((row) => {
+        row.addEventListener("dragstart", (event) => {
+          const detachmentId = String(row.dataset.detachmentId || "");
+          const side = String(row.dataset.side || "");
+          state.armyManagement.drag = { detachmentId, side };
+          event.dataTransfer.effectAllowed = "move";
+          event.dataTransfer.setData("text/plain", detachmentId);
+        });
+      });
+      body.querySelectorAll(".army-mgmt-detachment-list").forEach((list) => {
+        list.addEventListener("dragover", (event) => {
+          event.preventDefault();
+          list.classList.add("drag-over");
+        });
+        list.addEventListener("dragleave", () => list.classList.remove("drag-over"));
+        list.addEventListener("drop", (event) => {
+          event.preventDefault();
+          list.classList.remove("drag-over");
+          const targetSide = String(list.dataset.dropSide || "");
+          const detachmentId = String(event.dataTransfer.getData("text/plain") || state.armyManagement.drag?.detachmentId || "");
+          moveManagementDetachment(detachmentId, targetSide);
+          state.armyManagement.drag = null;
+        });
+      });
+      restoreArmyManagementFocus(priorFocus);
+      restoreArmyManagementScroll(priorScroll);
+    }
+
+    function closeArmyManagementModal(force = false) {
+      if (!state.armyManagement.open) {
+        return true;
+      }
+      if (!force && state.armyManagement.dirty && !window.confirm("Changes not applied, close anyway?")) {
+        return false;
+      }
+      state.armyManagement.open = false;
+      state.armyManagement.loading = false;
+      state.armyManagement.note = "";
+      state.armyManagement.error = "";
+      state.armyManagement.drag = null;
+      state.armyManagement.focus = null;
+      state.armyManagement.scroll = null;
+      renderArmyManagementModal();
+      return true;
+    }
+
+    async function refreshArmyManagementState({ preserveDraft = true } = {}) {
+      if (!state.token || !state.armyManagement.open) {
+        return;
+      }
+      try {
+        const sessionSnapshot = snapshotSession();
+        const payload = await api("/v1/me/army-management", {}, true);
+        if (!isCurrentSession(sessionSnapshot)) {
+          return;
+        }
+        if (!preserveDraft || !state.armyManagement.draft) {
+          resetArmyManagementDraft(payload);
+          return;
+        }
+        if (!armyManagementSelectionStillEligible(payload)) {
+          resetArmyManagementDraft(payload, "Army management reset because the selected army is no longer eligible.");
+          return;
+        }
+        state.armyManagement.server = payload;
+        renderArmyManagementModal();
+      } catch (err) {
+        state.armyManagement.error = `Army management refresh failed: ${readableErrorMessage(err)}`;
+        renderArmyManagementModal();
+      }
+    }
+
+    async function openArmyManagementModal() {
+      if (!state.token) {
+        setStatus("Select a commander first.", true);
+        return;
+      }
+      state.armyManagement.open = true;
+      state.armyManagement.loading = true;
+      state.armyManagement.note = "";
+      state.armyManagement.error = "";
+      renderArmyManagementModal();
+      window.setTimeout(() => {
+        els.armyMgmtCloseBtn?.focus();
+      }, 0);
+      try {
+        const payload = await api("/v1/me/army-management", {}, true);
+        resetArmyManagementDraft(payload);
+      } catch (err) {
+        state.armyManagement.error = `Army management load failed: ${readableErrorMessage(err)}`;
+        renderArmyManagementModal();
+      } finally {
+        state.armyManagement.loading = false;
+        renderArmyManagementModal();
+      }
+    }
+
+    function buildArmyManagementPayload() {
+      const draft = state.armyManagement.draft;
+      if (!draft) {
+        throw new Error("Army management draft is unavailable.");
+      }
+      const leftPayload = {
+        army_id: draft.left.army_id,
+        name: String(draft.left.name || "").trim(),
+        commander_id: draft.left.commander_id || "",
+        supply_current: Number(draft.left.supply_current || 0) || 0,
+        detachment_ids: draft.left.detachments.map((det) => det.id),
+      };
+      if (!draft.rightTarget.mode) {
+        return {
+          baseline_hash: draft.baseline_hash,
+          left_army: leftPayload,
+          right_target: { mode: "none" },
+          right_army: null,
+        };
+      }
+      if (!draft.right) {
+        throw new Error("Select another army or choose NEW ARMY.");
+      }
+      const rightTarget = draft.rightTarget.mode === "new"
+        ? { mode: "new" }
+        : { mode: "existing", army_id: draft.rightTarget.army_id };
+      const rightPayload = {
+        army_id: draft.right.army_id || undefined,
+        name: String(draft.right.name || "").trim(),
+        commander_id: draft.right.is_garrison ? null : (draft.right.commander_id || ""),
+        supply_current: draft.right.is_garrison ? undefined : (Number(draft.right.supply_current || 0) || 0),
+        detachment_ids: draft.right.detachments.map((det) => det.id),
+      };
+      if (draft.rightTarget.mode === "new") {
+        rightPayload.new_commander = {
+          title: String(draft.right.new_commander?.title || "").trim(),
+          name: String(draft.right.new_commander?.name || "").trim(),
+        };
+      }
+      return {
+        baseline_hash: draft.baseline_hash,
+        left_army: leftPayload,
+        right_target: rightTarget,
+        right_army: rightPayload,
+      };
+    }
+
+    async function applyArmyManagementChanges() {
+      try {
+        state.armyManagement.error = "";
+        renderArmyManagementModal();
+        const payload = buildArmyManagementPayload();
+        const draft = state.armyManagement.draft;
+        if (draft && draft.rightTarget.mode === "existing" && draft.right?.is_garrison) {
+          const leftStats = managementArmySupplyStats(draft.left);
+          const currentSupply = Math.max(0, Number(draft.left.supply_current || 0) || 0);
+          if (currentSupply > leftStats.capacity) {
+            const lostSupply = currentSupply - leftStats.capacity;
+            const confirmed = window.confirm(`${lostSupply.toLocaleString()} supply will be lost, continue?`);
+            if (!confirmed) {
+              return;
+            }
+            draft.left.supply_current = leftStats.capacity;
+            payload.left_army.supply_current = leftStats.capacity;
+            renderArmyManagementModal();
+          }
+        }
+        await api(
+          "/v1/me/army-management/apply",
+          {
+            method: "POST",
+            body: JSON.stringify(payload),
+          },
+          true
+        );
+        state.armyManagement.dirty = false;
+        closeArmyManagementModal(true);
+        await loadCommanders();
+        if (state.selectedCommander) {
+          els.commanderSelect.value = state.selectedCommander;
+        }
+        await refreshAllPanels();
+      } catch (err) {
+        state.armyManagement.error = readableErrorMessage(err);
+        renderArmyManagementModal();
+      }
+    }
+
+    function injectArmyManagementUi() {
+      const manageBtn = document.createElement("button");
+      manageBtn.id = "manageArmyBtn";
+      manageBtn.type = "button";
+      manageBtn.className = "secondary-btn";
+      manageBtn.textContent = "Manage Army";
+      els.armyStatusPanel.insertAdjacentElement("beforeend", manageBtn);
+      document.body.insertAdjacentHTML(
+        "beforeend",
+        `<div id="armyMgmtOverlay" class="army-mgmt-overlay">` +
+          `<div id="armyMgmtModal" class="army-mgmt-modal" role="dialog" aria-modal="true" aria-labelledby="armyMgmtTitle">` +
+            `<div class="army-mgmt-header">` +
+              `<div>` +
+                `<h2 id="armyMgmtTitle">Army Management</h2>` +
+                `<p class="army-mgmt-subtitle">Reassign detachments, supply, commanders, and army names within the current hex.</p>` +
+              `</div>` +
+              `<button id="armyMgmtCloseBtn" class="army-mgmt-close" type="button">Close</button>` +
+            `</div>` +
+            `<div id="armyMgmtBody"></div>` +
+            `<div class="army-mgmt-footer">` +
+              `<button id="armyMgmtCancelBtn" class="secondary-btn" type="button">Cancel</button>` +
+              `<button id="armyMgmtApplyBtn" type="button">Apply Changes</button>` +
+            `</div>` +
+          `</div>` +
+        `</div>`
+      );
+      els.manageArmyBtn = manageBtn;
+      els.armyMgmtOverlay = document.getElementById("armyMgmtOverlay");
+      els.armyMgmtModal = document.getElementById("armyMgmtModal");
+      els.armyMgmtCloseBtn = document.getElementById("armyMgmtCloseBtn");
+      els.armyMgmtCancelBtn = document.getElementById("armyMgmtCancelBtn");
+      els.armyMgmtApplyBtn = document.getElementById("armyMgmtApplyBtn");
+      els.armyMgmtBody = document.getElementById("armyMgmtBody");
     }
 
     function renderSupplyStatusSection(view) {
@@ -1626,6 +2673,20 @@
         throw new Error(typeof data === "object" ? JSON.stringify(data) : data);
       }
       return data;
+    }
+
+    function readableErrorMessage(err) {
+      const raw = String(err?.message || err || "").trim();
+      if (!raw) {
+        return "Unknown error";
+      }
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && typeof parsed.detail === "string" && parsed.detail.trim()) {
+          return parsed.detail.trim();
+        }
+      } catch (_) {}
+      return raw;
     }
 
     async function loadCommanders() {
@@ -2402,6 +3463,7 @@
       state.refreshInFlight = true;
       try {
       await refreshView();
+      await refreshArmyManagementState({ preserveDraft: true });
       await refreshCorrespondents();
       await refreshInbox();
       await refreshAlerts();
@@ -2504,6 +3566,18 @@
         state.validNextMoves = new Set();
         state.validAttackTargets = new Map();
         state.validBesiegeTargets = new Map();
+        state.armyManagement = {
+          open: false,
+          loading: false,
+          dirty: false,
+          note: "",
+          error: "",
+          server: null,
+          draft: null,
+          drag: null,
+          focus: null,
+          scroll: null,
+        };
         updateMetadata(null);
         renderArmyStatusSection(null);
         renderSupplyStatusSection(null);
@@ -2518,6 +3592,7 @@
         els.composeToggleBtn.textContent = "Send Letter";
         els.letterInput.value = "";
         els.messageRead.textContent = "Select a letter to read.";
+        renderArmyManagementModal();
         setStatus("");
         return;
       }
@@ -2534,14 +3609,27 @@
           state.stagedSiege = null;
           state.remainingItinerary = [];
           state.remainingRout = [];
-          state.remainingSiegeTarget = "";
-          state.validNextMoves = new Set();
-          state.validAttackTargets = new Map();
-          state.validBesiegeTargets = new Map();
+        state.remainingSiegeTarget = "";
+        state.validNextMoves = new Set();
+        state.validAttackTargets = new Map();
+        state.validBesiegeTargets = new Map();
+        state.armyManagement = {
+          open: false,
+          loading: false,
+          dirty: false,
+          note: "",
+          error: "",
+          server: null,
+          draft: null,
+          drag: null,
+          focus: null,
+          scroll: null,
+        };
         state.followRoadEnabled = false;
         state.armyPanelExpanded = false;
         state.supplyPanelExpanded = false;
         state.ordersPanelExpanded = false;
+        renderArmyManagementModal();
         await refreshAllPanels();
       } catch (err) {
         setStatus(`Login/load error: ${err.message}`, true);
@@ -2577,6 +3665,22 @@
       els.armyStatusToggle.addEventListener("click", () => {
         state.armyPanelExpanded = !state.armyPanelExpanded;
         renderArmyStatusSection(state.view);
+      });
+      injectArmyManagementUi();
+      renderArmyStatusSection(state.view);
+      renderArmyManagementModal();
+      els.manageArmyBtn.addEventListener("click", async () => {
+        await openArmyManagementModal();
+      });
+      els.armyMgmtCloseBtn.addEventListener("click", () => closeArmyManagementModal(false));
+      els.armyMgmtCancelBtn.addEventListener("click", () => closeArmyManagementModal(false));
+      els.armyMgmtApplyBtn.addEventListener("click", async () => {
+        await applyArmyManagementChanges();
+      });
+      els.armyMgmtOverlay.addEventListener("click", (event) => {
+        if (event.target === els.armyMgmtOverlay) {
+          closeArmyManagementModal(false);
+        }
       });
       els.supplyStatusToggle.addEventListener("click", () => {
         state.supplyPanelExpanded = !state.supplyPanelExpanded;
@@ -2665,12 +3769,39 @@
         }
       });
       document.addEventListener("keydown", async (event) => {
+        const key = String(event.key || "").toLowerCase();
+        if (state.armyManagement.open && key === "escape") {
+          event.preventDefault();
+          closeArmyManagementModal(false);
+          return;
+        }
+        if (state.armyManagement.open && key === "tab") {
+          const focusable = Array.from(
+            els.armyMgmtOverlay.querySelectorAll("button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])")
+          );
+          if (focusable.length) {
+            const first = focusable[0];
+            const last = focusable[focusable.length - 1];
+            if (event.shiftKey && document.activeElement === first) {
+              event.preventDefault();
+              last.focus();
+              return;
+            }
+            if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault();
+              first.focus();
+              return;
+            }
+          }
+        }
+        if (state.armyManagement.open) {
+          return;
+        }
         const target = event.target;
         const tag = target && target.tagName ? String(target.tagName).toUpperCase() : "";
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (target && target.isContentEditable)) {
           return;
         }
-        const key = String(event.key || "").toLowerCase();
         if (key === "m") {
           event.preventDefault();
           await setOrderModeFromShortcut("march");
