@@ -847,6 +847,7 @@
         draft: null,
         drag: null,
         focus: null,
+        scroll: null,
       },
     };
 
@@ -1364,6 +1365,7 @@
         state.armyManagement.error = "";
         state.armyManagement.dirty = false;
         state.armyManagement.focus = null;
+        state.armyManagement.scroll = null;
         renderArmyManagementModal();
         return;
       }
@@ -1380,6 +1382,7 @@
       state.armyManagement.dirty = false;
       state.armyManagement.drag = null;
       state.armyManagement.focus = null;
+      state.armyManagement.scroll = null;
       renderArmyManagementModal();
     }
 
@@ -1580,6 +1583,42 @@
       }
     }
 
+    function captureArmyManagementScroll() {
+      if (!state.armyManagement.open || !els.armyMgmtOverlay) {
+        return null;
+      }
+      const scrollState = {
+        modalTop: els.armyMgmtModal ? els.armyMgmtModal.scrollTop : 0,
+      };
+      els.armyMgmtOverlay.querySelectorAll(".army-mgmt-detachment-list[data-drop-side]").forEach((list) => {
+        const side = String(list.dataset.dropSide || "");
+        if (!side) {
+          return;
+        }
+        scrollState[side] = list.scrollTop;
+      });
+      return scrollState;
+    }
+
+    function restoreArmyManagementScroll(scrollState) {
+      if (!scrollState || !els.armyMgmtOverlay) {
+        return;
+      }
+      if (els.armyMgmtModal && typeof scrollState.modalTop === "number") {
+        els.armyMgmtModal.scrollTop = scrollState.modalTop;
+      }
+      els.armyMgmtOverlay.querySelectorAll(".army-mgmt-detachment-list[data-drop-side]").forEach((list) => {
+        const side = String(list.dataset.dropSide || "");
+        if (!side) {
+          return;
+        }
+        const top = scrollState[side];
+        if (typeof top === "number") {
+          list.scrollTop = top;
+        }
+      });
+    }
+
     function swapManagementCommanders() {
       const draft = state.armyManagement.draft;
       if (!draft || !draft.right || draft.right.is_garrison || draft.rightTarget.mode !== "existing") {
@@ -1685,7 +1724,9 @@
         return;
       }
       const priorFocus = captureArmyManagementFocus() || mgmt.focus;
+      const priorScroll = captureArmyManagementScroll() || mgmt.scroll;
       mgmt.focus = priorFocus;
+      mgmt.scroll = priorScroll;
       overlay.classList.add("open");
       const draft = mgmt.draft;
       const right = draft?.right || null;
@@ -1794,6 +1835,7 @@
         });
       });
       restoreArmyManagementFocus(priorFocus);
+      restoreArmyManagementScroll(priorScroll);
     }
 
     function closeArmyManagementModal(force = false) {
@@ -1809,6 +1851,7 @@
       state.armyManagement.error = "";
       state.armyManagement.drag = null;
       state.armyManagement.focus = null;
+      state.armyManagement.scroll = null;
       renderArmyManagementModal();
       return true;
     }
@@ -1962,7 +2005,7 @@
       document.body.insertAdjacentHTML(
         "beforeend",
         `<div id="armyMgmtOverlay" class="army-mgmt-overlay">` +
-          `<div class="army-mgmt-modal" role="dialog" aria-modal="true" aria-labelledby="armyMgmtTitle">` +
+          `<div id="armyMgmtModal" class="army-mgmt-modal" role="dialog" aria-modal="true" aria-labelledby="armyMgmtTitle">` +
             `<div class="army-mgmt-header">` +
               `<div>` +
                 `<h2 id="armyMgmtTitle">Army Management</h2>` +
@@ -1980,6 +2023,7 @@
       );
       els.manageArmyBtn = manageBtn;
       els.armyMgmtOverlay = document.getElementById("armyMgmtOverlay");
+      els.armyMgmtModal = document.getElementById("armyMgmtModal");
       els.armyMgmtCloseBtn = document.getElementById("armyMgmtCloseBtn");
       els.armyMgmtCancelBtn = document.getElementById("armyMgmtCancelBtn");
       els.armyMgmtApplyBtn = document.getElementById("armyMgmtApplyBtn");
@@ -3507,6 +3551,7 @@
           draft: null,
           drag: null,
           focus: null,
+          scroll: null,
         };
         updateMetadata(null);
         renderArmyStatusSection(null);
@@ -3553,6 +3598,7 @@
           draft: null,
           drag: null,
           focus: null,
+          scroll: null,
         };
         state.followRoadEnabled = false;
         state.armyPanelExpanded = false;
