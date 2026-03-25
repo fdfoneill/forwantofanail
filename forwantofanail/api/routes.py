@@ -2503,9 +2503,10 @@ def _resolve_battles_from_edges(
                 rout_text = " Army routed."
             else:
                 rout_text = ""
+            wagon_text = " Forced to abandon wagons." if bool(retreat_by_army.get(army.army_id, {}).get("dropped_wagons")) else ""
             message = (
                 f"{opener}\n{outcome_text}!\n"
-                f"{casualties} warriors lost, {enemies_slain} enemies slain, {morale_text}{supply_text}{rout_text}"
+                f"{casualties} warriors lost, {enemies_slain} enemies slain, {morale_text}{supply_text}{rout_text}{wagon_text}"
             )
             _create_alert(
                 session,
