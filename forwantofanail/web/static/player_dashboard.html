@@ -828,6 +828,7 @@
       remainingRout: [],
       remainingSiegeTarget: "",
       validNextMoves: new Set(),
+      validNextMoveMeta: new Map(),
       validAttackTargets: new Map(),
       validBesiegeTargets: new Map(),
       alerts: [],
@@ -1081,6 +1082,7 @@
       if (!wasEnabled && nextEnabled && state.stagedPath.length > 0) {
         state.stagedPath = [];
         state.validNextMoves = new Set();
+        state.validNextMoveMeta = new Map();
         renderStagedPathList();
       } else if (wasEnabled && !nextEnabled) {
         refreshOrderTargets().catch(() => {});
@@ -2108,7 +2110,7 @@
       return Number(state.view?.time?.watch);
     }
 
-    function maxMarchSteps() {
+    function marchWatchBudget() {
       const watch = currentWatchIndex();
       if (!Number.isFinite(watch)) {
         return 0;
@@ -2117,6 +2119,54 @@
         return 4;
       }
       return Math.max(0, 5 - watch);
+    }
+
+    function maxMarchSteps() {
+      return marchWatchBudget();
+    }
+
+    function stagedStepH3(step) {
+      if (step && typeof step === "object") {
+        return String(step.h3 || "").trim();
+      }
+      return String(step || "").trim();
+    }
+
+    function stagedStepWatchesNeeded(step) {
+      if (step && typeof step === "object") {
+        return Math.max(1, Number(step.watchesNeeded || 1));
+      }
+      return 1;
+    }
+
+    function stagedMarchWatchCost() {
+      return state.stagedPath.reduce((total, step) => total + stagedStepWatchesNeeded(step), 0);
+    }
+
+    function occupiedMarchWatchesForStep(stepIndex) {
+      const occupiedWatchOrder = [1, 2, 3, 4];
+      let used = 0;
+      for (let i = 0; i < stepIndex; i += 1) {
+        used += stagedStepWatchesNeeded(state.stagedPath[i]);
+      }
+      const currentWatch = currentWatchIndex();
+      const startWatch = currentWatch === 0 ? 1 : currentWatch;
+      const startIdx = occupiedWatchOrder.indexOf(startWatch);
+      if (startIdx < 0) {
+        return [];
+      }
+      const watchesNeeded = stagedStepWatchesNeeded(state.stagedPath[stepIndex]);
+      return occupiedWatchOrder.slice(startIdx + used, startIdx + used + watchesNeeded);
+    }
+
+    function marchSpanLabelForStagedStep(stepIndex) {
+      const occupied = occupiedMarchWatchesForStep(stepIndex);
+      if (!occupied.length) {
+        return `Step ${stepIndex + 1}`;
+      }
+      const labels = occupied
+        .map((watchIndex) => WATCH_NAME_BY_INDEX[watchIndex] || `Step ${stepIndex + 1}`);
+      return labels.join("/");
     }
 
     function isNightWatch() {
@@ -2213,22 +2263,14 @@
         els.stagedPathList.innerHTML = "<li class=\"staged-empty\">No staged march cells.</li>";
         return;
       }
-      const currentWatch = Number(state.view?.time?.watch);
-      const startWatch = currentWatch === 0 ? 1 : currentWatch;
-      const watchLabelForStage = (idx) => {
-        const watchIndex = startWatch + idx;
-        if (!Number.isFinite(watchIndex) || watchIndex < 0 || watchIndex > 4) {
-          return `Step ${idx + 1}`;
-        }
-        return WATCH_NAME_BY_INDEX[watchIndex] || `Step ${idx + 1}`;
-      };
       const cellByH3 = new Map((state.view?.environs?.cells || []).map((cell) => [cell.h3, cell]));
-      const rows = state.stagedPath.map((h3Index, idx) => (
+      const rows = state.stagedPath.map((step, idx) => (
         (() => {
           const isLast = idx === state.stagedPath.length - 1;
+          const h3Index = stagedStepH3(step);
           const cell = cellByH3.get(h3Index);
           const title = String(cell?.cell_title || h3Index);
-          const watchLabel = watchLabelForStage(idx);
+          const watchLabel = marchSpanLabelForStagedStep(idx);
           const removeControl = isLast
             ? `<button class="staged-remove" data-stage-idx="${idx}" type="button">Remove</button>`
             : `<span></span>`;
@@ -2259,7 +2301,7 @@
     }
 
     function renderOrdersPanel() {
-      const maxSteps = maxMarchSteps();
+      const maxWatchBudget = marchWatchBudget();
       const isMarch = state.orderMode === "march";
       const isForage = state.orderMode === "forage";
       const isAttack = state.orderMode === "attack";
@@ -2289,8 +2331,8 @@
       if (besiegeOption) {
         besiegeOption.disabled = isRouting || besiegeBlockedByStronghold;
       }
-      if (state.stagedPath.length > maxSteps) {
-        state.stagedPath = state.stagedPath.slice(0, maxSteps);
+      while (stagedMarchWatchCost() > maxWatchBudget && state.stagedPath.length) {
+        state.stagedPath = state.stagedPath.slice(0, -1);
       }
       if (attackBlockedByStronghold && state.orderMode === "attack") {
         state.stagedAttack = null;
@@ -2300,6 +2342,7 @@
       }
       if (isAttack && state.stagedPath.length) {
         state.stagedPath = [];
+        state.validNextMoveMeta = new Map();
       }
       renderStagedPathList();
       updateStageMoveButtonVisibility(state.hoverH3);
@@ -2308,13 +2351,14 @@
 
     async function refreshValidNextMoves() {
       state.validNextMoves = new Set();
+      state.validNextMoveMeta = new Map();
       if (!state.token || !state.view || state.orderMode !== "march") {
         updateStageMoveButtonVisibility(state.hoverH3);
         updateHoveredMoveOutline(state.hoverH3);
         return;
       }
       const origin = state.stagedPath.length
-        ? state.stagedPath[state.stagedPath.length - 1]
+        ? stagedStepH3(state.stagedPath[state.stagedPath.length - 1])
         : state.view.environs.center_h3;
       if (!origin) {
         updateStageMoveButtonVisibility(state.hoverH3);
@@ -2324,6 +2368,20 @@
       const payload = await api(`/v1/me/actions/valid-next?origin_h3=${encodeURIComponent(origin)}`, {}, true);
       const valid = Array.isArray(payload.valid_destinations) ? payload.valid_destinations : [];
       state.validNextMoves = new Set(valid.map((value) => String(value)));
+      const destinations = Array.isArray(payload.destinations) ? payload.destinations : [];
+      if (destinations.length) {
+        for (const row of destinations) {
+          const h3Index = String(row?.h3 || "").trim();
+          if (!h3Index) continue;
+          state.validNextMoveMeta.set(h3Index, {
+            watchesNeeded: Math.max(1, Number(row?.watches_needed || 1)),
+          });
+        }
+      } else {
+        for (const h3Index of state.validNextMoves) {
+          state.validNextMoveMeta.set(h3Index, { watchesNeeded: 1 });
+        }
+      }
       updateStageMoveButtonVisibility(state.hoverH3);
       updateHoveredMoveOutline(state.hoverH3);
     }
@@ -2422,12 +2480,14 @@
       if (state.orderMode !== "march") {
         return { ok: false, reason: "Set orders to March to stage movement." };
       }
-      const maxSteps = maxMarchSteps();
-      if (maxSteps < 1) {
+      const budget = marchWatchBudget();
+      if (budget < 1) {
         return { ok: false, reason: "No march watches remain this day." };
       }
-      if (state.stagedPath.length >= maxSteps) {
-        return { ok: false, reason: `You can stage at most ${maxSteps} cells right now.` };
+      const candidateMeta = state.validNextMoveMeta.get(String(targetH3));
+      const candidateCost = Math.max(1, Number(candidateMeta?.watchesNeeded || 1));
+      if (stagedMarchWatchCost() + candidateCost > budget) {
+        return { ok: false, reason: "That move would exceed the remaining watch budget for this day." };
       }
       const visible = new Set((state.view?.environs?.cells || []).map((c) => c.h3));
       if (!visible.has(targetH3)) {
@@ -2436,10 +2496,10 @@
       if (!state.validNextMoves.has(targetH3)) {
         return { ok: false, reason: "Cell is not a valid move destination for this army." };
       }
-      if (state.stagedPath.includes(targetH3)) {
+      if (state.stagedPath.some((step) => stagedStepH3(step) === targetH3)) {
         return { ok: false, reason: "Cell is already staged." };
       }
-      const last = state.stagedPath.length ? state.stagedPath[state.stagedPath.length - 1] : state.view.environs.center_h3;
+      const last = state.stagedPath.length ? stagedStepH3(state.stagedPath[state.stagedPath.length - 1]) : state.view.environs.center_h3;
       if (!areNeighborCells(last, targetH3)) {
         return { ok: false, reason: "Each staged cell must be adjacent to the previous step." };
       }
@@ -2597,7 +2657,11 @@
         }
         return false;
       }
-      state.stagedPath.push(h3Index);
+      const candidateMeta = state.validNextMoveMeta.get(String(h3Index));
+      state.stagedPath.push({
+        h3: String(h3Index),
+        watchesNeeded: Math.max(1, Number(candidateMeta?.watchesNeeded || 1)),
+      });
       renderStagedPathList();
       await refreshOrderTargets();
       renderMap();
@@ -2997,7 +3061,7 @@
       const stagedSiegeH3 = state.orderMode === "besiege" && state.stagedSiege
         ? String(state.stagedSiege.target_h3 || "").trim()
         : "";
-      const stagedIndexByH3 = new Map(state.stagedPath.map((h3Index, idx) => [h3Index, idx + 1]));
+      const stagedIndexByH3 = new Map(state.stagedPath.map((step, idx) => [stagedStepH3(step), idx + 1]));
       if (stagedAttackH3) {
         stagedIndexByH3.set(stagedAttackH3, 1);
       }
@@ -3515,6 +3579,7 @@
         state.stagedAttack = null;
         state.stagedSiege = null;
         state.validNextMoves = new Set();
+        state.validNextMoveMeta = new Map();
         state.validAttackTargets = new Map();
         state.validBesiegeTargets = new Map();
         renderMap();
@@ -3522,12 +3587,14 @@
         state.stagedPath = [];
         state.stagedSiege = null;
         state.validNextMoves = new Set();
+        state.validNextMoveMeta = new Map();
         state.validBesiegeTargets = new Map();
         renderMap();
       } else if (state.orderMode === "besiege") {
         state.stagedPath = [];
         state.stagedAttack = null;
         state.validNextMoves = new Set();
+        state.validNextMoveMeta = new Map();
         state.validAttackTargets = new Map();
         renderMap();
       } else {
@@ -3564,6 +3631,7 @@
         state.remainingRout = [];
         state.remainingSiegeTarget = "";
         state.validNextMoves = new Set();
+        state.validNextMoveMeta = new Map();
         state.validAttackTargets = new Map();
         state.validBesiegeTargets = new Map();
         state.armyManagement = {
@@ -3607,10 +3675,11 @@
         state.stagedPath = [];
           state.stagedAttack = null;
           state.stagedSiege = null;
-          state.remainingItinerary = [];
-          state.remainingRout = [];
+        state.remainingItinerary = [];
+        state.remainingRout = [];
         state.remainingSiegeTarget = "";
         state.validNextMoves = new Set();
+        state.validNextMoveMeta = new Map();
         state.validAttackTargets = new Map();
         state.validBesiegeTargets = new Map();
         state.armyManagement = {
@@ -3739,6 +3808,7 @@
           state.stagedAttack = null;
           state.stagedSiege = null;
           state.validNextMoves = new Set();
+          state.validNextMoveMeta = new Map();
           state.validAttackTargets = new Map();
           state.validBesiegeTargets = new Map();
           renderMap();
@@ -3746,12 +3816,14 @@
           state.stagedPath = [];
           state.stagedSiege = null;
           state.validNextMoves = new Set();
+          state.validNextMoveMeta = new Map();
           state.validBesiegeTargets = new Map();
           renderMap();
         } else if (state.orderMode === "besiege") {
           state.stagedPath = [];
           state.stagedAttack = null;
           state.validNextMoves = new Set();
+          state.validNextMoveMeta = new Map();
           state.validAttackTargets = new Map();
           renderMap();
         } else {
@@ -3864,7 +3936,7 @@
           } else {
             const payload = state.orderMode === "forage"
               ? { kind: "forage", path: [] }
-              : { kind: "march", path: state.stagedPath.slice() };
+              : { kind: "march", path: state.stagedPath.map((step) => stagedStepH3(step)) };
             await api(
               "/v1/me/actions/plan",
               {
@@ -3884,6 +3956,7 @@
           state.stagedAttack = null;
           state.stagedSiege = null;
           state.validNextMoves = new Set();
+          state.validNextMoveMeta = new Map();
           state.validAttackTargets = new Map();
           state.validBesiegeTargets = new Map();
           renderOrdersPanel();
