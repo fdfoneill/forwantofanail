@@ -61,6 +61,18 @@ python -m forwantofanail.core.initialize_db --reset
 
 This reset also auto-generates one garrison army for every stronghold based on its type.
 
+Army-management suggestions live in:
+
+* [forwantofanail/data/army_management_templates.json](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/data/army_management_templates.json)
+
+That file is keyed by faction name and supports:
+
+* `commander_titles`: random title suggestions for `NEW ARMY`
+* `commander_names`: random unused commander-name suggestions
+* `army_names`: random unused army-name suggestions
+
+If all configured names in a field have already been used, the modal leaves that field blank.
+
 If you want to keep existing scenario/world rows and only ensure runtime tables exist:
 
 ```bash
