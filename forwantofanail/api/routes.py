@@ -1360,6 +1360,10 @@ def _remaining_march_steps_for_watch(watch: int) -> int:
     return max(0, 5 - int(watch))
 
 
+def _remaining_march_watch_budget_for_watch(watch: int) -> int:
+    return _remaining_march_steps_for_watch(watch)
+
+
 def _scenario_date_for_day(day: int) -> date:
     return SCENARIO_EPOCH + timedelta(days=max(day, 0))
 
@@ -4542,7 +4546,16 @@ def get_valid_next_destinations(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     filtered = [h3_index for h3_index in valid if not _is_enemy_occupied(session, destination_h3=h3_index, moving_army=army)]
-    return {"origin_h3": origin, "valid_destinations": sorted(filtered)}
+    destinations: list[dict[str, Any]] = []
+    for destination_h3 in sorted(filtered):
+        watches_needed = calculate_move_watches_from_origin(session, army.army_id, origin, destination_h3)
+        destinations.append(
+            {
+                "h3": destination_h3,
+                "watches_needed": watches_needed,
+            }
+        )
+    return {"origin_h3": origin, "valid_destinations": sorted(filtered), "destinations": destinations}
 
 
 @router.get("/me/actions/valid-attack")
@@ -4910,6 +4923,11 @@ def plan_actions(
     if active_siege is not None:
         _remove_siege_participant(session, siege=active_siege, army_id=army.army_id, clock=clock, reason="cancelled")
     path = [str(cell).strip() for cell in payload.path if str(cell).strip()]
+    if payload.kind == "march":
+        total_watch_cost = _path_watches_for_army(session, army, army.location_id, path)
+        available_budget = _remaining_march_watch_budget_for_watch(int(clock.watch))
+        if total_watch_cost > available_budget:
+            raise HTTPException(status_code=400, detail="March path exceeds remaining watch budget for this day.")
     created_actions, cancelled_count, cancelled_by_kind = _apply_plan(
         session,
         commander_id=commander_id,
