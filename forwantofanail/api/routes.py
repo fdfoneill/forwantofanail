@@ -1829,7 +1829,10 @@ def _execute_move_to_destination(session: Session, clock: GameClock, army: Army,
             still_adjacent = False
             if siege_stronghold is not None:
                 try:
-                    still_adjacent = siege_stronghold.location_id in set(h3.grid_ring(army.location_id, 1))
+                    still_adjacent = (
+                        army.location_id == siege_stronghold.location_id
+                        or siege_stronghold.location_id in set(h3.grid_ring(army.location_id, 1))
+                    )
                 except Exception:
                     still_adjacent = False
             if not still_adjacent:
@@ -2427,36 +2430,15 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
                     attacker=attacker,
                 ):
                     continue
-                if not _execute_move_to_destination(session, clock, attacker, stronghold.location_id):
-                    continue
-                siege_length = max(0, int(siege.matin_ticks_elapsed or 0))
-                loot_roll = random.randint(1, 6)
-                loot_scale = int(SIEGE_LOOT_SCALE_BY_TYPE.get(str(stronghold.stronghold_type or "").strip().lower(), 0))
-                looted_supply = max(0, int((loot_roll - siege_length) * loot_scale))
-                attacker.army_supply = int(attacker.army_supply or 0) + looted_supply
-                attacker.army_morale = _clamp_morale(int(attacker.army_morale or 0) + 2)
-                nc_gain = float(SIEGE_NONCOMBATANT_GAIN_BY_TYPE.get(str(stronghold.stronghold_type or "").strip().lower(), 0.0))
-                attacker.noncombattant_percent = max(0.0, float(attacker.noncombattant_percent or 0.0) + nc_gain)
-                _create_alert(
+                if not _finalize_siege_capture(
                     session,
-                    recipient_commander_id=attacker.commander_id,
-                    alert_type="action",
-                    signal_kind="event",
-                    category="siege",
-                    importance="normal",
-                    message=(
-                        f"{stronghold.stronghold_name} looted: {looted_supply} supply taken, "
-                        f"{int(round(nc_gain * 100))}% more noncombatants gained, morale increased."
-                    ),
-                    created_day=clock.day,
-                    created_watch=clock.watch,
-                    payload={
-                        "stronghold_id": _stronghold_ref(stronghold.stronghold_id),
-                        "looted_supply": looted_supply,
-                        "noncombatant_percent_gain": nc_gain,
-                    },
-                )
-                _end_siege(session, siege=siege, clock=clock, reason="captured", emit_lift_alert=False)
+                    clock=clock,
+                    siege=siege,
+                    stronghold=stronghold,
+                    attacker=attacker,
+                    apply_loot=True,
+                ):
+                    continue
             else:
                 besiege_action = Action(
                     commander_id=action.commander_id,
@@ -2582,19 +2564,20 @@ def _occupy_abandoned_sieged_stronghold(session: Session, *, clock: GameClock, s
     defenders = _defender_armies_in_stronghold(session, stronghold, besieger.army_faction)
     if defenders:
         return False
-    if besieger.location_id == stronghold.location_id:
-        _end_siege(session, siege=siege, clock=clock, reason="captured", emit_lift_alert=False)
-        return True
     try:
-        adjacent = stronghold.location_id in set(h3.grid_ring(besieger.location_id, 1))
+        adjacent = besieger.location_id == stronghold.location_id or stronghold.location_id in set(h3.grid_ring(besieger.location_id, 1))
     except Exception:
         adjacent = False
     if not adjacent:
         return False
-    if not _execute_move_to_destination(session, clock, besieger, stronghold.location_id):
-        return False
-    _end_siege(session, siege=siege, clock=clock, reason="captured", emit_lift_alert=False)
-    return True
+    return _finalize_siege_capture(
+        session,
+        clock=clock,
+        siege=siege,
+        stronghold=stronghold,
+        attacker=besieger,
+        apply_loot=False,
+    )
 
 
 def _occupy_all_abandoned_sieged_strongholds(session: Session, *, clock: GameClock) -> None:
@@ -2632,6 +2615,78 @@ def _clear_remaining_defenders_for_capture(
     blockers = _defender_armies_in_stronghold(session, stronghold, attacker.army_faction)
     blockers = [army for army in blockers if army.army_faction != attacker.army_faction]
     return not blockers
+
+
+def _finalize_siege_capture(
+    session: Session,
+    *,
+    clock: GameClock,
+    siege: Siege,
+    stronghold: Stronghold,
+    attacker: Army,
+    apply_loot: bool,
+) -> bool:
+    blockers = _defender_armies_in_stronghold(session, stronghold, attacker.army_faction)
+    blockers = [army for army in blockers if army.army_faction != attacker.army_faction]
+    if blockers:
+        return False
+
+    destination_location = session.get(Location, stronghold.location_id)
+    if destination_location is None:
+        return False
+
+    if attacker.location_id != stronghold.location_id:
+        attacker.location = destination_location
+        attacker.location_id = stronghold.location_id
+        session.add(
+            Movement(
+                army_id=attacker.army_id,
+                location_id=stronghold.location_id,
+                date=_scenario_date_for_day(clock.day),
+                watch=clock.watch,
+            )
+        )
+
+    if stronghold.control != attacker.army_faction:
+        _set_stronghold_control(session, stronghold=stronghold, new_faction=attacker.army_faction, clock=clock)
+    else:
+        garrison = _garrison_for_stronghold(session, stronghold)
+        if garrison is not None:
+            garrison.army_faction = attacker.army_faction
+            garrison.location_id = stronghold.location_id
+            garrison.location = stronghold.location
+
+    if apply_loot:
+        siege_length = max(0, int(siege.matin_ticks_elapsed or 0))
+        loot_roll = random.randint(1, 6)
+        loot_scale = int(SIEGE_LOOT_SCALE_BY_TYPE.get(str(stronghold.stronghold_type or "").strip().lower(), 0))
+        looted_supply = max(0, int((loot_roll - siege_length) * loot_scale))
+        attacker.army_supply = int(attacker.army_supply or 0) + looted_supply
+        attacker.army_morale = _clamp_morale(int(attacker.army_morale or 0) + 2)
+        nc_gain = float(SIEGE_NONCOMBATANT_GAIN_BY_TYPE.get(str(stronghold.stronghold_type or "").strip().lower(), 0.0))
+        attacker.noncombattant_percent = max(0.0, float(attacker.noncombattant_percent or 0.0) + nc_gain)
+        _create_alert(
+            session,
+            recipient_commander_id=attacker.commander_id,
+            alert_type="action",
+            signal_kind="event",
+            category="siege",
+            importance="normal",
+            message=(
+                f"{stronghold.stronghold_name} looted: {looted_supply} supply taken, "
+                f"{int(round(nc_gain * 100))}% more noncombatants gained, morale increased."
+            ),
+            created_day=clock.day,
+            created_watch=clock.watch,
+            payload={
+                "stronghold_id": _stronghold_ref(stronghold.stronghold_id),
+                "looted_supply": looted_supply,
+                "noncombatant_percent_gain": nc_gain,
+            },
+        )
+
+    _end_siege(session, siege=siege, clock=clock, reason="captured", emit_lift_alert=False)
+    return True
 
 
 def _start_action_now_if_valid(session: Session, action: Action, army: Army, clock: GameClock) -> bool:
