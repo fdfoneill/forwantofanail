@@ -908,6 +908,17 @@ def _active_siege_participant_for_army(session: Session, army_id: int) -> SiegeP
     )
 
 
+def _siege_participant_for_army(session: Session, siege_id: int, army_id: int) -> SiegeParticipant | None:
+    return (
+        session.query(SiegeParticipant)
+        .filter(
+            SiegeParticipant.siege_id == siege_id,
+            SiegeParticipant.besieger_army_id == army_id,
+        )
+        .first()
+    )
+
+
 def _active_siege_for_besieger(session: Session, army_id: int) -> Siege | None:
     participant = _active_siege_participant_for_army(session, army_id)
     if participant is None:
@@ -1004,6 +1015,80 @@ def _emit_siege_lifted_alerts(session: Session, *, stronghold: Stronghold, clock
     )
 
 
+def _active_sieged_stronghold_ids(session: Session) -> set[int]:
+    return {
+        int(siege.stronghold_id)
+        for siege in session.query(Siege).filter(Siege.state == "active").all()
+    }
+
+
+def _watch_boundary_rank(day: int, watch: int) -> tuple[int, int]:
+    watch_rank = {
+        int(Watch.MATIN): 0,
+        int(Watch.PRIME): 1,
+        int(Watch.NOON): 2,
+        int(Watch.VESPER): 3,
+        int(Watch.NIGHT): 4,
+    }
+    return (int(day), watch_rank.get(int(watch), int(watch)))
+
+
+def _stronghold_ids_sieged_at_watch_start(session: Session, day: int, watch: int) -> set[int]:
+    boundary = _watch_boundary_rank(day, watch)
+    stronghold_ids: set[int] = set()
+    sieges = session.query(Siege).all()
+    for siege in sieges:
+        started = _watch_boundary_rank(int(siege.started_day or 0), int(siege.started_watch or 0))
+        if started >= boundary:
+            continue
+        if siege.ended_day is not None and siege.ended_watch is not None:
+            ended = _watch_boundary_rank(int(siege.ended_day), int(siege.ended_watch))
+            if ended < boundary:
+                continue
+        stronghold_ids.add(int(siege.stronghold_id))
+    return stronghold_ids
+
+
+def _captured_sieged_stronghold_ids_for_watch(session: Session, clock: GameClock) -> set[int]:
+    return {
+        int(siege.stronghold_id)
+        for siege in session.query(Siege)
+        .filter(
+            Siege.ended_day == clock.day,
+            Siege.ended_watch == clock.watch,
+            Siege.ended_reason == "captured",
+        )
+        .all()
+    }
+
+
+def _emit_siege_transition_alerts(
+    session: Session,
+    *,
+    start_stronghold_ids: set[int],
+    clock: GameClock,
+) -> None:
+    end_stronghold_ids = _active_sieged_stronghold_ids(session)
+    captured_stronghold_ids = _captured_sieged_stronghold_ids_for_watch(session, clock)
+
+    started_ids = sorted(end_stronghold_ids - start_stronghold_ids)
+    lifted_ids = sorted((start_stronghold_ids - end_stronghold_ids) - captured_stronghold_ids)
+
+    for stronghold_id in started_ids:
+        stronghold = session.get(Stronghold, stronghold_id)
+        siege = _active_siege_for_stronghold(session, stronghold_id)
+        faction = _active_siege_faction(session, siege)
+        if stronghold is None or not faction:
+            continue
+        _emit_siege_start_alerts(session, stronghold=stronghold, faction=faction, clock=clock)
+
+    for stronghold_id in lifted_ids:
+        stronghold = session.get(Stronghold, stronghold_id)
+        if stronghold is None:
+            continue
+        _emit_siege_lifted_alerts(session, stronghold=stronghold, clock=clock)
+
+
 def _emit_gates_open_alerts(
     session: Session,
     *,
@@ -1069,7 +1154,6 @@ def _end_siege(
     siege.ended_day = clock.day
     siege.ended_watch = clock.watch
     siege.ended_reason = reason
-    stronghold = session.get(Stronghold, siege.stronghold_id)
     participants = _active_siege_participants_for_siege(session, siege)
     participant_commander_ids = {participant.besieger_commander_id for participant in participants if participant.besieger_commander_id is not None}
     for participant in participants:
@@ -1089,8 +1173,7 @@ def _end_siege(
         )
         for action in besiege_actions:
             action.state = "completed" if reason == "captured" else "cancelled"
-    if emit_lift_alert and stronghold is not None and reason != "captured":
-        _emit_siege_lifted_alerts(session, stronghold=stronghold, clock=clock)
+    _ = emit_lift_alert
 
 
 def _start_siege(
@@ -1121,7 +1204,7 @@ def _start_siege(
         session.add(siege)
         session.flush()
         created_new_siege = True
-    existing_participant = _active_siege_participant_for_army(session, army.army_id)
+    existing_participant = _siege_participant_for_army(session, siege.siege_id, army.army_id)
     if existing_participant is None:
         session.add(
             SiegeParticipant(
@@ -1133,14 +1216,20 @@ def _start_siege(
                 state="active",
             )
         )
+    else:
+        existing_participant.besieger_commander_id = commander_id
+        existing_participant.started_day = clock.day
+        existing_participant.started_watch = clock.watch
+        existing_participant.state = "active"
+        existing_participant.ended_day = None
+        existing_participant.ended_watch = None
+        existing_participant.ended_reason = None
     _sync_siege_lead_participant(session, siege)
     action.state = "in_progress"
     action.started_day = clock.day
     action.started_watch = clock.watch
     action.eta_day = None
     action.eta_watch = None
-    if created_new_siege:
-        _emit_siege_start_alerts(session, stronghold=stronghold, faction=army.army_faction, clock=clock)
     return siege
 
 
@@ -1182,6 +1271,7 @@ def _remove_siege_participant(
         )
         for action in actions:
             action.state = "completed" if reason == "captured" else "cancelled"
+    session.flush()
     remaining = _active_siege_participants_for_siege(session, siege)
     if not remaining:
         _end_siege(session, siege=siege, clock=clock, reason=reason)
@@ -4231,6 +4321,7 @@ def advance_time_for_development(
     actions_failed = 0
 
     for _ in range(payload.steps):
+        siege_state_at_watch_start = _stronghold_ids_sieged_at_watch_start(session, clock.day, clock.watch)
         clock.day, clock.watch = _advance_day_watch(clock.day, clock.watch, 1)
         message_result = _process_messages_tick(session, clock)
         tick_result = {"started": 0, "completed": 0, "failed": 0}
@@ -4241,6 +4332,11 @@ def advance_time_for_development(
             actions_started += tick_result["started"]
             actions_completed += tick_result["completed"]
             actions_failed += tick_result["failed"]
+        _emit_siege_transition_alerts(
+            session,
+            start_stronghold_ids=siege_state_at_watch_start,
+            clock=clock,
+        )
         supply_result = None
         if clock.watch == int(Watch.NIGHT):
             # Night supply checks run after action resolution so completed forage can replenish first.
