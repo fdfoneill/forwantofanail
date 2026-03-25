@@ -4183,11 +4183,8 @@ def _validate_and_apply_management_transaction(
     if right_existing is not None and not right_existing.is_garrison:
         left_army.army_supply = left_supply
         right_existing.army_supply = right_supply
-        _clamp_army_supply_to_capacity(left_army)
-        _clamp_army_supply_to_capacity(right_existing)
     else:
         left_army.army_supply = left_supply
-        _clamp_army_supply_to_capacity(left_army)
 
     if create_new_commander:
         left_army.commander_id = left_commander_after_id
@@ -4204,6 +4201,12 @@ def _validate_and_apply_management_transaction(
             det = detachment_by_id[det_id]
             det.army_id = right_existing.army_id
             det.army = right_existing
+
+    if right_existing is not None and not right_existing.is_garrison:
+        _clamp_army_supply_to_capacity(left_army)
+        _clamp_army_supply_to_capacity(right_existing)
+    else:
+        _clamp_army_supply_to_capacity(left_army)
 
     alert_pairs: list[tuple[int | None, str]] = []
     refreshed_left_commander_id = left_army.commander_id
