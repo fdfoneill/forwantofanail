@@ -3650,11 +3650,13 @@ def _validate_and_apply_management_transaction(
 
     if right_mode == "existing" and right_existing is not None:
         if right_existing.is_garrison:
+            left_supply = int(payload.left_army.supply_current or 0)
+            right_supply = int(right_existing.army_supply or 0)
             if right_army_payload is not None and right_army_payload.commander_id not in {None, ""}:
                 raise _army_management_error("Cannot assign a commander to a garrison.")
             if right_army_payload is not None and right_army_payload.supply_current not in {None, int(right_existing.army_supply or 0), ""}:
                 raise _army_management_error("Supply cannot be transferred to or from a garrison.")
-            if int(payload.left_army.supply_current or 0) != int(left_army.army_supply or 0):
+            if left_supply != int(left_army.army_supply or 0):
                 raise _army_management_error("Supply cannot be transferred to or from a garrison.")
         else:
             original_supply_sum = int(left_army.army_supply or 0) + int(right_existing.army_supply or 0)

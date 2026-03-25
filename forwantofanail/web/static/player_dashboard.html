@@ -1916,6 +1916,21 @@
         state.armyManagement.error = "";
         renderArmyManagementModal();
         const payload = buildArmyManagementPayload();
+        const draft = state.armyManagement.draft;
+        if (draft && draft.rightTarget.mode === "existing" && draft.right?.is_garrison) {
+          const leftStats = managementArmySupplyStats(draft.left);
+          const currentSupply = Math.max(0, Number(draft.left.supply_current || 0) || 0);
+          if (currentSupply > leftStats.capacity) {
+            const lostSupply = currentSupply - leftStats.capacity;
+            const confirmed = window.confirm(`${lostSupply.toLocaleString()} supply will be lost, continue?`);
+            if (!confirmed) {
+              return;
+            }
+            draft.left.supply_current = leftStats.capacity;
+            payload.left_army.supply_current = leftStats.capacity;
+            renderArmyManagementModal();
+          }
+        }
         await api(
           "/v1/me/army-management/apply",
           {
