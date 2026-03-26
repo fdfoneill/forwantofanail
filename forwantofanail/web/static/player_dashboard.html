@@ -1098,11 +1098,14 @@
     function renderStandingOrderToggle() {
       const followEnabled = !!state.followRoadEnabled;
       const forcedEnabled = !!state.forcedMarchEnabled;
+      const nightWatch = currentWatchIndex() === 0;
       els.followRoadToggleInput.checked = followEnabled;
       els.followRoadToggleInput.disabled = !state.token;
       els.forcedMarchToggleInput.checked = forcedEnabled;
-      els.forcedMarchToggleInput.disabled = !state.token || forcedEnabled;
-      els.forcedMarchNote.textContent = forcedEnabled ? "Clears automatically at Night" : "";
+      els.forcedMarchToggleInput.disabled = !state.token || forcedEnabled || nightWatch;
+      els.forcedMarchNote.textContent = forcedEnabled
+        ? "Clears automatically at Night"
+        : (nightWatch ? "Can only be enabled outside Night" : "");
     }
 
     function processStandingOrderState(view) {
