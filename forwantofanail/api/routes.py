@@ -1335,6 +1335,22 @@ def _advance_active_watches(day: int, watch: int, steps: int) -> tuple[int, int]
     return current_day, current_watch
 
 
+def _army_column_length(army: Army) -> float:
+    infantry = _infantry_count(army)
+    cavalry = _cavalry_count(army)
+    wagons = sum(int(det.wagon_count or 0) for det in army.detachments)
+    noncombatants = noncombatant_count(army)
+    return 0.5 * (
+        ((infantry + noncombatants) / 7500.0)
+        + (cavalry / 3000.0)
+        + (wagons / 75.0)
+    )
+
+
+def _army_has_long_column(army: Army) -> bool:
+    return _army_column_length(army) > 2.0
+
+
 def _watch_is_at_or_after(day: int, watch: int, other_day: int, other_watch: int) -> bool:
     # Timeline ordering within a day is 1,2,3,4,0 (night comes last).
     watch_rank = {
@@ -1350,18 +1366,39 @@ def _watch_is_at_or_after(day: int, watch: int, other_day: int, other_watch: int
     )
 
 
-def _remaining_march_steps_for_watch(watch: int) -> int:
+def _remaining_march_steps_for_watch(watch: int, army: Army | None = None) -> int:
     # March actions can complete at night but not in the same watch they are set.
     # Thus:
     # watch 1 -> 4 possible completions (2,3,4,0), watch 2 -> 3, watch 3 -> 2, watch 4 -> 1.
     # Night submissions are allowed only for full 4-step march plans.
+    if army is not None and _army_has_long_column(army):
+        if watch <= int(Watch.PRIME):
+            return 2
+        if watch == int(Watch.NOON):
+            return 1
+        return 0
     if watch <= int(Watch.MATIN):
         return 4
     return max(0, 5 - int(watch))
 
 
-def _remaining_march_watch_budget_for_watch(watch: int) -> int:
-    return _remaining_march_steps_for_watch(watch)
+def _remaining_march_watch_budget_for_watch(watch: int, army: Army | None = None) -> int:
+    return _remaining_march_steps_for_watch(watch, army)
+
+
+def _long_column_start_blocked(army: Army, watch: int) -> bool:
+    return _army_has_long_column(army) and watch in {
+        int(Watch.NIGHT),
+        int(Watch.MATIN),
+        int(Watch.VESPER),
+    }
+
+
+def _long_column_completion_blocked(army: Army, watch: int) -> bool:
+    return _army_has_long_column(army) and watch in {
+        int(Watch.NIGHT),
+        int(Watch.MATIN),
+    }
 
 
 def _scenario_date_for_day(day: int) -> date:
@@ -1543,11 +1580,18 @@ def _apply_plan(
         created_actions.append(action)
     elif kind == "march":
         if path:
-            max_steps = _remaining_march_steps_for_watch(int(clock.watch))
+            max_steps = _remaining_march_steps_for_watch(int(clock.watch), army)
             if len(path) > max_steps:
                 raise HTTPException(
                     status_code=400,
                     detail=f"March path too long for current watch: max {max_steps} cells, got {len(path)}",
+                )
+            total_watch_cost = _path_watches_for_army(session, army, army.location_id, path)
+            max_budget = _remaining_march_watch_budget_for_watch(int(clock.watch), army)
+            if total_watch_cost > max_budget:
+                raise HTTPException(
+                    status_code=400,
+                    detail="March path exceeds remaining watch budget for this day.",
                 )
             for destination_h3 in path:
                 if session.get(Location, destination_h3) is None:
@@ -1658,8 +1702,15 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
             continue
 
         move_actions = [action for action in active_actions if action.kind == "move"]
-        max_steps = _remaining_march_steps_for_watch(int(clock.watch))
-        if len(move_actions) >= max_steps:
+        max_budget = _remaining_march_watch_budget_for_watch(int(clock.watch), army)
+        queued_path = [
+            destination_h3
+            for action in move_actions
+            for destination_h3 in [_get_destination_h3(action)]
+            if destination_h3
+        ]
+        current_watch_cost = _path_watches_for_army(session, army, army.location_id, queued_path)
+        if current_watch_cost >= max_budget:
             continue
 
         previous_h3 = _latest_previous_location_for_army(session, army)
@@ -1681,7 +1732,8 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
         extension_path: list[str] = []
         stop_reason: str | None = None
         stop_reason_code: str | None = None
-        while len(move_actions) + len(extension_path) < max_steps:
+        extension_watch_cost = 0
+        while current_watch_cost + extension_watch_cost < max_budget:
             next_h3, reason_code, reason = _next_road_cell(
                 session,
                 army,
@@ -1692,7 +1744,11 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
                 stop_reason_code = reason_code
                 stop_reason = reason or "Road march halted: unable to continue."
                 break
+            step_cost = calculate_move_watches_from_origin(session, army.army_id, current_h3, next_h3)
+            if current_watch_cost + extension_watch_cost + step_cost > max_budget:
+                break
             extension_path.append(next_h3)
+            extension_watch_cost += step_cost
             last_h3, current_h3 = current_h3, next_h3
 
         if not extension_path:
@@ -2969,7 +3025,7 @@ def _finalize_siege_capture(
 
 def _start_action_now_if_valid(session: Session, action: Action, army: Army, clock: GameClock) -> bool:
     if action.kind == "move":
-        if clock.watch == int(Watch.NIGHT):
+        if clock.watch == int(Watch.NIGHT) or _long_column_start_blocked(army, int(clock.watch)):
             # Movement does not start at night.
             return False
         destination_h3 = _get_destination_h3(action)
@@ -2988,6 +3044,10 @@ def _start_action_now_if_valid(session: Session, action: Action, army: Army, clo
         except ValueError:
             action.state = "failed"
             return False
+        if _army_has_long_column(army):
+            remaining_budget = _remaining_march_watch_budget_for_watch(int(clock.watch), army)
+            if watches_needed > remaining_budget:
+                return False
         action.started_day = clock.day
         action.started_watch = clock.watch
         action.state = "in_progress"
@@ -2998,6 +3058,18 @@ def _start_action_now_if_valid(session: Session, action: Action, army: Army, clo
         if clock.watch == int(Watch.NIGHT):
             # Night submissions remain queued until at least Matin.
             return False
+        if _army_has_long_column(army):
+            if int(clock.watch) not in {int(Watch.PRIME), int(Watch.NOON)}:
+                return False
+            action.started_day = clock.day
+            action.started_watch = clock.watch
+            action.state = "in_progress"
+            action.eta_day, action.eta_watch = _advance_day_watch(
+                clock.day,
+                clock.watch,
+                2 if int(clock.watch) == int(Watch.PRIME) else 1,
+            )
+            return True
         # If execution skipped over Matin for any reason, start forage as-if at Matin.
         effective_start_watch = int(Watch.MATIN)
         action.started_day = clock.day
@@ -3008,7 +3080,7 @@ def _start_action_now_if_valid(session: Session, action: Action, army: Army, clo
         return True
 
     if action.kind == "attack":
-        if clock.watch == int(Watch.NIGHT):
+        if clock.watch == int(Watch.NIGHT) or _long_column_start_blocked(army, int(clock.watch)):
             return False
         if _army_is_in_stronghold(session, army):
             action.state = "failed"
@@ -3029,6 +3101,8 @@ def _start_action_now_if_valid(session: Session, action: Action, army: Army, clo
         return True
 
     if action.kind == "besiege":
+        if _long_column_start_blocked(army, int(clock.watch)):
+            return False
         try:
             payload = json.loads(action.parameters_json or "{}")
         except json.JSONDecodeError:
@@ -3172,6 +3246,8 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
             failed += 1
             continue
         if action.kind == "besiege":
+            continue
+        if _long_column_completion_blocked(army, int(clock.watch)):
             continue
         if action.eta_day is None or action.eta_watch is None:
             action.state = "failed"
@@ -3326,7 +3402,7 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
         for action in queued:
             if not _start_action_now_if_valid(session, action, army, clock):
                 if action.state == "queued":
-                    # Night: leave queued; do not advance to next queued action.
+                    # Watch-restricted starts leave the action queued; do not advance to next queued action.
                     break
                 failed += 1
                 continue
@@ -3389,11 +3465,7 @@ def _serialize_army(army: Army) -> dict[str, Any]:
     infantry = sum(int(det.warrior_count or 0) for det in army.detachments if not det.is_cavalry)
     cavalry = sum(int(det.warrior_count or 0) for det in army.detachments if det.is_cavalry)
     wagons = sum(int(det.wagon_count or 0) for det in army.detachments)
-    column_length = 0.5 * (
-        ((infantry + noncombatants) / 7500.0)
-        + (cavalry / 3000.0)
-        + (wagons / 75.0)
-    )
+    column_length = _army_column_length(army)
     current_morale = _clamp_morale(army.army_morale)
     resting_morale = _clamp_morale(army.army_resting_morale, default=current_morale)
 
@@ -4852,15 +4924,12 @@ def create_action(
 
     # Immediate start: if commander has no in-progress action, this action becomes active now.
     if payload.kind == "forage":
-        if not _start_action_now_if_valid(session, action, army, clock) and clock.watch != int(Watch.NIGHT):
-            action.state = "failed"
+        _start_action_now_if_valid(session, action, army, clock)
     elif payload.kind == "attack":
-        if not _start_action_now_if_valid(session, action, army, clock) and clock.watch != int(Watch.NIGHT):
-            action.state = "failed"
+        _start_action_now_if_valid(session, action, army, clock)
     elif payload.kind == "besiege":
-        if not _start_action_now_if_valid(session, action, army, clock):
-            action.state = "failed"
-        elif action.state == "in_progress":
+        _start_action_now_if_valid(session, action, army, clock)
+        if action.state == "in_progress":
             stronghold = session.get(Stronghold, int(action_params["target_stronghold_id"]))
             if stronghold is not None:
                 _start_siege(session, army=army, commander_id=commander_id, stronghold=stronghold, clock=clock, action=action)
@@ -4937,7 +5006,7 @@ def plan_actions(
     path = [str(cell).strip() for cell in payload.path if str(cell).strip()]
     if payload.kind == "march":
         total_watch_cost = _path_watches_for_army(session, army, army.location_id, path)
-        available_budget = _remaining_march_watch_budget_for_watch(int(clock.watch))
+        available_budget = _remaining_march_watch_budget_for_watch(int(clock.watch), army)
         if total_watch_cost > available_budget:
             raise HTTPException(status_code=400, detail="March path exceeds remaining watch budget for this day.")
     created_actions, cancelled_count, cancelled_by_kind = _apply_plan(

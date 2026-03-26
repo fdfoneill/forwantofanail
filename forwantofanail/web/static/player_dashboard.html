@@ -1180,6 +1180,10 @@
         return "Fleeing";
       }
       const watch = Number(view?.time?.watch);
+      const longColumn = Number(view?.army?.column_length) > 2;
+      if (longColumn && (watch === 0 || watch === 1 || watch === 4)) {
+        return "Encamped";
+      }
       if (watch === 0) {
         return "Encamped";
       }
@@ -2115,9 +2119,22 @@
       return Number(state.view?.time?.watch);
     }
 
+    function hasLongColumn() {
+      return Number(state.view?.army?.column_length) > 2;
+    }
+
     function marchWatchBudget() {
       const watch = currentWatchIndex();
       if (!Number.isFinite(watch)) {
+        return 0;
+      }
+      if (hasLongColumn()) {
+        if (watch <= 2) {
+          return 2;
+        }
+        if (watch === 3) {
+          return 1;
+        }
         return 0;
       }
       if (watch <= 1) {
@@ -2149,13 +2166,24 @@
     }
 
     function occupiedMarchWatchesForStep(stepIndex) {
-      const occupiedWatchOrder = [1, 2, 3, 4];
+      const occupiedWatchOrder = hasLongColumn() ? [2, 3] : [1, 2, 3, 4];
       let used = 0;
       for (let i = 0; i < stepIndex; i += 1) {
         used += stagedStepWatchesNeeded(state.stagedPath[i]);
       }
       const currentWatch = currentWatchIndex();
-      const startWatch = currentWatch === 0 ? 1 : currentWatch;
+      let startWatch;
+      if (hasLongColumn()) {
+        if (currentWatch <= 2) {
+          startWatch = 2;
+        } else if (currentWatch === 3) {
+          startWatch = 3;
+        } else {
+          startWatch = -1;
+        }
+      } else {
+        startWatch = currentWatch === 0 ? 1 : currentWatch;
+      }
       const startIdx = occupiedWatchOrder.indexOf(startWatch);
       if (startIdx < 0) {
         return [];
