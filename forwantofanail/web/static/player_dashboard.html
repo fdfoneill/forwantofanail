@@ -184,6 +184,15 @@
       font-size: 13px;
       color: var(--ink);
     }
+    .standing-order-block {
+      display: grid;
+      gap: 4px;
+    }
+    .standing-order-note {
+      font-size: 12px;
+      color: var(--muted);
+      padding-left: 2px;
+    }
     .switch {
       position: relative;
       display: inline-block;
@@ -762,12 +771,22 @@
       </button>
 
       <div class="orders-tools army-status-panel" id="ordersPanel" hidden>
-        <div class="standing-order">
-          <span>Standing Order: Follow Road</span>
-          <label class="switch" for="followRoadToggleInput">
-            <input id="followRoadToggleInput" type="checkbox" />
-            <span class="switch-slider"></span>
-          </label>
+        <div class="standing-order-block">
+          <div class="standing-order">
+            <span>Standing Order: Follow Road</span>
+            <label class="switch" for="followRoadToggleInput">
+              <input id="followRoadToggleInput" type="checkbox" />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+          <div class="standing-order">
+            <span>Standing Order: Forced March</span>
+            <label class="switch" for="forcedMarchToggleInput">
+              <input id="forcedMarchToggleInput" type="checkbox" />
+              <span class="switch-slider"></span>
+            </label>
+          </div>
+          <div id="forcedMarchNote" class="standing-order-note"></div>
         </div>
         <select id="orderModeSelect">
           <option value="march">March</option>
@@ -837,6 +856,7 @@
       validBesiegeTargets: new Map(),
       alerts: [],
       followRoadEnabled: false,
+      forcedMarchEnabled: false,
       armyPanelExpanded: false,
       supplyPanelExpanded: false,
       ordersPanelExpanded: false,
@@ -935,6 +955,8 @@
       supplyCapacityText: document.getElementById("supplyCapacityText"),
       supplyDailyText: document.getElementById("supplyDailyText"),
       followRoadToggleInput: document.getElementById("followRoadToggleInput"),
+      forcedMarchToggleInput: document.getElementById("forcedMarchToggleInput"),
+      forcedMarchNote: document.getElementById("forcedMarchNote"),
       orderModeSelect: document.getElementById("orderModeSelect"),
       submitOrdersBtn: document.getElementById("submitOrdersBtn"),
       stagedPathList: document.getElementById("stagedPathList"),
@@ -1074,22 +1096,30 @@
     }
 
     function renderStandingOrderToggle() {
-      const enabled = !!state.followRoadEnabled;
-      els.followRoadToggleInput.checked = enabled;
+      const followEnabled = !!state.followRoadEnabled;
+      const forcedEnabled = !!state.forcedMarchEnabled;
+      els.followRoadToggleInput.checked = followEnabled;
       els.followRoadToggleInput.disabled = !state.token;
+      els.forcedMarchToggleInput.checked = forcedEnabled;
+      els.forcedMarchToggleInput.disabled = !state.token || forcedEnabled;
+      els.forcedMarchNote.textContent = forcedEnabled ? "Clears automatically at Night" : "";
     }
 
     function processStandingOrderState(view) {
       const followRoad = view?.standing_orders?.follow_road || {};
+      const forcedMarch = view?.standing_orders?.forced_march || {};
       const nextEnabled = !!followRoad.enabled;
       const wasEnabled = !!state.followRoadEnabled;
+      const nextForcedEnabled = !!forcedMarch.enabled;
+      const wasForcedEnabled = !!state.forcedMarchEnabled;
       state.followRoadEnabled = nextEnabled;
+      state.forcedMarchEnabled = nextForcedEnabled;
       if (!wasEnabled && nextEnabled && state.stagedPath.length > 0) {
         state.stagedPath = [];
         state.validNextMoves = new Set();
         state.validNextMoveMeta = new Map();
         renderStagedPathList();
-      } else if (wasEnabled && !nextEnabled) {
+      } else if ((wasEnabled && !nextEnabled) || (wasForcedEnabled !== nextForcedEnabled)) {
         refreshOrderTargets().catch(() => {});
       }
       renderStandingOrderToggle();
@@ -2123,24 +2153,31 @@
       return Number(state.view?.army?.column_length) > 2;
     }
 
-    function marchWatchBudget() {
+    function hasForcedMarch() {
+      return !!state.forcedMarchEnabled;
+    }
+
+    function movementStartSlotSequence() {
+      const longColumn = hasLongColumn();
+      const forcedMarch = hasForcedMarch();
       const watch = currentWatchIndex();
       if (!Number.isFinite(watch)) {
-        return 0;
+        return [];
       }
-      if (hasLongColumn()) {
-        if (watch <= 2) {
-          return 2;
-        }
-        if (watch === 3) {
-          return 1;
-        }
-        return 0;
+      let template;
+      if (longColumn) {
+        template = forcedMarch ? [2, 2, 3, 3] : [2, 3];
+      } else {
+        template = forcedMarch ? [1, 2, 2, 3, 3, 4] : [1, 2, 3, 4];
       }
-      if (watch <= 1) {
-        return 4;
+      if (watch === 0) {
+        return template.slice();
       }
-      return Math.max(0, 5 - watch);
+      return template.filter((slot) => slot >= watch);
+    }
+
+    function marchWatchBudget() {
+      return movementStartSlotSequence().length;
     }
 
     function maxMarchSteps() {
@@ -2166,30 +2203,13 @@
     }
 
     function occupiedMarchWatchesForStep(stepIndex) {
-      const occupiedWatchOrder = hasLongColumn() ? [2, 3] : [1, 2, 3, 4];
+      const occupiedWatchOrder = movementStartSlotSequence();
       let used = 0;
       for (let i = 0; i < stepIndex; i += 1) {
         used += stagedStepWatchesNeeded(state.stagedPath[i]);
       }
-      const currentWatch = currentWatchIndex();
-      let startWatch;
-      if (hasLongColumn()) {
-        if (currentWatch <= 2) {
-          startWatch = 2;
-        } else if (currentWatch === 3) {
-          startWatch = 3;
-        } else {
-          startWatch = -1;
-        }
-      } else {
-        startWatch = currentWatch === 0 ? 1 : currentWatch;
-      }
-      const startIdx = occupiedWatchOrder.indexOf(startWatch);
-      if (startIdx < 0) {
-        return [];
-      }
       const watchesNeeded = stagedStepWatchesNeeded(state.stagedPath[stepIndex]);
-      return occupiedWatchOrder.slice(startIdx + used, startIdx + used + watchesNeeded);
+      return occupiedWatchOrder.slice(used, used + watchesNeeded);
     }
 
     function marchSpanLabelForStagedStep(stepIndex) {
@@ -2980,6 +3000,14 @@
           signal_kind: "state",
         });
       }
+      if (state.forcedMarchEnabled) {
+        stateCurrent.unshift({
+          message: "Standing order: forced march.",
+          heading: "",
+          importance: "moderate",
+          signal_kind: "state",
+        });
+      }
 
       state.alerts = [...stateCurrent, ...events];
       renderAlerts();
@@ -3661,6 +3689,7 @@
         state.inbox = [];
         state.openMessageId = null;
         state.followRoadEnabled = false;
+        state.forcedMarchEnabled = false;
         state.armyPanelExpanded = false;
         state.supplyPanelExpanded = false;
         state.ordersPanelExpanded = false;
@@ -3736,6 +3765,7 @@
           scroll: null,
         };
         state.followRoadEnabled = false;
+        state.forcedMarchEnabled = false;
         state.armyPanelExpanded = false;
         state.supplyPanelExpanded = false;
         state.ordersPanelExpanded = false;
@@ -3815,6 +3845,35 @@
           );
           state.followRoadEnabled = !!payload?.follow_road?.enabled;
           renderStandingOrderToggle();
+          await refreshAlerts();
+        } catch (err) {
+          renderStandingOrderToggle();
+          setStatus(`Standing order update failed: ${err.message}`, true);
+        }
+      });
+      els.forcedMarchToggleInput.addEventListener("change", async () => {
+        if (!state.token) {
+          setStatus("Select a commander first.", true);
+          els.forcedMarchToggleInput.checked = false;
+          return;
+        }
+        if (state.forcedMarchEnabled) {
+          renderStandingOrderToggle();
+          return;
+        }
+        try {
+          const payload = await api(
+            "/v1/me/orders/standing/forced-march",
+            {
+              method: "POST",
+              body: JSON.stringify({ enabled: true }),
+            },
+            true
+          );
+          state.forcedMarchEnabled = !!payload?.forced_march?.enabled;
+          renderStandingOrderToggle();
+          renderOrdersPanel();
+          await refreshOrderTargets().catch(() => {});
           await refreshAlerts();
         } catch (err) {
           renderStandingOrderToggle();

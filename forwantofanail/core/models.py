@@ -272,6 +272,7 @@ class StandingOrder(Base):
 
     commander_id = Column(Integer, ForeignKey("commanders.commander_id"), primary_key=True)
     follow_road_enabled = Column(Boolean, nullable=False, default=False)
+    forced_march_enabled = Column(Boolean, nullable=False, default=False)
     last_report = Column(Text, nullable=True)
     last_report_day = Column(Integer, nullable=True)
     last_report_watch = Column(Integer, nullable=True)
