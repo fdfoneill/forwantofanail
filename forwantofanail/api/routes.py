@@ -3801,6 +3801,7 @@ def _serialize_environs(
                 "under_siege": True,
                 "stronghold_name": stronghold.stronghold_name,
                 "besieger_faction": besieger_faction,
+                "matin_ticks_elapsed": int(siege.matin_ticks_elapsed or 0),
             }
             if viewer_commander_id is not None and (
                 viewer_commander_id in _active_siege_commander_ids(session, siege) or viewer_commander_id in defender_commander_ids
