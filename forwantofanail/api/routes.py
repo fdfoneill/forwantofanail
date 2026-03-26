@@ -1351,6 +1351,11 @@ def _army_has_long_column(army: Army) -> bool:
     return _army_column_length(army) > 2.0
 
 
+def _army_is_cavalry_only(army: Army) -> bool:
+    detachments = list(getattr(army, "detachments", []) or [])
+    return bool(detachments) and all(bool(det.is_cavalry) for det in detachments)
+
+
 def _forced_march_enabled_for_army(session: Session, army: Army | None) -> bool:
     if army is None or army.commander_id is None:
         return False
@@ -1376,6 +1381,17 @@ def _watch_is_at_or_after(day: int, watch: int, other_day: int, other_watch: int
 def _movement_slot_template(army: Army, forced_march: bool) -> list[int]:
     if _army_has_long_column(army):
         return [int(Watch.PRIME), int(Watch.PRIME), int(Watch.NOON), int(Watch.NOON)] if forced_march else [int(Watch.PRIME), int(Watch.NOON)]
+    if forced_march and _army_is_cavalry_only(army):
+        return [
+            int(Watch.MATIN),
+            int(Watch.MATIN),
+            int(Watch.PRIME),
+            int(Watch.PRIME),
+            int(Watch.NOON),
+            int(Watch.NOON),
+            int(Watch.VESPER),
+            int(Watch.VESPER),
+        ]
     return (
         [int(Watch.MATIN), int(Watch.PRIME), int(Watch.PRIME), int(Watch.NOON), int(Watch.NOON), int(Watch.VESPER)]
         if forced_march

@@ -2157,9 +2157,17 @@
       return !!state.forcedMarchEnabled;
     }
 
+    function hasCavalryOnlyArmy() {
+      const detachments = Array.isArray(state.view?.army?.composition?.detachments)
+        ? state.view.army.composition.detachments
+        : [];
+      return detachments.length > 0 && detachments.every((det) => !!det?.is_cavalry);
+    }
+
     function movementStartSlotSequence() {
       const longColumn = hasLongColumn();
       const forcedMarch = hasForcedMarch();
+      const cavalryOnly = hasCavalryOnlyArmy();
       const watch = currentWatchIndex();
       if (!Number.isFinite(watch)) {
         return [];
@@ -2167,6 +2175,8 @@
       let template;
       if (longColumn) {
         template = forcedMarch ? [2, 2, 3, 3] : [2, 3];
+      } else if (forcedMarch && cavalryOnly) {
+        template = [1, 1, 2, 2, 3, 3, 4, 4];
       } else {
         template = forcedMarch ? [1, 2, 2, 3, 3, 4] : [1, 2, 3, 4];
       }
