@@ -84,6 +84,9 @@
       margin-top: 4px;
     }
     .status.error { color: #a22a2a; }
+    .meta-alert {
+      color: #a22a2a;
+    }
     .army-status-toggle {
       width: 100%;
       margin-top: 8px;
@@ -710,6 +713,7 @@
         <div><strong>Current Location:</strong> <span id="centerText">-</span></div>
         <div><strong>Status:</strong> <span id="conditionText">-</span></div>
         <div><strong>Scouting Radius:</strong> <span id="radiusText">-</span></div>
+        <div><strong>Column Length:</strong> <span id="columnLengthText">-</span></div>
       </div>
       <button id="armyStatusToggle" class="army-status-toggle" type="button">
         <span id="armyStatusText">Army (- strong)</span>
@@ -926,6 +930,7 @@
       centerText: document.getElementById("centerText"),
       conditionText: document.getElementById("conditionText"),
       radiusText: document.getElementById("radiusText"),
+      columnLengthText: document.getElementById("columnLengthText"),
       supplyCurrentText: document.getElementById("supplyCurrentText"),
       supplyCapacityText: document.getElementById("supplyCapacityText"),
       supplyDailyText: document.getElementById("supplyDailyText"),
@@ -3477,6 +3482,8 @@
         els.centerText.textContent = "-";
         els.conditionText.textContent = "-";
         els.radiusText.textContent = "-";
+        els.columnLengthText.textContent = "-";
+        els.columnLengthText.classList.remove("meta-alert");
         return;
       }
       const calendarDate = formatScenarioDate(view?.time?.day);
@@ -3485,6 +3492,11 @@
       els.centerText.textContent = String(centerCell?.cell_title || view.environs.center_h3 || "-");
       els.conditionText.textContent = armyConditionText(view);
       els.radiusText.textContent = `${view.environs.radius} leagues`;
+      const columnLength = Number(view?.army?.column_length);
+      els.columnLengthText.textContent = Number.isFinite(columnLength)
+        ? `${columnLength.toFixed(1)} leagues`
+        : "-";
+      els.columnLengthText.classList.toggle("meta-alert", Number.isFinite(columnLength) && columnLength > 2);
     }
 
     async function refreshView() {

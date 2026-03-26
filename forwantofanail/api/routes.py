@@ -3386,6 +3386,14 @@ def _detachment_display_type(detachment: Any) -> str:
 def _serialize_army(army: Army) -> dict[str, Any]:
     stats = supply_stats(army)
     noncombatants = noncombatant_count(army)
+    infantry = sum(int(det.warrior_count or 0) for det in army.detachments if not det.is_cavalry)
+    cavalry = sum(int(det.warrior_count or 0) for det in army.detachments if det.is_cavalry)
+    wagons = sum(int(det.wagon_count or 0) for det in army.detachments)
+    column_length = 0.5 * (
+        ((infantry + noncombatants) / 7500.0)
+        + (cavalry / 3000.0)
+        + (wagons / 75.0)
+    )
     current_morale = _clamp_morale(army.army_morale)
     resting_morale = _clamp_morale(army.army_resting_morale, default=current_morale)
 
@@ -3424,6 +3432,7 @@ def _serialize_army(army: Army) -> dict[str, Any]:
             "daily_consumption": stats.daily_consumption,
             "days_estimate": stats.days_estimate,
         },
+        "column_length": column_length,
         "morale": {
             "current": current_morale,
             "resting": resting_morale,
