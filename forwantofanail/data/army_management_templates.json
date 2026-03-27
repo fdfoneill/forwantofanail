@@ -2,21 +2,21 @@
   "Allakia": {
     "commander_titles": ["Baron", "Commodore", "Knight-Captain", "Captain", "Sir"],
     "commander_names": ["Malden", "Strough", "Dudek", "Yoman", "Broughan", "Peyker", "Crannan", "Golin", "Jelalk", "Iviss", "Effeth"],
-    "army_names": ["Army of the Icewine", "Army of the Silver", "Army of the Braff", "Army of the Keff", "Army of the Ouk"]
+    "army_names": ["Army of the Icewine", "Army of the Silver", "Army of the Braff", "Army of the Keff", "Army of the Ouk", "Army of the Bight", "Army of the Bream"]
   },
   "Boonan": {
     "commander_titles": ["Marshall", "Bannerlord", "Captain", "Commander", "Chief"],
-    "commander_names": ["Foolan", "Hoanee", "Mendoo", "Mey", "Drola", "Sonab", "Honiriri", "Joonin", "Boaloo", "Meramab", "Ombar"],
-    "army_names": ["Task Force Lightfoot"]
+    "commander_names": ["Foolan", "Hoanee", "Mendoo", "Mey", "Drola", "Sonab", "Honiriri", "Joonin", "Boaloo", "Meramab", "Ombar", "Genoo"],
+    "army_names": ["Task Force Lightfoot", "Task Force Jackal", "Task Force Nightwind", "Red Ridge Muster", "Flintknife Company", "Saltflats Levy", "The Windcarved", "Task Force Scatterspear", "The Goatpath Band", "Goolang Levy", "Umabey Levy", "Levy of the Upper Soo"]
   },
   "Delisgar": {
     "commander_titles": ["Duke", "Marquis", "Count", "Lord", "Sir"],
-    "commander_names": ["Agnel", "Tavrin", "Sorell", "Corvo", "Lethan", "Voltiziar", "Soman", "Bostion", "Lavran", "Agnos", "Gultiziar", "Brosh", "Triulgin", "Nalish", "Brygost", "Alwis", "Dargren", "Largiss", "Olrom"],
-    "army_names": ["The Saintswall", "The Blessed Banners", "The Queen's Own Vanguard"]
+    "commander_names": ["Agnel", "Tavrin", "Sorell", "Corvo", "Lethan", "Voltiziar", "Soman", "Bostion", "Lavran", "Agnos", "Gultiziar", "Brosh", "Triulgin", "Nalish", "Brygost", "Alwis", "Dargren", "Largiss", "Olrom", "Ynn"],
+    "army_names": ["The Saintswall", "The Blessed Banners", "The Queen's Own Vanguard", "The Spearforest", "The Golden Penitents", "The Relic Guard", "The Chalced Host", "The Blades Basilican", "The Vigilant Synod", "The Ivory Standards", "The Martyrs' March"]
   },
   "Dinn": {
     "commander_titles": ["Councillor", "Warden", "General", "Captain", "Honorable"],
     "commander_names": ["Urungar", "Mennar", "Parum", "Nkuga", "Ongum", "Jonjey", "Onga", "Reikiku", "Kirraney", "Irawe", "Arai", "Burrawar", "Jairun", "Selkim", "Thuran", "Mazir", "Kabir", "Onresh"],
-    "army_names": ["The Hammer of Orthopraxy"]
+    "army_names": ["The Hammer of Orthopraxy", "Dinn 2nd Army", "The Force Corrective", "The Ledgerbound Host", "The March of Compliance", "The Legion Adjudicant", "The Office of Expansion", "The Ordinant Host", "Doctrine's Shieldwall", "The Birdsbeak Guard", "Peninsular Occupation Force"]
   }
 }
