@@ -1092,11 +1092,12 @@
     function renderStandingOrderToggle() {
       const followEnabled = !!state.followRoadEnabled;
       const forcedEnabled = !!state.forcedMarchEnabled;
-      const nightWatch = currentWatchIndex() === 0;
+      const watchIndex = currentWatchIndex();
+      const forcedLocked = watchIndex >= 2;
       els.followRoadToggleInput.checked = followEnabled;
       els.followRoadToggleInput.disabled = !state.token;
       els.forcedMarchToggleInput.checked = forcedEnabled;
-      els.forcedMarchToggleInput.disabled = !state.token || forcedEnabled || nightWatch;
+      els.forcedMarchToggleInput.disabled = !state.token || (forcedEnabled && forcedLocked);
     }
 
     function processStandingOrderState(view) {
@@ -3861,7 +3862,9 @@
           els.forcedMarchToggleInput.checked = false;
           return;
         }
-        if (state.forcedMarchEnabled) {
+        const nextEnabled = !!els.forcedMarchToggleInput.checked;
+        const forcedLocked = currentWatchIndex() >= 2;
+        if (state.forcedMarchEnabled && forcedLocked && !nextEnabled) {
           renderStandingOrderToggle();
           return;
         }
@@ -3870,7 +3873,7 @@
             "/v1/me/orders/standing/forced-march",
             {
               method: "POST",
-              body: JSON.stringify({ enabled: true }),
+              body: JSON.stringify({ enabled: nextEnabled }),
             },
             true
           );
