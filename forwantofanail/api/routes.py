@@ -5505,7 +5505,15 @@ def list_alerts(
         or_(
             Alert.delivered_day < clock.day,
             and_(Alert.delivered_day == clock.day, Alert.delivered_watch <= clock.watch),
-        )
+        ),
+        or_(
+            Alert.signal_kind != "state",
+            and_(
+                Alert.signal_kind == "state",
+                Alert.created_day == clock.day,
+                Alert.created_watch == clock.watch,
+            ),
+        ),
     )
     if unread_only:
         query = query.filter(Alert.is_read.is_(False))

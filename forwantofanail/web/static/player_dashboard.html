@@ -872,6 +872,7 @@
     };
 
     let armyManagementSuggestionRequestId = 0;
+    let alertsRequestId = 0;
 
     const TERRAIN_COLORS = {
       "open ground": "var(--open-ground)",
@@ -2938,9 +2939,10 @@
         renderAlerts();
         return;
       }
+      const requestId = ++alertsRequestId;
       const sessionSnapshot = snapshotSession();
       const rows = await api("/v1/me/alerts?limit=25", {}, true);
-      if (!isCurrentSession(sessionSnapshot)) {
+      if (!isCurrentSession(sessionSnapshot) || requestId !== alertsRequestId) {
         return;
       }
       const currentDay = Number(state.view?.time?.day);
