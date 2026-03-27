@@ -909,6 +909,13 @@
       3: "Sixbell",
       4: "Vesper",
     };
+    const WATCH_CHRONOLOGICAL_ORDER = {
+      1: 0,
+      2: 1,
+      3: 2,
+      4: 3,
+      0: 4,
+    };
     const MONTH_NAMES = [
       "January", "February", "March", "April", "May", "June",
       "July", "August", "September", "October", "November", "December",
@@ -1178,7 +1185,12 @@
       if (![currentDay, currentWatch, createdDay, createdWatch].every((value) => Number.isFinite(value))) {
         return null;
       }
-      return ((currentDay * 5) + currentWatch) - ((createdDay * 5) + createdWatch);
+      const currentOrder = WATCH_CHRONOLOGICAL_ORDER[currentWatch];
+      const createdOrder = WATCH_CHRONOLOGICAL_ORDER[createdWatch];
+      if (!Number.isFinite(currentOrder) || !Number.isFinite(createdOrder)) {
+        return null;
+      }
+      return ((currentDay * 5) + currentOrder) - ((createdDay * 5) + createdOrder);
     }
 
     function normalizeAlertMessage(message) {

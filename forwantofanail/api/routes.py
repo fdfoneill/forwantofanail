@@ -13,7 +13,7 @@ from typing import Any
 
 import h3
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
-from sqlalchemy import and_, or_
+from sqlalchemy import and_, case, or_
 from sqlalchemy.orm import Session, joinedload
 
 from forwantofanail.api.schemas import (
@@ -92,6 +92,17 @@ SIEGE_NONCOMBATANT_GAIN_BY_TYPE = {
     "city": 0.15,
     "fortress": 0.05,
 }
+WATCH_CHRONOLOGICAL_SORT = {
+    int(Watch.MATIN): 0,
+    int(Watch.PRIME): 1,
+    int(Watch.NOON): 2,
+    int(Watch.VESPER): 3,
+    int(Watch.NIGHT): 4,
+}
+
+
+def _watch_chronological_order_sql(column):
+    return case(WATCH_CHRONOLOGICAL_SORT, value=column, else_=-1)
 
 
 def _commander_ref(commander_id: int) -> str:
@@ -4775,7 +4786,11 @@ def get_my_view(
             Message.status == "received",
             _is_delivered_filter(clock.day, clock.watch),
         )
-        .order_by(Message.delivery_day.desc(), Message.delivery_watch.desc(), Message.message_id.desc())
+        .order_by(
+            Message.delivery_day.desc(),
+            _watch_chronological_order_sql(Message.delivery_watch).desc(),
+            Message.message_id.desc(),
+        )
         .all()
     )
 
@@ -5518,7 +5533,11 @@ def list_alerts(
     if unread_only:
         query = query.filter(Alert.is_read.is_(False))
     alerts = (
-        query.order_by(Alert.delivered_day.desc(), Alert.delivered_watch.desc(), Alert.alert_id.desc())
+        query.order_by(
+            Alert.delivered_day.desc(),
+            _watch_chronological_order_sql(Alert.delivered_watch).desc(),
+            Alert.alert_id.desc(),
+        )
         .limit(limit)
         .all()
     )
@@ -5619,7 +5638,11 @@ def list_messages(
     if unread_only:
         query = query.filter(Message.is_read.is_(False))
 
-    messages = query.order_by(Message.delivery_day.desc(), Message.delivery_watch.desc(), Message.message_id.desc()).all()
+    messages = query.order_by(
+        Message.delivery_day.desc(),
+        _watch_chronological_order_sql(Message.delivery_watch).desc(),
+        Message.message_id.desc(),
+    ).all()
 
     response = []
     for message in messages:
