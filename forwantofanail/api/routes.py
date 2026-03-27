@@ -1687,6 +1687,10 @@ def _auto_disable_forced_march_at_night(session: Session, clock: GameClock) -> N
         )
 
 
+def _forced_march_is_locked_for_watch(watch: int) -> bool:
+    return int(watch) in {int(Watch.PRIME), int(Watch.NOON), int(Watch.VESPER)}
+
+
 def _latest_previous_location_for_army(session: Session, army: Army) -> str | None:
     rows = (
         session.query(Movement.location_id)
@@ -5419,30 +5423,37 @@ def set_forced_march_standing_order(
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
-    if not bool(payload.enabled):
-        raise HTTPException(status_code=400, detail="Forced march cannot be manually disabled.")
     army = _find_commander_army(session, commander_id)
     clock = _get_or_create_clock(session)
     current_action = _get_current_action_row(session, commander_id)
     if current_action is not None and current_action.state == "in_progress" and current_action.kind == "rout":
         raise HTTPException(status_code=409, detail="Army is routing; new orders unavailable until regroup.")
-    if int(clock.watch) == int(Watch.NIGHT):
-        raise HTTPException(status_code=400, detail="Forced march cannot be issued during Night watch.")
     standing = _get_or_create_standing_order(session, commander_id)
+    requested_enabled = bool(payload.enabled)
+    current_enabled = bool(standing.forced_march_enabled)
     _ = army
-    standing.forced_march_enabled = True
+    if (
+        current_enabled
+        and not requested_enabled
+        and _forced_march_is_locked_for_watch(int(clock.watch))
+    ):
+        raise HTTPException(status_code=400, detail="Forced march cannot be manually disabled in this watch.")
+    if current_enabled == requested_enabled:
+        return _serialize_standing_orders(standing)
+    standing.forced_march_enabled = requested_enabled
     standing.updated_at = datetime.now(timezone.utc)
-    _create_alert(
-        session,
-        recipient_commander_id=commander_id,
-        alert_type="action",
-        signal_kind="event",
-        category="standing-order",
-        importance="normal",
-        message="Standing order issued: forced march.",
-        created_day=clock.day,
-        created_watch=clock.watch,
-    )
+    if requested_enabled:
+        _create_alert(
+            session,
+            recipient_commander_id=commander_id,
+            alert_type="action",
+            signal_kind="event",
+            category="standing-order",
+            importance="normal",
+            message="Standing order issued: forced march.",
+            created_day=clock.day,
+            created_watch=clock.watch,
+        )
     session.commit()
     session.refresh(standing)
     return _serialize_standing_orders(standing)
