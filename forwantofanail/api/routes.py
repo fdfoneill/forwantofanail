@@ -1351,6 +1351,18 @@ def _army_has_long_column(army: Army) -> bool:
     return _army_column_length(army) > 2.0
 
 
+def _army_is_cavalry_only(army: Army) -> bool:
+    detachments = list(getattr(army, "detachments", []) or [])
+    return bool(detachments) and all(bool(det.is_cavalry) for det in detachments)
+
+
+def _forced_march_enabled_for_army(session: Session, army: Army | None) -> bool:
+    if army is None or army.commander_id is None:
+        return False
+    standing = session.get(StandingOrder, army.commander_id)
+    return bool(standing and standing.forced_march_enabled)
+
+
 def _watch_is_at_or_after(day: int, watch: int, other_day: int, other_watch: int) -> bool:
     # Timeline ordering within a day is 1,2,3,4,0 (night comes last).
     watch_rank = {
@@ -1366,24 +1378,137 @@ def _watch_is_at_or_after(day: int, watch: int, other_day: int, other_watch: int
     )
 
 
-def _remaining_march_steps_for_watch(watch: int, army: Army | None = None) -> int:
-    # March actions can complete at night but not in the same watch they are set.
-    # Thus:
-    # watch 1 -> 4 possible completions (2,3,4,0), watch 2 -> 3, watch 3 -> 2, watch 4 -> 1.
-    # Night submissions are allowed only for full 4-step march plans.
-    if army is not None and _army_has_long_column(army):
-        if watch <= int(Watch.PRIME):
-            return 2
-        if watch == int(Watch.NOON):
-            return 1
-        return 0
-    if watch <= int(Watch.MATIN):
-        return 4
-    return max(0, 5 - int(watch))
+def _movement_slot_template(army: Army, forced_march: bool) -> list[int]:
+    if _army_has_long_column(army):
+        return [int(Watch.PRIME), int(Watch.PRIME), int(Watch.NOON), int(Watch.NOON)] if forced_march else [int(Watch.PRIME), int(Watch.NOON)]
+    if forced_march and _army_is_cavalry_only(army):
+        return [
+            int(Watch.MATIN),
+            int(Watch.MATIN),
+            int(Watch.PRIME),
+            int(Watch.PRIME),
+            int(Watch.NOON),
+            int(Watch.NOON),
+            int(Watch.VESPER),
+            int(Watch.VESPER),
+        ]
+    return (
+        [int(Watch.MATIN), int(Watch.PRIME), int(Watch.PRIME), int(Watch.NOON), int(Watch.NOON), int(Watch.VESPER)]
+        if forced_march
+        else [int(Watch.MATIN), int(Watch.PRIME), int(Watch.NOON), int(Watch.VESPER)]
+    )
 
 
-def _remaining_march_watch_budget_for_watch(watch: int, army: Army | None = None) -> int:
-    return _remaining_march_steps_for_watch(watch, army)
+def _movement_start_slot_stamps(day: int, watch: int, army: Army, forced_march: bool) -> list[tuple[int, int]]:
+    template = _movement_slot_template(army, forced_march)
+    if int(watch) == int(Watch.NIGHT):
+        return [(int(day) + 1, slot) for slot in template]
+    return [(int(day), slot) for slot in template if slot >= int(watch)]
+
+
+def _movement_start_slots_for_watch(watch: int, army: Army, forced_march: bool) -> list[int]:
+    return [slot_watch for _, slot_watch in _movement_start_slot_stamps(0, watch, army, forced_march)]
+
+
+def _remaining_day_movement_budget_for_watch(watch: int, army: Army, forced_march: bool) -> int:
+    return len(_movement_start_slot_stamps(0, watch, army, forced_march))
+
+
+def _remaining_march_steps_for_watch(watch: int, army: Army | None = None, forced_march: bool = False) -> int:
+    if army is None:
+        if forced_march:
+            template = [int(Watch.MATIN), int(Watch.PRIME), int(Watch.PRIME), int(Watch.NOON), int(Watch.NOON), int(Watch.VESPER)]
+            return len(template) if int(watch) == int(Watch.NIGHT) else len([slot for slot in template if slot >= int(watch)])
+        if watch <= int(Watch.MATIN):
+            return 4
+        return max(0, 5 - int(watch))
+    return _remaining_day_movement_budget_for_watch(watch, army, forced_march)
+
+
+def _remaining_march_watch_budget_for_watch(watch: int, army: Army | None = None, forced_march: bool = False) -> int:
+    return _remaining_march_steps_for_watch(watch, army, forced_march)
+
+
+def _movement_capacity_for_interval_start(start_watch: int, army: Army, forced_march: bool) -> int:
+    return sum(1 for slot in _movement_slot_template(army, forced_march) if slot == int(start_watch))
+
+
+def _watch_interval_start_for_current_watch(current_watch: int) -> int:
+    return {
+        int(Watch.MATIN): int(Watch.NIGHT),
+        int(Watch.PRIME): int(Watch.MATIN),
+        int(Watch.NOON): int(Watch.PRIME),
+        int(Watch.VESPER): int(Watch.NOON),
+        int(Watch.NIGHT): int(Watch.VESPER),
+    }.get(int(current_watch), int(Watch.NIGHT))
+
+
+def _watch_interval_start_stamp_for_current_watch(day: int, current_watch: int) -> tuple[int, int]:
+    start_watch = _watch_interval_start_for_current_watch(current_watch)
+    start_day = int(day)
+    if int(current_watch) == int(Watch.MATIN):
+        start_day -= 1
+    return start_day, start_watch
+
+
+def _move_remaining_cost(action: Action) -> int | None:
+    try:
+        params = json.loads(action.parameters_json or "{}")
+    except json.JSONDecodeError:
+        return None
+    remaining_cost = params.get("remaining_cost")
+    if remaining_cost is None:
+        return None
+    try:
+        return max(0, int(remaining_cost))
+    except (TypeError, ValueError):
+        return None
+
+
+def _set_move_remaining_cost(action: Action, remaining_cost: int) -> None:
+    try:
+        params = json.loads(action.parameters_json or "{}")
+    except json.JSONDecodeError:
+        params = {}
+    params["remaining_cost"] = max(0, int(remaining_cost))
+    action.parameters_json = json.dumps(params)
+
+
+def _predicted_move_eta(
+    *,
+    day: int,
+    watch: int,
+    army: Army,
+    remaining_cost: int,
+    forced_march: bool,
+) -> tuple[int, int] | None:
+    if remaining_cost <= 0:
+        return (int(day), int(watch))
+    stamps = _movement_start_slot_stamps(day, watch, army, forced_march)
+    if remaining_cost > len(stamps):
+        return None
+    last_day, last_start_watch = stamps[remaining_cost - 1]
+    return _advance_day_watch(last_day, last_start_watch, 1)
+
+
+def _refresh_move_eta(session: Session, action: Action, army: Army, *, day: int, watch: int) -> None:
+    remaining_cost = _move_remaining_cost(action)
+    if remaining_cost is None:
+        action.eta_day = None
+        action.eta_watch = None
+        return
+    eta = _predicted_move_eta(
+        day=day,
+        watch=watch,
+        army=army,
+        remaining_cost=remaining_cost,
+        forced_march=_forced_march_enabled_for_army(session, army),
+    )
+    if eta is None:
+        action.eta_day = None
+        action.eta_watch = None
+        return
+    action.eta_day, action.eta_watch = eta
 
 
 def _long_column_start_blocked(army: Army, watch: int) -> bool:
@@ -1424,6 +1549,39 @@ def _forage_supply_gain_for_army(session: Session, army: Army) -> tuple[int, lis
     return gain, locations
 
 
+def _initialize_move_action_progress(
+    session: Session,
+    action: Action,
+    army: Army,
+    *,
+    start_day: int,
+    start_watch: int,
+) -> bool:
+    destination_h3 = _get_destination_h3(action)
+    if destination_h3 is None:
+        action.state = "failed"
+        return False
+    if destination_h3 == army.location_id:
+        action.state = "completed"
+        action.started_day = start_day
+        action.started_watch = start_watch
+        action.eta_day = start_day
+        action.eta_watch = start_watch
+        _set_move_remaining_cost(action, 0)
+        return True
+    try:
+        total_cost = calculate_move_watches(session, army.army_id, destination_h3)
+    except ValueError:
+        action.state = "failed"
+        return False
+    action.started_day = start_day
+    action.started_watch = start_watch
+    action.state = "in_progress"
+    _set_move_remaining_cost(action, total_cost)
+    _refresh_move_eta(session, action, army, day=start_day, watch=start_watch)
+    return True
+
+
 def _serialize_standing_orders(standing: StandingOrder | None) -> dict[str, Any]:
     if standing is None:
         return {
@@ -1432,7 +1590,10 @@ def _serialize_standing_orders(standing: StandingOrder | None) -> dict[str, Any]
                 "last_report": None,
                 "last_report_day": None,
                 "last_report_watch": None,
-            }
+            },
+            "forced_march": {
+                "enabled": False,
+            },
         }
     return {
         "follow_road": {
@@ -1440,7 +1601,10 @@ def _serialize_standing_orders(standing: StandingOrder | None) -> dict[str, Any]
             "last_report": standing.last_report,
             "last_report_day": standing.last_report_day,
             "last_report_watch": standing.last_report_watch,
-        }
+        },
+        "forced_march": {
+            "enabled": bool(standing.forced_march_enabled),
+        },
     }
 
 
@@ -1451,6 +1615,7 @@ def _get_or_create_standing_order(session: Session, commander_id: int) -> Standi
     standing = StandingOrder(
         commander_id=commander_id,
         follow_road_enabled=False,
+        forced_march_enabled=False,
         last_report=None,
         last_report_day=None,
         last_report_watch=None,
@@ -1484,6 +1649,46 @@ def _set_standing_order_report(
         created_day=clock.day,
         created_watch=clock.watch,
     )
+
+
+def _auto_disable_forced_march_at_night(session: Session, clock: GameClock) -> None:
+    if int(clock.watch) != int(Watch.NIGHT):
+        return
+    standing_rows = (
+        session.query(StandingOrder)
+        .filter(StandingOrder.forced_march_enabled.is_(True))
+        .all()
+    )
+    for standing in standing_rows:
+        standing.forced_march_enabled = False
+        standing.updated_at = datetime.now(timezone.utc)
+        army = session.query(Army).filter(Army.commander_id == standing.commander_id).first()
+        if army is None or army.is_garrison:
+            continue
+        _run_morale_test_for_army(
+            session,
+            army=army,
+            clock=clock,
+            category="standing-order",
+        )
+        if random.randint(1, 6) != 1:
+            continue
+        army.army_morale = _clamp_morale(int(army.army_morale or 0) - 1)
+        _create_alert(
+            session,
+            recipient_commander_id=standing.commander_id,
+            alert_type="action",
+            signal_kind="event",
+            category="standing-order",
+            importance="moderate",
+            message="Morale suffering from forced march",
+            created_day=clock.day,
+            created_watch=clock.watch,
+        )
+
+
+def _forced_march_is_locked_for_watch(watch: int) -> bool:
+    return int(watch) in {int(Watch.PRIME), int(Watch.NOON), int(Watch.VESPER)}
 
 
 def _latest_previous_location_for_army(session: Session, army: Army) -> str | None:
@@ -1580,14 +1785,15 @@ def _apply_plan(
         created_actions.append(action)
     elif kind == "march":
         if path:
-            max_steps = _remaining_march_steps_for_watch(int(clock.watch), army)
+            forced_march = _forced_march_enabled_for_army(session, army)
+            max_steps = _remaining_march_steps_for_watch(int(clock.watch), army, forced_march)
             if len(path) > max_steps:
                 raise HTTPException(
                     status_code=400,
                     detail=f"March path too long for current watch: max {max_steps} cells, got {len(path)}",
                 )
             total_watch_cost = _path_watches_for_army(session, army, army.location_id, path)
-            max_budget = _remaining_march_watch_budget_for_watch(int(clock.watch), army)
+            max_budget = _remaining_march_watch_budget_for_watch(int(clock.watch), army, forced_march)
             if total_watch_cost > max_budget:
                 raise HTTPException(
                     status_code=400,
@@ -1702,7 +1908,8 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
             continue
 
         move_actions = [action for action in active_actions if action.kind == "move"]
-        max_budget = _remaining_march_watch_budget_for_watch(int(clock.watch), army)
+        forced_march = bool(standing.forced_march_enabled)
+        max_budget = _remaining_march_watch_budget_for_watch(int(clock.watch), army, forced_march)
         queued_path = [
             destination_h3
             for action in move_actions
@@ -3032,27 +3239,22 @@ def _start_action_now_if_valid(session: Session, action: Action, army: Army, clo
         if destination_h3 is None:
             action.state = "failed"
             return False
-        if destination_h3 == army.location_id:
-            action.state = "completed"
-            action.started_day = clock.day
-            action.started_watch = clock.watch
-            action.eta_day = clock.day
-            action.eta_watch = clock.watch
-            return True
         try:
             watches_needed = calculate_move_watches(session, army.army_id, destination_h3)
         except ValueError:
             action.state = "failed"
             return False
-        if _army_has_long_column(army):
-            remaining_budget = _remaining_march_watch_budget_for_watch(int(clock.watch), army)
-            if watches_needed > remaining_budget:
-                return False
-        action.started_day = clock.day
-        action.started_watch = clock.watch
-        action.state = "in_progress"
-        action.eta_day, action.eta_watch = _advance_day_watch(clock.day, clock.watch, watches_needed)
-        return True
+        forced_march = _forced_march_enabled_for_army(session, army)
+        remaining_budget = _remaining_day_movement_budget_for_watch(int(clock.watch), army, forced_march)
+        if watches_needed > remaining_budget:
+            return False
+        return _initialize_move_action_progress(
+            session,
+            action,
+            army,
+            start_day=clock.day,
+            start_watch=clock.watch,
+        )
 
     if action.kind == "forage":
         if clock.watch == int(Watch.NIGHT):
@@ -3162,9 +3364,6 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
         in_progress_by_commander[commander_id] = commander_actions[:1]
 
     due_attack_actions: list[Action] = []
-    deferred_moves: list[tuple[Action, Army, str]] = []
-    deferred_once: set[int] = set()
-    ready_moves: list[tuple[Action, Army, str]] = []
 
     def resolve_move_batch(move_batch: list[tuple[Action, Army, str]]) -> dict[str, int]:
         batch_completed = 0
@@ -3245,7 +3444,7 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
             action.state = "failed"
             failed += 1
             continue
-        if action.kind == "besiege":
+        if action.kind in {"move", "besiege"}:
             continue
         if _long_column_completion_blocked(army, int(clock.watch)):
             continue
@@ -3258,27 +3457,6 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
 
         if action.kind == "attack":
             due_attack_actions.append(action)
-            continue
-
-        if action.kind == "move":
-            destination_h3 = _get_destination_h3(action)
-            if destination_h3 is None:
-                action.state = "failed"
-                failed += 1
-                continue
-            if destination_h3 == army.location_id:
-                action.state = "completed"
-                completed += 1
-                continue
-            if destination_h3 not in set(list_valid_destinations(session, army.army_id)):
-                action.state = "failed"
-                failed += 1
-                continue
-            if _is_enemy_occupied(session, destination_h3=destination_h3, moving_army=army):
-                deferred_moves.append((action, army, destination_h3))
-                deferred_once.add(action.action_id)
-                continue
-            ready_moves.append((action, army, destination_h3))
             continue
 
         if action.kind == "forage":
@@ -3355,26 +3533,143 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
         action.state = "failed"
         failed += 1
 
-    move_result = resolve_move_batch(ready_moves)
-    completed += int(move_result.get("completed", 0))
-    failed += int(move_result.get("failed", 0))
-    _occupy_all_abandoned_sieged_strongholds(session, clock=clock)
+    interval_start_day, interval_start_watch = _watch_interval_start_stamp_for_current_watch(clock.day, clock.watch)
+    commander_ids = set(in_progress_by_commander.keys()) | set(queued_by_commander.keys())
+    army_by_commander: dict[int, Army | None] = {
+        commander_id: session.query(Army).filter(Army.commander_id == commander_id).first()
+        for commander_id in commander_ids
+    }
+    move_failed_counter = [0]
 
-    # One deferred pass for blocked moves: "back of the line" in same watch.
-    deferred_ready_moves: list[tuple[Action, Army, str]] = []
-    for action, army, destination_h3 in deferred_moves:
-        if action.state != "in_progress":
-            continue
-        if _is_enemy_occupied(session, destination_h3=destination_h3, moving_army=army):
-            action.state = "failed"
-            failed += 1
-            continue
-        deferred_ready_moves.append((action, army, destination_h3))
+    def _next_move_action_for_commander(commander_id: int, army: Army) -> tuple[Action | None, int, int]:
+        local_started = 0
+        local_completed = 0
+        while True:
+            current_rows = [
+                row
+                for row in in_progress_by_commander.get(commander_id, [])
+                if row.state == "in_progress"
+            ]
+            if current_rows:
+                current = current_rows[0]
+                in_progress_by_commander[commander_id] = [current]
+                if current.kind == "move":
+                    return current, local_started, local_completed
+                return None, local_started, local_completed
 
-    deferred_result = resolve_move_batch(deferred_ready_moves)
-    completed += int(deferred_result.get("completed", 0))
-    failed += int(deferred_result.get("failed", 0))
-    _occupy_all_abandoned_sieged_strongholds(session, clock=clock)
+            queued = [
+                row
+                for row in sorted(
+                    queued_by_commander.get(commander_id, []),
+                    key=lambda a: (a.accepted_at, a.action_id),
+                )
+                if row.state == "queued"
+            ]
+            if not queued:
+                return None, local_started, local_completed
+            next_action = queued[0]
+            if next_action.kind != "move":
+                return None, local_started, local_completed
+            if not _initialize_move_action_progress(
+                session,
+                next_action,
+                army,
+                start_day=interval_start_day,
+                start_watch=interval_start_watch,
+            ):
+                if next_action.state == "failed":
+                    move_failed_counter[0] += 1
+                    return None, local_started, local_completed
+                if next_action.state == "completed":
+                    local_completed += 1
+                    continue
+                return None, local_started, local_completed
+            if next_action.state == "completed":
+                local_completed += 1
+                continue
+            in_progress_by_commander[commander_id] = [next_action]
+            local_started += 1
+            return next_action, local_started, local_completed
+
+    move_interval_capacity: dict[int, int] = {}
+    for commander_id, army in army_by_commander.items():
+        if army is None:
+            continue
+        forced_march = _forced_march_enabled_for_army(session, army)
+        move_interval_capacity[commander_id] = _movement_capacity_for_interval_start(
+            interval_start_watch,
+            army,
+            forced_march,
+        )
+
+    max_subslots = max(move_interval_capacity.values(), default=0)
+    blocked_move_commanders: set[int] = set()
+    for _ in range(max_subslots):
+        move_batch: list[tuple[Action, Army, str]] = []
+        for commander_id in sorted(commander_ids):
+            if commander_id in blocked_move_commanders:
+                continue
+            army = army_by_commander.get(commander_id)
+            if army is None:
+                continue
+            if move_interval_capacity.get(commander_id, 0) <= 0:
+                continue
+            existing_in_progress = [
+                row
+                for row in in_progress_by_commander.get(commander_id, [])
+                if row.state == "in_progress"
+            ]
+            if existing_in_progress and existing_in_progress[0].kind != "move":
+                continue
+            move_action, started_delta, completed_delta = _next_move_action_for_commander(commander_id, army)
+            started += started_delta
+            completed += completed_delta
+            if move_action is None:
+                continue
+            remaining_cost = _move_remaining_cost(move_action)
+            if remaining_cost is None:
+                destination_h3 = _get_destination_h3(move_action)
+                if destination_h3 is None:
+                    move_action.state = "failed"
+                    failed += 1
+                    blocked_move_commanders.add(commander_id)
+                    continue
+                try:
+                    remaining_cost = calculate_move_watches(session, army.army_id, destination_h3)
+                except ValueError:
+                    move_action.state = "failed"
+                    failed += 1
+                    blocked_move_commanders.add(commander_id)
+                    continue
+                _set_move_remaining_cost(move_action, remaining_cost)
+            remaining_cost -= 1
+            _set_move_remaining_cost(move_action, remaining_cost)
+            move_interval_capacity[commander_id] = max(0, move_interval_capacity.get(commander_id, 0) - 1)
+            if remaining_cost > 0:
+                _refresh_move_eta(session, move_action, army, day=clock.day, watch=clock.watch)
+                continue
+            destination_h3 = _get_destination_h3(move_action)
+            if destination_h3 is None:
+                move_action.state = "failed"
+                failed += 1
+                blocked_move_commanders.add(commander_id)
+                continue
+            move_batch.append((move_action, army, destination_h3))
+
+        if not move_batch:
+            continue
+        move_result = resolve_move_batch(move_batch)
+        completed += int(move_result.get("completed", 0))
+        failed += int(move_result.get("failed", 0))
+        for action, army, _ in move_batch:
+            commander_id = int(action.commander_id)
+            if action.state != "in_progress":
+                in_progress_by_commander[commander_id] = []
+            if action.state == "failed":
+                blocked_move_commanders.add(commander_id)
+        _occupy_all_abandoned_sieged_strongholds(session, clock=clock)
+
+    failed += move_failed_counter[0]
 
     # Resolve due attack battles after non-attack movement/forage/rout effects.
     battle_result = _resolve_due_attack_battles(session, clock, due_attack_actions)
@@ -4413,6 +4708,7 @@ def advance_time_for_development(
     for _ in range(payload.steps):
         siege_state_at_watch_start = _stronghold_ids_sieged_at_watch_start(session, clock.day, clock.watch)
         clock.day, clock.watch = _advance_day_watch(clock.day, clock.watch, 1)
+        _auto_disable_forced_march_at_night(session, clock)
         message_result = _process_messages_tick(session, clock)
         tick_result = {"started": 0, "completed": 0, "failed": 0}
         if payload.execute_actions:
@@ -5007,7 +5303,11 @@ def plan_actions(
     path = [str(cell).strip() for cell in payload.path if str(cell).strip()]
     if payload.kind == "march":
         total_watch_cost = _path_watches_for_army(session, army, army.location_id, path)
-        available_budget = _remaining_march_watch_budget_for_watch(int(clock.watch), army)
+        available_budget = _remaining_march_watch_budget_for_watch(
+            int(clock.watch),
+            army,
+            _forced_march_enabled_for_army(session, army),
+        )
         if total_watch_cost > available_budget:
             raise HTTPException(status_code=400, detail="March path exceeds remaining watch budget for this day.")
     created_actions, cancelled_count, cancelled_by_kind = _apply_plan(
@@ -5112,6 +5412,48 @@ def set_follow_road_standing_order(
             created_watch=clock.watch,
         )
     standing.updated_at = datetime.now(timezone.utc)
+    session.commit()
+    session.refresh(standing)
+    return _serialize_standing_orders(standing)
+
+
+@router.post("/me/orders/standing/forced-march")
+def set_forced_march_standing_order(
+    payload: StandingFollowRoadUpdateRequest,
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    army = _find_commander_army(session, commander_id)
+    clock = _get_or_create_clock(session)
+    current_action = _get_current_action_row(session, commander_id)
+    if current_action is not None and current_action.state == "in_progress" and current_action.kind == "rout":
+        raise HTTPException(status_code=409, detail="Army is routing; new orders unavailable until regroup.")
+    standing = _get_or_create_standing_order(session, commander_id)
+    requested_enabled = bool(payload.enabled)
+    current_enabled = bool(standing.forced_march_enabled)
+    _ = army
+    if (
+        current_enabled
+        and not requested_enabled
+        and _forced_march_is_locked_for_watch(int(clock.watch))
+    ):
+        raise HTTPException(status_code=400, detail="Forced march cannot be manually disabled in this watch.")
+    if current_enabled == requested_enabled:
+        return _serialize_standing_orders(standing)
+    standing.forced_march_enabled = requested_enabled
+    standing.updated_at = datetime.now(timezone.utc)
+    if requested_enabled:
+        _create_alert(
+            session,
+            recipient_commander_id=commander_id,
+            alert_type="action",
+            signal_kind="event",
+            category="standing-order",
+            importance="normal",
+            message="Standing order issued: forced march.",
+            created_day=clock.day,
+            created_watch=clock.watch,
+        )
     session.commit()
     session.refresh(standing)
     return _serialize_standing_orders(standing)
