@@ -4321,6 +4321,41 @@ def _management_alert(session: Session, *, commander_id: int | None, army_name: 
     )
 
 
+def _copy_world_event_alerts(
+    session: Session,
+    *,
+    source_commander_id: int,
+    target_commander_id: int,
+) -> None:
+    source_alerts = (
+        session.query(Alert)
+        .filter(
+            Alert.recipient_commander_id == source_commander_id,
+            Alert.alert_type == "world event",
+        )
+        .order_by(Alert.alert_id.asc())
+        .all()
+    )
+    for alert in source_alerts:
+        session.add(
+            Alert(
+                recipient_commander_id=target_commander_id,
+                alert_type=alert.alert_type,
+                signal_kind=alert.signal_kind,
+                category=alert.category,
+                importance=alert.importance,
+                message=alert.message,
+                payload_json=alert.payload_json,
+                created_day=alert.created_day,
+                created_watch=alert.created_watch,
+                delivered_day=alert.delivered_day,
+                delivered_watch=alert.delivered_watch,
+                is_read=alert.is_read,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+
+
 def _validate_and_apply_management_transaction(
     session: Session,
     *,
@@ -4544,6 +4579,11 @@ def _validate_and_apply_management_transaction(
         )
         session.add(created_commander)
         session.flush()
+        _copy_world_event_alerts(
+            session,
+            source_commander_id=commander_id,
+            target_commander_id=created_commander.commander_id,
+        )
         created_army = Army(
             location_id=left_army.location_id,
             army_name=right_name,
