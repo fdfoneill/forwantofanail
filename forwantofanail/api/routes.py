@@ -883,6 +883,22 @@ def _army_is_in_stronghold(session: Session, army: Army | None) -> bool:
     return _stronghold_at_h3(session, army.location_id) is not None
 
 
+def _army_is_under_siege(session: Session, army: Army | None) -> bool:
+    if army is None:
+        return False
+    stronghold = _stronghold_at_h3(session, army.location_id)
+    if stronghold is None:
+        return False
+    siege = _active_siege_for_stronghold(session, stronghold.stronghold_id)
+    if siege is None:
+        return False
+    besieger_faction = _active_siege_faction(session, siege)
+    if not besieger_faction:
+        return False
+    defenders = _defender_armies_in_stronghold(session, stronghold, besieger_faction)
+    return any(defender.army_id == army.army_id for defender in defenders)
+
+
 def _max_resistance_for_stronghold(stronghold: Stronghold) -> float:
     return float(SIEGE_RESISTANCE_BY_TYPE.get(str(stronghold.stronghold_type or "").strip().lower(), 10.0))
 
@@ -1785,6 +1801,8 @@ def _apply_plan(
     if kind == "forage":
         if clock.watch not in {int(Watch.NIGHT), int(Watch.MATIN)}:
             raise HTTPException(status_code=400, detail="Forage orders may only be submitted during Night or Matin watch")
+        if _army_is_under_siege(session, army):
+            raise HTTPException(status_code=400, detail="Armies under siege cannot forage")
         action = Action(
             commander_id=commander_id,
             kind="forage",
@@ -5140,6 +5158,8 @@ def create_action(
         action_params["destination_h3"] = destination_h3
     elif payload.kind == "forage":
         # Forage orders may be issued at Night or Matin; they only start at Matin.
+        if _army_is_under_siege(session, army):
+            raise HTTPException(status_code=400, detail="Armies under siege cannot forage")
         if clock.watch not in {int(Watch.NIGHT), int(Watch.MATIN)}:
             action = Action(
                 commander_id=commander_id,
