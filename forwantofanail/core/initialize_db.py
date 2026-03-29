@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import shutil
 from datetime import date
 from pathlib import Path
 
@@ -98,9 +99,28 @@ def _load_csv(model_cls, csv_path: Path, converters: dict[str, callable]):
             yield model_cls(**payload)
 
 
+def _static_diegetic_map_path() -> Path:
+    return Path(__file__).resolve().parents[1] / "web" / "static" / "map_diegetic.png"
+
+
+def _prepare_diegetic_map_asset(data_dir: Path) -> None:
+    source_path = data_dir / "map_diegetic.png"
+    target_path = _static_diegetic_map_path()
+    if source_path.exists():
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source_path, target_path)
+        return
+    if target_path.exists():
+        return
+    raise FileNotFoundError(
+        f"Scenario reset requires diegetic map asset at either '{source_path}' or '{target_path}'."
+    )
+
+
 def initialize_database(data_dir: Path, reset: bool = False) -> None:
     engine = get_engine()
     if reset:
+        _prepare_diegetic_map_asset(data_dir)
         Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
 
