@@ -899,6 +899,24 @@ def _army_is_under_siege(session: Session, army: Army | None) -> bool:
     return any(defender.army_id == army.army_id for defender in defenders)
 
 
+def _sortie_context_for_army(session: Session, army: Army | None) -> tuple[Stronghold | None, Siege | None]:
+    if army is None:
+        return None, None
+    stronghold = _stronghold_at_h3(session, army.location_id)
+    if stronghold is None:
+        return None, None
+    siege = _active_siege_for_stronghold(session, stronghold.stronghold_id)
+    if siege is None:
+        return None, None
+    besieger_faction = _active_siege_faction(session, siege)
+    if not besieger_faction:
+        return None, None
+    defenders = _defender_armies_in_stronghold(session, stronghold, besieger_faction)
+    if any(defender.army_id == army.army_id for defender in defenders):
+        return stronghold, siege
+    return None, None
+
+
 def _max_resistance_for_stronghold(stronghold: Stronghold) -> float:
     return float(SIEGE_RESISTANCE_BY_TYPE.get(str(stronghold.stronghold_type or "").strip().lower(), 10.0))
 
@@ -2382,6 +2400,7 @@ def _resolve_battles_from_edges(
     defender_flat_modifier_by_army_id: dict[int, int] | None = None,
     loser_extra_casualty_pct: float = 0.0,
     attacker_can_retreat_or_rout: bool = True,
+    sortie_attacker_army_ids: set[int] | None = None,
 ) -> dict[str, Any]:
     if not edges:
         return {"completed": 0, "failed": 0, "winner_faction_by_action_id": {}}
@@ -2390,6 +2409,7 @@ def _resolve_battles_from_edges(
     disable_surprise_army_ids = disable_surprise_army_ids or set()
     winner_destination_by_action_id = winner_destination_by_action_id or {}
     defender_flat_modifier_by_army_id = defender_flat_modifier_by_army_id or {}
+    sortie_attacker_army_ids = sortie_attacker_army_ids or set()
 
     adjacency: dict[int, set[int]] = defaultdict(set)
     edge_action_ids_by_node: dict[int, set[int]] = defaultdict(set)
@@ -2610,6 +2630,8 @@ def _resolve_battles_from_edges(
                 elif engagement_type == "siege" and army.army_id not in attacker_ids:
                     retreat_info = _retreat_one_cell_with_wagon_drop(session, army=army, winner_armies=winner_armies, clock=clock)
                     retreat_by_army[army.army_id] = retreat_info
+                elif battle_copy_mode == "sortie" and army.army_id in sortie_attacker_army_ids:
+                    retreat_by_army[army.army_id] = {"retreated": True, "sortied_back": True}
                 else:
                     retreat_ok = _retreat_one_cell(session, army=army, winner_armies=winner_armies, clock=clock)
                     retreat_by_army[army.army_id] = {"retreated": retreat_ok}
@@ -2749,6 +2771,11 @@ def _resolve_battles_from_edges(
 
             if battle_copy_mode == "meeting":
                 opener = f"Meeting engagement with {enemy_display}"
+            elif battle_copy_mode == "sortie":
+                if army.army_id in sortie_attacker_army_ids:
+                    opener = f"Sortied against {enemy_display}"
+                else:
+                    opener = f"Repelled sortie by {enemy_display}"
             elif battle_copy_mode == "siege_assault":
                 if army.army_id in attacker_ids:
                     assault_target_name = enemy_display
@@ -2845,6 +2872,10 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
     edges: list[tuple[int, int, int]] = []  # (action_id, attacker_army_id, target_army_id)
     failed = 0
     siege_action_ids: set[int] = set()
+    sortie_action_ids: set[int] = set()
+    sortie_defender_ids_by_stronghold_id: dict[int, set[int]] = defaultdict(set)
+    sortie_siege_by_action_id: dict[int, Siege] = {}
+    sortie_stronghold_by_action_id: dict[int, Stronghold] = {}
     defender_bonus_by_army_id: dict[int, int] = {}
     siege_by_action_id: dict[int, Siege] = {}
     stronghold_by_action_id: dict[int, Stronghold] = {}
@@ -2852,10 +2883,37 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
     for action in due_attack_actions:
         attacker = session.query(Army).filter(Army.commander_id == action.commander_id).first()
         if attacker is None:
+            continue
+        sortie_stronghold, sortie_siege = _sortie_context_for_army(session, attacker)
+        if sortie_stronghold is None or sortie_siege is None:
+            continue
+        try:
+            params = json.loads(action.parameters_json or "{}")
+        except json.JSONDecodeError:
+            params = {}
+        raw_target_army_id = params.get("target_army_id")
+        target_h3 = str(params.get("target_h3") or "").strip()
+        try:
+            target_army_id = int(raw_target_army_id)
+        except (TypeError, ValueError):
+            continue
+        participant_army_ids = {
+            participant.besieger_army_id
+            for participant in _active_siege_participants_for_siege(session, sortie_siege)
+        }
+        if target_army_id in participant_army_ids and target_h3:
+            sortie_action_ids.add(action.action_id)
+            sortie_defender_ids_by_stronghold_id[sortie_stronghold.stronghold_id].add(attacker.army_id)
+
+    for action in due_attack_actions:
+        attacker = session.query(Army).filter(Army.commander_id == action.commander_id).first()
+        if attacker is None:
             action.state = "failed"
             failed += 1
             continue
-        if _army_is_in_stronghold(session, attacker):
+        sortie_stronghold, sortie_siege = _sortie_context_for_army(session, attacker)
+        is_sortie_action = action.action_id in sortie_action_ids
+        if _army_is_in_stronghold(session, attacker) and not is_sortie_action:
             action.state = "failed"
             failed += 1
             continue
@@ -2881,11 +2939,27 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
             failed += 1
             continue
         active_siege = _active_siege_for_besieger(session, attacker.army_id)
+        if is_sortie_action:
+            target_army_id_by_action_id[action.action_id] = target_army_id
+            target_h3_by_action_id[action.action_id] = target_h3
+            edges.append((action.action_id, attacker.army_id, target_army_id))
+            continue
         if active_siege is not None:
             stronghold = session.get(Stronghold, active_siege.stronghold_id)
             if stronghold is not None and stronghold.location_id == target_h3:
                 defenders = _defender_armies_in_stronghold(session, stronghold, attacker.army_faction)
                 defenders = [army for army in defenders if army.army_faction != attacker.army_faction]
+                sortie_defender_ids = sortie_defender_ids_by_stronghold_id.get(stronghold.stronghold_id, set())
+                if sortie_defender_ids:
+                    target_army_id_by_action_id[action.action_id] = target_army_id
+                    target_h3_by_action_id[action.action_id] = target_h3
+                    sortie_siege_by_action_id[action.action_id] = active_siege
+                    sortie_stronghold_by_action_id[action.action_id] = stronghold
+                    for defender in defenders:
+                        if defender.army_id in sortie_defender_ids:
+                            edges.append((action.action_id, attacker.army_id, defender.army_id))
+                    sortie_action_ids.add(action.action_id)
+                    continue
                 if target_army_id not in {army.army_id for army in defenders}:
                     action.state = "failed"
                     failed += 1
@@ -2906,7 +2980,8 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
         edges.append((action.action_id, attacker.army_id, target_army_id))
 
     siege_edges = [edge for edge in edges if edge[0] in siege_action_ids]
-    normal_edges = [edge for edge in edges if edge[0] not in siege_action_ids]
+    sortie_edges = [edge for edge in edges if edge[0] in sortie_action_ids]
+    normal_edges = [edge for edge in edges if edge[0] not in siege_action_ids and edge[0] not in sortie_action_ids]
     completed = 0
 
     if normal_edges:
@@ -2920,6 +2995,85 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
         )
         completed += int(result.get("completed", 0))
         failed += int(result.get("failed", 0))
+
+    if sortie_edges:
+        sortie_action_id_set = {action_id for action_id, _, _ in sortie_edges}
+        sortie_army_ids = {
+            defender_id
+            for defender_ids in sortie_defender_ids_by_stronghold_id.values()
+            for defender_id in defender_ids
+        }
+        sortie_forced_out_of_formation_ids = set(sortie_army_ids)
+        for _, _, target_id in sortie_edges:
+            if target_id not in sortie_army_ids:
+                sortie_forced_out_of_formation_ids.add(target_id)
+        for _, attacker_id, _ in sortie_edges:
+            if attacker_id in sortie_army_ids:
+                continue
+            sortie_forced_out_of_formation_ids.discard(attacker_id)
+        sortie_result = _resolve_battles_from_edges(
+            session,
+            clock,
+            action_by_id={action_id: action_by_id[action_id] for action_id in sortie_action_id_set if action_id in action_by_id},
+            edges=sortie_edges,
+            target_h3_by_action_id=target_h3_by_action_id,
+            target_army_id_by_action_id=target_army_id_by_action_id,
+            forced_out_of_formation_army_ids=sortie_forced_out_of_formation_ids,
+            battle_copy_mode="sortie",
+            engagement_type="field",
+            sortie_attacker_army_ids=sortie_army_ids,
+        )
+        completed += int(sortie_result.get("completed", 0))
+        failed += int(sortie_result.get("failed", 0))
+        for action_id, siege in sortie_siege_by_action_id.items():
+            stronghold = sortie_stronghold_by_action_id.get(action_id)
+            action = action_by_id.get(action_id)
+            if siege.state != "active" or stronghold is None or action is None:
+                continue
+            besieger = session.query(Army).filter(Army.commander_id == action.commander_id).first()
+            if besieger is None:
+                continue
+            if _active_siege_participant_for_army(session, besieger.army_id) is None:
+                continue
+            try:
+                still_adjacent = (
+                    besieger.location_id == stronghold.location_id
+                    or stronghold.location_id in set(h3.grid_ring(besieger.location_id, 1))
+                )
+            except Exception:
+                still_adjacent = False
+            if not still_adjacent:
+                continue
+            existing_besiege = (
+                session.query(Action)
+                .filter(
+                    Action.commander_id == action.commander_id,
+                    Action.kind == "besiege",
+                    Action.state == "in_progress",
+                )
+                .first()
+            )
+            if existing_besiege is not None:
+                continue
+            session.add(
+                Action(
+                    commander_id=action.commander_id,
+                    kind="besiege",
+                    state="in_progress",
+                    parameters_json=json.dumps(
+                        {
+                            "target_stronghold_id": stronghold.stronghold_id,
+                            "target_h3": stronghold.location_id,
+                            "target_stronghold_name": stronghold.stronghold_name,
+                        }
+                    ),
+                    accepted_at=datetime.now(timezone.utc),
+                    started_day=clock.day,
+                    started_watch=clock.watch,
+                    eta_day=None,
+                    eta_watch=None,
+                )
+            )
 
     if siege_edges:
         siege_action_by_id = {action_id: action_by_id[action_id] for action_id in siege_action_ids if action_id in action_by_id}
@@ -3313,7 +3467,7 @@ def _start_action_now_if_valid(session: Session, action: Action, army: Army, clo
     if action.kind == "attack":
         if clock.watch == int(Watch.NIGHT) or _long_column_start_blocked(army, int(clock.watch)):
             return False
-        if _army_is_in_stronghold(session, army):
+        if _army_is_in_stronghold(session, army) and _sortie_context_for_army(session, army)[1] is None:
             action.state = "failed"
             return False
         try:
@@ -5019,6 +5173,22 @@ def get_valid_attack_targets(
     session: Session = Depends(_get_session),
 ):
     army = _find_commander_army(session, commander_id)
+    sortie_stronghold, sortie_siege = _sortie_context_for_army(session, army)
+    if sortie_stronghold is not None and sortie_siege is not None:
+        targets = []
+        for participant in _active_siege_participants_for_siege(session, sortie_siege):
+            besieger = session.get(Army, participant.besieger_army_id)
+            if besieger is None or besieger.army_faction == army.army_faction:
+                continue
+            targets.append(
+                {
+                    "target_h3": besieger.location_id,
+                    "target_army_id": _army_ref(besieger.army_id),
+                    "faction": besieger.army_faction,
+                    "label": str(besieger.army_name or f"{besieger.army_faction} army").strip(),
+                }
+            )
+        return {"origin_h3": army.location_id, "targets": targets}
     if _army_is_in_stronghold(session, army):
         return {"origin_h3": army.location_id, "targets": []}
     active_siege = _active_siege_for_besieger(session, army.army_id)
@@ -5139,6 +5309,7 @@ def create_action(
     action_params: dict[str, Any] = {}
     attack_target_name: str | None = None
     active_siege = _active_siege_for_besieger(session, army.army_id)
+    sortie_stronghold, sortie_siege = _sortie_context_for_army(session, army)
     siege_to_preserve = False
     if payload.kind == "move":
         if clock.watch == int(Watch.NIGHT):
@@ -5190,7 +5361,7 @@ def create_action(
         for existing in active_actions:
             existing.state = "cancelled"
     elif payload.kind == "attack":
-        if _army_is_in_stronghold(session, army):
+        if _army_is_in_stronghold(session, army) and sortie_siege is None:
             raise HTTPException(status_code=400, detail="Armies occupying strongholds cannot attack")
         target_h3 = (payload.target_h3 or "").strip()
         if not target_h3:
@@ -5220,9 +5391,9 @@ def create_action(
         except Exception:
             adjacent = set()
         target_stronghold = _stronghold_at_h3(session, target_h3)
-        if active_siege is None and target_h3 not in adjacent:
+        if active_siege is None and sortie_siege is None and target_h3 not in adjacent:
             raise HTTPException(status_code=400, detail="Attack target must be adjacent")
-        if active_siege is None and target_stronghold is not None:
+        if active_siege is None and sortie_siege is None and target_stronghold is not None:
             raise HTTPException(status_code=400, detail="Occupied strongholds must be besieged before they can be assaulted")
         if active_siege is not None:
             stronghold = session.get(Stronghold, active_siege.stronghold_id)
@@ -5232,6 +5403,15 @@ def create_action(
             if target_army_id not in defender_ids:
                 raise HTTPException(status_code=400, detail="While besieging, only stronghold defenders may be attacked")
             siege_to_preserve = True
+        elif sortie_siege is not None:
+            participant_army_ids = {
+                participant.besieger_army_id
+                for participant in _active_siege_participants_for_siege(session, sortie_siege)
+            }
+            if target_army_id not in participant_army_ids:
+                raise HTTPException(status_code=400, detail="While under siege, only active besiegers may be attacked")
+            if target_h3 not in adjacent:
+                raise HTTPException(status_code=400, detail="Sortie targets must be adjacent to the stronghold")
         attack_target_name = str(target_army.army_name or f"{target_army.army_faction} army").strip()
         action_params["target_h3"] = target_h3
         action_params["target_army_id"] = target_army_id

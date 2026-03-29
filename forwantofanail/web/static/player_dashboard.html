@@ -2389,7 +2389,7 @@
       const isBesiege = state.orderMode === "besiege";
       const isRouting = String(state.view?.current_action?.kind || "").trim().toLowerCase() === "rout";
       const centerCell = (state.view?.environs?.cells || []).find((cell) => cell.h3 === state.view?.environs?.center_h3);
-      const attackBlockedByStronghold = !!centerCell?.stronghold;
+      const attackBlockedByStronghold = !!centerCell?.stronghold && !forageBlockedBySiege;
       const besiegeBlockedByStronghold = !!centerCell?.stronghold;
       els.orderModeSelect.value = state.orderMode;
       els.queueMoveBtn.disabled = !(isMarch || isAttack || isBesiege) || isRouting;
