@@ -336,10 +336,112 @@
       min-height: 74vh;
       overflow: hidden;
     }
+    .map-view-header {
+      position: absolute;
+      top: 12px;
+      left: 12px;
+      z-index: 5;
+      display: inline-flex;
+      gap: 4px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(255, 250, 241, 0.95);
+      box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+    }
+    .map-mode-tab {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      padding: 8px 10px;
+      border-radius: 8px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 80px;
+      min-height: 38px;
+      cursor: pointer;
+      font: inherit;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .map-mode-tab.active {
+      background: #fff;
+      color: var(--ink);
+      box-shadow: inset 0 0 0 1px #e6dccf;
+    }
+    .map-mode-tab:focus-visible {
+      outline: 2px solid #8b5a2b;
+      outline-offset: 2px;
+    }
+    .map-mode-icon {
+      display: none;
+      width: 18px;
+      height: 18px;
+      object-fit: contain;
+    }
+    .map-mode-tab.icon-ready .map-mode-icon {
+      display: block;
+    }
+    .map-mode-tab.icon-ready .map-mode-label {
+      display: none;
+    }
+    .map-viewport {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+    }
     #mapCanvas {
+      position: absolute;
+      inset: 0;
       width: 100%;
       height: 100%;
       display: block;
+    }
+    .diegetic-map-viewport {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+      background: #d8cfbf;
+      user-select: none;
+      touch-action: none;
+      cursor: grab;
+    }
+    .diegetic-map-viewport.dragging {
+      cursor: grabbing;
+    }
+    .diegetic-map-viewport[hidden] {
+      display: none;
+    }
+    .diegetic-map-inner {
+      position: absolute;
+      left: 0;
+      top: 0;
+      transform-origin: top left;
+      will-change: transform;
+    }
+    .diegetic-map-image {
+      display: block;
+      max-width: none;
+      user-select: none;
+      -webkit-user-drag: none;
+      pointer-events: none;
+    }
+    .diegetic-map-message {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      transform: translate(-50%, -50%);
+      z-index: 2;
+      background: rgba(255, 250, 241, 0.95);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 10px 12px;
+      color: var(--ink);
+      font-size: 12px;
+      white-space: nowrap;
     }
     .alerts-pane {
       position: absolute;
@@ -809,7 +911,25 @@
     </section>
 
     <section class="panel map-panel" id="mapPanel">
-      <svg id="mapCanvas" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet"></svg>
+      <div class="map-view-header" id="mapViewHeader">
+        <button class="map-mode-tab active" id="mapModeEnvironsBtn" data-map-mode="environs" type="button" aria-pressed="true" aria-label="Show environs map">
+          <img class="map-mode-icon" id="mapModeEnvironsIcon" src="/static/icons/map_views/environs.svg" alt="" hidden />
+          <span class="map-mode-label">environs</span>
+        </button>
+        <button class="map-mode-tab" id="mapModeDiegeticBtn" data-map-mode="diegetic" type="button" aria-pressed="false" aria-label="Show diegetic map">
+          <img class="map-mode-icon" id="mapModeDiegeticIcon" src="/static/icons/map_views/map.svg" alt="" hidden />
+          <span class="map-mode-label">map</span>
+        </button>
+      </div>
+      <div class="map-viewport" id="mapViewport">
+        <svg id="mapCanvas" viewBox="0 0 1000 700" preserveAspectRatio="xMidYMid meet"></svg>
+        <div class="diegetic-map-viewport" id="diegeticMapViewport" hidden>
+          <div class="diegetic-map-inner" id="diegeticMapInner">
+            <img class="diegetic-map-image" id="diegeticMapImage" src="/static/map_diegetic.png" alt="Diegetic world map" draggable="false" />
+          </div>
+          <div class="diegetic-map-message" id="diegeticMapMessage" hidden>World map unavailable.</div>
+        </div>
+      </div>
       <aside class="alerts-pane" id="alertPane">
         <div class="alerts-title">Reports</div>
         <ul class="alerts-list" id="alertList"></ul>
@@ -834,6 +954,22 @@
       borderRoadNeighbors: new Set(),
       mapWidth: 1000,
       mapHeight: 700,
+      mapMode: "environs",
+      diegeticMap: {
+        loaded: false,
+        failed: false,
+        naturalWidth: 3837,
+        naturalHeight: 2953,
+        scale: 1,
+        offsetX: 0,
+        offsetY: 0,
+        dragging: false,
+        dragStartClientX: 0,
+        dragStartClientY: 0,
+        dragStartOffsetX: 0,
+        dragStartOffsetY: 0,
+        pointerId: null,
+      },
       hoverH3: null,
       correspondents: [],
       inbox: [],
@@ -970,7 +1106,17 @@
       inboxList: document.getElementById("inboxList"),
       messageRead: document.getElementById("messageRead"),
       mapCanvas: document.getElementById("mapCanvas"),
+      mapViewport: document.getElementById("mapViewport"),
       mapPanel: document.getElementById("mapPanel"),
+      mapViewHeader: document.getElementById("mapViewHeader"),
+      mapModeEnvironsBtn: document.getElementById("mapModeEnvironsBtn"),
+      mapModeDiegeticBtn: document.getElementById("mapModeDiegeticBtn"),
+      mapModeEnvironsIcon: document.getElementById("mapModeEnvironsIcon"),
+      mapModeDiegeticIcon: document.getElementById("mapModeDiegeticIcon"),
+      diegeticMapViewport: document.getElementById("diegeticMapViewport"),
+      diegeticMapInner: document.getElementById("diegeticMapInner"),
+      diegeticMapImage: document.getElementById("diegeticMapImage"),
+      diegeticMapMessage: document.getElementById("diegeticMapMessage"),
       alertPane: document.getElementById("alertPane"),
       alertList: document.getElementById("alertList"),
       hoverCard: document.getElementById("hoverCard"),
@@ -982,6 +1128,81 @@
     function setStatus(message, isError = false) {
       els.statusLine.textContent = message || "";
       els.statusLine.classList.toggle("error", !!isError);
+    }
+
+    function isDiegeticMapMode() {
+      return state.mapMode === "diegetic";
+    }
+
+    function updateMapModeTabs() {
+      const diegetic = isDiegeticMapMode();
+      els.mapModeEnvironsBtn.classList.toggle("active", !diegetic);
+      els.mapModeEnvironsBtn.setAttribute("aria-pressed", diegetic ? "false" : "true");
+      els.mapModeDiegeticBtn.classList.toggle("active", diegetic);
+      els.mapModeDiegeticBtn.setAttribute("aria-pressed", diegetic ? "true" : "false");
+    }
+
+    function applyMapModeVisibility() {
+      const diegetic = isDiegeticMapMode();
+      els.mapCanvas.style.display = diegetic ? "none" : "block";
+      if (diegetic) {
+        els.diegeticMapViewport.removeAttribute("hidden");
+        hideHoverCard();
+      } else {
+        els.diegeticMapViewport.setAttribute("hidden", "");
+      }
+      updateMapModeTabs();
+    }
+
+    function getDiegeticViewportRect() {
+      return els.diegeticMapViewport.getBoundingClientRect();
+    }
+
+    function getDiegeticFitScale() {
+      const rect = getDiegeticViewportRect();
+      const naturalWidth = Math.max(1, Number(state.diegeticMap.naturalWidth) || 1);
+      const naturalHeight = Math.max(1, Number(state.diegeticMap.naturalHeight) || 1);
+      const fitWidth = rect.width / naturalWidth;
+      const fitHeight = rect.height / naturalHeight;
+      const fitScale = Math.min(fitWidth, fitHeight);
+      return Number.isFinite(fitScale) && fitScale > 0 ? fitScale : 1;
+    }
+
+    function clampDiegeticMapTransform() {
+      const rect = getDiegeticViewportRect();
+      if (!rect.width || !rect.height) {
+        return;
+      }
+      const fitScale = getDiegeticFitScale();
+      const scale = Math.max(1, Math.min(10, Number(state.diegeticMap.scale) || 1));
+      state.diegeticMap.scale = scale;
+      const renderedWidth = state.diegeticMap.naturalWidth * fitScale * scale;
+      const renderedHeight = state.diegeticMap.naturalHeight * fitScale * scale;
+      if (renderedWidth <= rect.width) {
+        state.diegeticMap.offsetX = (rect.width - renderedWidth) / 2;
+      } else {
+        const minX = rect.width - renderedWidth;
+        state.diegeticMap.offsetX = Math.min(0, Math.max(minX, Number(state.diegeticMap.offsetX) || 0));
+      }
+      if (renderedHeight <= rect.height) {
+        state.diegeticMap.offsetY = (rect.height - renderedHeight) / 2;
+      } else {
+        const minY = rect.height - renderedHeight;
+        state.diegeticMap.offsetY = Math.min(0, Math.max(minY, Number(state.diegeticMap.offsetY) || 0));
+      }
+    }
+
+    function renderDiegeticMap() {
+      applyMapModeVisibility();
+      els.diegeticMapMessage.hidden = !state.diegeticMap.failed;
+      els.diegeticMapViewport.classList.toggle("dragging", !!state.diegeticMap.dragging);
+      if (state.diegeticMap.failed) {
+        return;
+      }
+      clampDiegeticMapTransform();
+      const fitScale = getDiegeticFitScale();
+      const actualScale = fitScale * state.diegeticMap.scale;
+      els.diegeticMapInner.style.transform = `translate(${state.diegeticMap.offsetX}px, ${state.diegeticMap.offsetY}px) scale(${actualScale})`;
     }
 
     function renderAlerts() {
@@ -3144,7 +3365,7 @@
       return bestPoint;
     }
 
-    function renderMap() {
+    function renderEnvironsMap() {
       const view = state.view;
       if (!view || !view.environs || !Array.isArray(view.environs.cells)) {
         els.mapCanvas.innerHTML = "";
@@ -3467,6 +3688,15 @@
       clearHoveredMoveOutline();
     }
 
+    function renderMap() {
+      applyMapModeVisibility();
+      if (isDiegeticMapMode()) {
+        renderDiegeticMap();
+      } else {
+        renderEnvironsMap();
+      }
+    }
+
     function positionHoverCard(clientX, clientY) {
       const panelRect = els.mapPanel.getBoundingClientRect();
       const cardRect = els.hoverCard.getBoundingClientRect();
@@ -3486,6 +3716,9 @@
     }
 
     function showHoverCard(h3Index, clientX, clientY) {
+      if (isDiegeticMapMode()) {
+        return;
+      }
       state.hoverH3 = h3Index;
       const cell = state.view?.environs?.cells?.find((c) => c.h3 === h3Index);
       if (cell) {
@@ -3563,6 +3796,9 @@
     }
 
     function bindHoverHandlers() {
+      if (isDiegeticMapMode()) {
+        return;
+      }
       const polys = els.mapCanvas.querySelectorAll(".cell-poly");
       polys.forEach((poly) => {
         poly.addEventListener("mouseenter", (event) => {
@@ -3608,6 +3844,128 @@
         ? `${columnLength.toFixed(1)} leagues`
         : "-";
       els.columnLengthText.classList.toggle("meta-alert", Number.isFinite(columnLength) && columnLength > 2);
+    }
+
+    function setMapMode(mode) {
+      const normalized = String(mode || "environs").trim().toLowerCase();
+      const nextMode = normalized === "diegetic" ? "diegetic" : "environs";
+      if (state.mapMode === nextMode) {
+        renderMap();
+        return;
+      }
+      state.mapMode = nextMode;
+      renderMap();
+    }
+
+    function toggleMapMode() {
+      setMapMode(isDiegeticMapMode() ? "environs" : "diegetic");
+    }
+
+    function initializeMapModeTabIcons() {
+      const bindings = [
+        [els.mapModeEnvironsBtn, els.mapModeEnvironsIcon],
+        [els.mapModeDiegeticBtn, els.mapModeDiegeticIcon],
+      ];
+      bindings.forEach(([button, icon]) => {
+        if (!button || !icon) {
+          return;
+        }
+        icon.hidden = true;
+        icon.addEventListener("load", () => {
+          button.classList.add("icon-ready");
+          icon.hidden = false;
+        });
+        icon.addEventListener("error", () => {
+          button.classList.remove("icon-ready");
+          icon.hidden = true;
+        });
+        if (icon.complete && icon.naturalWidth > 0) {
+          button.classList.add("icon-ready");
+          icon.hidden = false;
+        }
+      });
+    }
+
+    function initializeDiegeticMap() {
+      const handleImageLoad = () => {
+        state.diegeticMap.loaded = true;
+        state.diegeticMap.failed = false;
+        state.diegeticMap.naturalWidth = Math.max(1, Number(els.diegeticMapImage.naturalWidth) || state.diegeticMap.naturalWidth);
+        state.diegeticMap.naturalHeight = Math.max(1, Number(els.diegeticMapImage.naturalHeight) || state.diegeticMap.naturalHeight);
+        renderDiegeticMap();
+      };
+      const handleImageError = () => {
+        state.diegeticMap.failed = true;
+        state.diegeticMap.loaded = false;
+        renderDiegeticMap();
+      };
+      els.diegeticMapImage.addEventListener("load", handleImageLoad);
+      els.diegeticMapImage.addEventListener("error", handleImageError);
+      if (els.diegeticMapImage.complete) {
+        if (els.diegeticMapImage.naturalWidth > 0) {
+          handleImageLoad();
+        } else {
+          handleImageError();
+        }
+      }
+      const stopDrag = () => {
+        state.diegeticMap.dragging = false;
+        state.diegeticMap.pointerId = null;
+        els.diegeticMapViewport.classList.remove("dragging");
+      };
+      els.diegeticMapViewport.addEventListener("pointerdown", (event) => {
+        if (!isDiegeticMapMode() || state.diegeticMap.failed) {
+          return;
+        }
+        state.diegeticMap.dragging = true;
+        state.diegeticMap.pointerId = event.pointerId;
+        state.diegeticMap.dragStartClientX = event.clientX;
+        state.diegeticMap.dragStartClientY = event.clientY;
+        state.diegeticMap.dragStartOffsetX = state.diegeticMap.offsetX;
+        state.diegeticMap.dragStartOffsetY = state.diegeticMap.offsetY;
+        els.diegeticMapViewport.classList.add("dragging");
+        els.diegeticMapViewport.setPointerCapture(event.pointerId);
+      });
+      els.diegeticMapViewport.addEventListener("pointermove", (event) => {
+        if (!state.diegeticMap.dragging || state.diegeticMap.pointerId !== event.pointerId) {
+          return;
+        }
+        state.diegeticMap.offsetX = state.diegeticMap.dragStartOffsetX + (event.clientX - state.diegeticMap.dragStartClientX);
+        state.diegeticMap.offsetY = state.diegeticMap.dragStartOffsetY + (event.clientY - state.diegeticMap.dragStartClientY);
+        renderDiegeticMap();
+      });
+      ["pointerup", "pointercancel", "pointerleave"].forEach((eventName) => {
+        els.diegeticMapViewport.addEventListener(eventName, (event) => {
+          if (state.diegeticMap.pointerId !== null && event.pointerId === state.diegeticMap.pointerId) {
+            stopDrag();
+          }
+        });
+      });
+      els.diegeticMapViewport.addEventListener("wheel", (event) => {
+        if (!isDiegeticMapMode() || state.diegeticMap.failed) {
+          return;
+        }
+        event.preventDefault();
+        const rect = getDiegeticViewportRect();
+        if (!rect.width || !rect.height) {
+          return;
+        }
+        const fitScale = getDiegeticFitScale();
+        const oldScale = state.diegeticMap.scale;
+        const zoomFactor = event.deltaY < 0 ? 1.1 : (1 / 1.1);
+        const newScale = Math.max(1, Math.min(10, oldScale * zoomFactor));
+        if (newScale === oldScale) {
+          return;
+        }
+        const localX = event.clientX - rect.left;
+        const localY = event.clientY - rect.top;
+        const imageX = (localX - state.diegeticMap.offsetX) / (fitScale * oldScale);
+        const imageY = (localY - state.diegeticMap.offsetY) / (fitScale * oldScale);
+        state.diegeticMap.scale = newScale;
+        state.diegeticMap.offsetX = localX - (imageX * fitScale * newScale);
+        state.diegeticMap.offsetY = localY - (imageY * fitScale * newScale);
+        renderDiegeticMap();
+      }, { passive: false });
     }
 
     async function refreshView() {
@@ -3834,6 +4192,8 @@
       const rect = els.mapPanel.getBoundingClientRect();
       state.mapWidth = Math.max(600, Math.floor(rect.width - 2));
       state.mapHeight = Math.max(420, Math.floor(rect.height - 2));
+      state.diegeticMap.dragging = false;
+      state.diegeticMap.pointerId = null;
       renderMap();
     });
     resizeObserver.observe(els.mapPanel);
@@ -4034,6 +4394,11 @@
         if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (target && target.isContentEditable)) {
           return;
         }
+        if (key === "tab" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+          event.preventDefault();
+          toggleMapMode();
+          return;
+        }
         if (key === "m") {
           event.preventDefault();
           await setOrderModeFromShortcut("march");
@@ -4173,6 +4538,10 @@
         hideHoverCard();
       });
       els.hoverCard.addEventListener("click", (event) => event.stopPropagation());
+      els.mapModeEnvironsBtn.addEventListener("click", () => setMapMode("environs"));
+      els.mapModeDiegeticBtn.addEventListener("click", () => setMapMode("diegetic"));
+      initializeMapModeTabIcons();
+      initializeDiegeticMap();
       try {
         await loadCommanders();
         renderCorrespondents();
@@ -4180,6 +4549,7 @@
         const rect = els.mapPanel.getBoundingClientRect();
         state.mapWidth = Math.max(600, Math.floor(rect.width - 2));
         state.mapHeight = Math.max(420, Math.floor(rect.height - 2));
+        renderMap();
       } catch (err) {
         setStatus(`Init error: ${err.message}`, true);
       }
