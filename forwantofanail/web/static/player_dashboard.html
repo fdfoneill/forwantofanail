@@ -2392,13 +2392,14 @@
       const attackBlockedByStronghold = !!centerCell?.stronghold && !forageBlockedBySiege;
       const besiegeBlockedByStronghold = !!centerCell?.stronghold;
       els.orderModeSelect.value = state.orderMode;
+      els.orderModeSelect.disabled = isRouting;
       els.queueMoveBtn.disabled = !(isMarch || isAttack || isBesiege) || isRouting;
       els.stagedPathList.style.display = (isMarch || isAttack || isBesiege) ? "" : "none";
       els.queueMoveBtn.textContent = isAttack ? "Stage Attack" : (isBesiege ? "Stage Siege" : "Stage Move");
       els.submitOrdersBtn.disabled = isRouting || (isForage && (!isNightOrMatinWatch() || forageBlockedBySiege)) || (isAttack && (attackBlockedByStronghold || !state.stagedAttack)) || (isBesiege && (besiegeBlockedByStronghold || !state.stagedSiege));
       const forageOption = els.orderModeSelect.querySelector("option[value=\"forage\"]");
       if (forageOption) {
-        forageOption.disabled = !isNightOrMatinWatch() || forageBlockedBySiege;
+        forageOption.disabled = isRouting || !isNightOrMatinWatch() || forageBlockedBySiege;
       }
       const attackOption = els.orderModeSelect.querySelector("option[value=\"attack\"]");
       if (attackOption) {
@@ -3919,6 +3920,10 @@
         await stageMoveToCell(state.hoverH3);
       });
       els.orderModeSelect.addEventListener("change", async () => {
+        if (String(state.view?.current_action?.kind || "").trim().toLowerCase() === "rout") {
+          renderOrdersPanel();
+          return;
+        }
         const nextMode = String(els.orderModeSelect.value || "march").trim().toLowerCase();
         if (nextMode === "forage" && (!isNightOrMatinWatch() || isArmyUnderSiege())) {
           state.orderMode = "march";
