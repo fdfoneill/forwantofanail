@@ -5719,6 +5719,11 @@ def list_correspondents(
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
+    armies_by_commander_id = {
+        int(army.commander_id): str(army.army_faction or "").strip()
+        for army in session.query(Army).filter(Army.commander_id.is_not(None)).all()
+        if army.commander_id is not None
+    }
     correspondents = (
         session.query(Commander)
         .filter(Commander.commander_id != commander_id)
@@ -5731,6 +5736,7 @@ def list_correspondents(
             "name": commander.commander_name,
             "title": commander.commander_title,
             "display_name": _commander_display_name(commander),
+            "faction": armies_by_commander_id.get(int(commander.commander_id), ""),
         }
         for commander in correspondents
     ]

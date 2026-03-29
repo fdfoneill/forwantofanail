@@ -2868,14 +2868,38 @@
 
     function renderCorrespondents() {
       const previousValue = els.recipientSelect.value;
+      const activeFactionName = String(state.view?.army?.faction || "").trim();
+      const activeFaction = activeFactionName.toLowerCase();
       if (!state.correspondents.length) {
         els.recipientSelect.innerHTML = "<option value=\"\">No correspondents</option>";
         return;
       }
-      const rows = state.correspondents.map(
-        (c) => `<option value="${c.id}">${c.display_name || c.name}</option>`
-      );
-      els.recipientSelect.innerHTML = rows.join("");
+      const grouped = new Map();
+      for (const correspondent of state.correspondents) {
+        const factionName = String(correspondent?.faction || "").trim() || "Other";
+        if (!grouped.has(factionName)) {
+          grouped.set(factionName, []);
+        }
+        grouped.get(factionName).push(correspondent);
+      }
+      const renderOption = (c) => `<option value="${c.id}">${c.display_name || c.name}</option>`;
+      const factionNames = Array.from(grouped.keys()).sort((a, b) => {
+        const aIsActive = activeFaction && a.toLowerCase() === activeFaction;
+        const bIsActive = activeFaction && b.toLowerCase() === activeFaction;
+        if (aIsActive && !bIsActive) {
+          return -1;
+        }
+        if (!aIsActive && bIsActive) {
+          return 1;
+        }
+        return a.localeCompare(b);
+      });
+      const groups = factionNames.map((factionName) => (
+        `<optgroup label="${escapeHtml(factionName)}">` +
+        grouped.get(factionName).map(renderOption).join("") +
+        `</optgroup>`
+      ));
+      els.recipientSelect.innerHTML = groups.join("");
       if (previousValue && state.correspondents.some((c) => c.id === previousValue)) {
         els.recipientSelect.value = previousValue;
       }
