@@ -1181,14 +1181,16 @@
       if (renderedWidth <= rect.width) {
         state.diegeticMap.offsetX = (rect.width - renderedWidth) / 2;
       } else {
-        const minX = rect.width - renderedWidth;
-        state.diegeticMap.offsetX = Math.min(0, Math.max(minX, Number(state.diegeticMap.offsetX) || 0));
+        const maxX = rect.width / 2;
+        const minX = (rect.width / 2) - renderedWidth;
+        state.diegeticMap.offsetX = Math.min(maxX, Math.max(minX, Number(state.diegeticMap.offsetX) || 0));
       }
       if (renderedHeight <= rect.height) {
         state.diegeticMap.offsetY = (rect.height - renderedHeight) / 2;
       } else {
-        const minY = rect.height - renderedHeight;
-        state.diegeticMap.offsetY = Math.min(0, Math.max(minY, Number(state.diegeticMap.offsetY) || 0));
+        const maxY = rect.height / 2;
+        const minY = (rect.height / 2) - renderedHeight;
+        state.diegeticMap.offsetY = Math.min(maxY, Math.max(minY, Number(state.diegeticMap.offsetY) || 0));
       }
     }
 
