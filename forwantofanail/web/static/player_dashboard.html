@@ -131,6 +131,18 @@
       color: var(--muted);
       font-size: 12px;
     }
+    .morale-display {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .morale-icon {
+      display: inline-block;
+      width: 26px;
+      height: 26px;
+      object-fit: contain;
+      vertical-align: middle;
+    }
     .army-table {
       width: 100%;
       border-collapse: collapse;
@@ -1045,6 +1057,19 @@
       3: "Sixbell",
       4: "Vesper",
     };
+    const MORALE_ICON_BY_BUCKET = {
+      2: "/static/icons/morale/morale_2.svg",
+      3: "/static/icons/morale/morale_3_4.svg",
+      4: "/static/icons/morale/morale_3_4.svg",
+      5: "/static/icons/morale/morale_5_6.svg",
+      6: "/static/icons/morale/morale_5_6.svg",
+      7: "/static/icons/morale/morale_7_8.svg",
+      8: "/static/icons/morale/morale_7_8.svg",
+      9: "/static/icons/morale/morale_9.svg",
+      10: "/static/icons/morale/morale_10_11_12.svg",
+      11: "/static/icons/morale/morale_10_11_12.svg",
+      12: "/static/icons/morale/morale_10_11_12.svg",
+    };
     const WATCH_CHRONOLOGICAL_ORDER = {
       1: 0,
       2: 1,
@@ -1360,6 +1385,29 @@
       return `${base} Watch`;
     }
 
+    function moraleIconPath(morale) {
+      const value = Number(morale);
+      if (!Number.isFinite(value)) {
+        return "";
+      }
+      const clamped = Math.max(2, Math.min(12, Math.round(value)));
+      return MORALE_ICON_BY_BUCKET[clamped] || "";
+    }
+
+    function renderMoraleSummary(morale) {
+      const iconPath = moraleIconPath(morale);
+      const value = Number(morale);
+      const safeLabel = Number.isFinite(value)
+        ? `Morale ${Math.max(2, Math.min(12, Math.round(value)))}`
+        : "Morale";
+      if (!iconPath) {
+        els.armyMoraleText.textContent = "Morale: -";
+        return;
+      }
+      els.armyMoraleText.innerHTML =
+        `<span class="morale-display">Morale: <img class="morale-icon" src="${iconPath}" alt="${safeLabel}" title="${safeLabel}" /></span>`;
+    }
+
     function formatScenarioDate(dayValue) {
       const day = Number(dayValue);
       if (!Number.isFinite(day)) {
@@ -1469,7 +1517,7 @@
     function renderArmyStatusSection(view) {
       if (!view?.army) {
         els.armyStatusText.textContent = "Army (- strong)";
-        els.armyMoraleText.textContent = "Morale: -";
+        renderMoraleSummary(null);
         els.armySummaryText.textContent = "-";
         els.armySummaryExtraText.textContent = "-";
         els.armyCompositionBody.innerHTML = "";
@@ -1482,9 +1530,9 @@
       }
 
       const armyName = String(view?.army?.name || "Army").trim() || "Army";
-      const moraleCurrent = String(view?.army?.morale?.current ?? "-");
+      const moraleCurrent = Number(view?.army?.morale?.current);
       const noncombatants = String(view?.army?.composition?.noncombatants ?? "-");
-      els.armyMoraleText.textContent = `Morale: ${moraleCurrent}`;
+      renderMoraleSummary(moraleCurrent);
       const detachments = Array.isArray(view?.army?.composition?.detachments) ? view.army.composition.detachments : [];
       let totalWarriors = 0;
       let infantry = 0;
