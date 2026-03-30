@@ -1,0 +1,22 @@
+{
+  "csv_files": {
+    "terrain_types": "terrain_types.csv",
+    "locations": "locations.csv",
+    "commanders": "commanders.csv",
+    "armies": "armies.csv",
+    "detachments": "detachments.csv",
+    "detachment_specials": "detachment_specials.csv",
+    "commander_traits": "commander_traits.csv",
+    "strongholds": "strongholds.csv"
+  },
+  "optional_csv_files": {
+    "movements": "movements.csv"
+  },
+  "static_assets": [
+    {
+      "source": "assets/map_diegetic.png",
+      "target": "map_diegetic.png",
+      "allow_existing_target": true
+    }
+  ]
+}
