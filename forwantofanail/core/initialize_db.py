@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
+import shutil
 from datetime import date
 from pathlib import Path
 
@@ -98,9 +100,125 @@ def _load_csv(model_cls, csv_path: Path, converters: dict[str, callable]):
             yield model_cls(**payload)
 
 
+def _default_scenario_manifest() -> dict[str, object]:
+    return {
+        "csv_files": {
+            "terrain_types": "terrain_types.csv",
+            "locations": "locations.csv",
+            "commanders": "commanders.csv",
+            "armies": "armies.csv",
+            "detachments": "detachments.csv",
+            "detachment_specials": "detachment_specials.csv",
+            "commander_traits": "commander_traits.csv",
+            "strongholds": "strongholds.csv",
+        },
+        "optional_csv_files": {
+            "movements": "movements.csv",
+        },
+        "static_assets": [
+            {
+                "source": "assets/map_diegetic.png",
+                "target": "map_diegetic.png",
+                "allow_existing_target": True,
+            }
+        ],
+    }
+
+
+def _load_scenario_manifest(data_dir: Path) -> dict[str, object]:
+    manifest_path = data_dir / "scenario_manifest.json"
+    if not manifest_path.exists():
+        return _default_scenario_manifest()
+    with manifest_path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise ValueError(f"Scenario manifest must be a JSON object: '{manifest_path}'.")
+    manifest = _default_scenario_manifest()
+    manifest.update(payload)
+    return manifest
+
+
+def _resolve_scenario_file(data_dir: Path, relative_path: str) -> Path:
+    candidate = (data_dir / str(relative_path)).resolve()
+    data_root = data_dir.resolve()
+    if data_root not in (candidate, *candidate.parents):
+        raise ValueError(f"Scenario path escapes data directory: '{relative_path}'.")
+    return candidate
+
+
+def _resolve_static_target(relative_path: str) -> Path:
+    static_root = Path(__file__).resolve().parents[1] / "web" / "static"
+    candidate = (static_root / str(relative_path)).resolve()
+    if static_root.resolve() not in (candidate, *candidate.parents):
+        raise ValueError(f"Static asset target escapes static directory: '{relative_path}'.")
+    return candidate
+
+
+def _manifest_csv_path(manifest: dict[str, object], data_dir: Path, key: str, *, optional: bool = False) -> Path | None:
+    section_name = "optional_csv_files" if optional else "csv_files"
+    section = manifest.get(section_name)
+    if not isinstance(section, dict):
+        if optional:
+            return None
+        raise ValueError(f"Scenario manifest section '{section_name}' must be an object.")
+    relative_path = section.get(key)
+    if relative_path is None:
+        if optional:
+            return None
+        raise KeyError(f"Scenario manifest missing required csv mapping '{key}'.")
+    return _resolve_scenario_file(data_dir, str(relative_path))
+
+
+def _validate_scenario_manifest(manifest: dict[str, object], data_dir: Path) -> None:
+    required_section = manifest.get("csv_files")
+    if not isinstance(required_section, dict):
+        raise ValueError("Scenario manifest section 'csv_files' must be an object.")
+    for key in required_section:
+        csv_path = _manifest_csv_path(manifest, data_dir, str(key), optional=False)
+        if csv_path is None or not csv_path.exists():
+            raise FileNotFoundError(f"Scenario reset requires CSV '{key}' at '{csv_path}'.")
+    optional_section = manifest.get("optional_csv_files", {})
+    if optional_section is not None and not isinstance(optional_section, dict):
+        raise ValueError("Scenario manifest section 'optional_csv_files' must be an object.")
+    static_assets = manifest.get("static_assets", [])
+    if static_assets is None:
+        static_assets = []
+    if not isinstance(static_assets, list):
+        raise ValueError("Scenario manifest section 'static_assets' must be a list.")
+    for row in static_assets:
+        if not isinstance(row, dict):
+            raise ValueError("Each scenario static asset entry must be an object.")
+        source = row.get("source")
+        target = row.get("target")
+        if not source or not target:
+            raise ValueError("Each scenario static asset entry requires 'source' and 'target'.")
+        _resolve_scenario_file(data_dir, str(source))
+        _resolve_static_target(str(target))
+
+
+def _prepare_scenario_static_assets(manifest: dict[str, object], data_dir: Path) -> None:
+    static_assets = manifest.get("static_assets", [])
+    for row in static_assets if isinstance(static_assets, list) else []:
+        source_path = _resolve_scenario_file(data_dir, str(row["source"]))
+        target_path = _resolve_static_target(str(row["target"]))
+        allow_existing_target = bool(row.get("allow_existing_target"))
+        if source_path.exists():
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source_path, target_path)
+            continue
+        if allow_existing_target and target_path.exists():
+            continue
+        raise FileNotFoundError(
+            f"Scenario reset requires asset at either '{source_path}' or existing target '{target_path}'."
+        )
+
+
 def initialize_database(data_dir: Path, reset: bool = False) -> None:
+    manifest = _load_scenario_manifest(data_dir)
+    _validate_scenario_manifest(manifest, data_dir)
     engine = get_engine()
     if reset:
+        _prepare_scenario_static_assets(manifest, data_dir)
         Base.metadata.drop_all(engine)
     Base.metadata.create_all(engine)
 
@@ -109,7 +227,7 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
         session.add_all(
             _load_csv(
                 TerrainType,
-                data_dir / "terrain_types.csv",
+                _manifest_csv_path(manifest, data_dir, "terrain_types"),
                 {
                     "terrain_id": _parse_int,
                     "terrain_name": str,
@@ -122,7 +240,7 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
         session.add_all(
             _load_csv(
                 Location,
-                data_dir / "locations.csv",
+                _manifest_csv_path(manifest, data_dir, "locations"),
                 {
                     "location_id": str,
                     "is_road": _parse_bool,
@@ -136,7 +254,7 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
         session.add_all(
             _load_csv(
                 Commander,
-                data_dir / "commanders.csv",
+                _manifest_csv_path(manifest, data_dir, "commanders"),
                 {
                     "commander_id": _parse_int,
                     "commander_name": str,
@@ -147,7 +265,8 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
         )
         armies: list[Army] = []
         source_noncombatants_by_army_id: dict[int, int] = {}
-        with (data_dir / "armies.csv").open("r", encoding="utf-8-sig", newline="") as handle:
+        armies_path = _manifest_csv_path(manifest, data_dir, "armies")
+        with armies_path.open("r", encoding="utf-8-sig", newline="") as handle:
             reader = csv.DictReader(handle)
             for row in reader:
                 army_id = _parse_int(row.get("army_id"))
@@ -177,7 +296,7 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
         detachments = list(
             _load_csv(
                 Detachment,
-                data_dir / "detachments.csv",
+                _manifest_csv_path(manifest, data_dir, "detachments"),
                 {
                     "detachment_id": _parse_int,
                     "detachment_name": str,
@@ -209,7 +328,7 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
         session.add_all(
             _load_csv(
                 DetachmentSpecial,
-                data_dir / "detachment_specials.csv",
+                _manifest_csv_path(manifest, data_dir, "detachment_specials"),
                 {
                     "detachment_id": _parse_int,
                     "special_name": str,
@@ -219,7 +338,7 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
         session.add_all(
             _load_csv(
                 CommanderTrait,
-                data_dir / "commander_traits.csv",
+                _manifest_csv_path(manifest, data_dir, "commander_traits"),
                 {
                     "commander_id": _parse_int,
                     "trait_name": str,
@@ -229,7 +348,7 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
         session.add_all(
             _load_csv(
                 Stronghold,
-                data_dir / "strongholds.csv",
+                _manifest_csv_path(manifest, data_dir, "strongholds"),
                 {
                     "stronghold_id": _parse_int,
                     "location_id": str,
@@ -284,8 +403,8 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
         if generated_garrison_detachments:
             session.add_all(generated_garrison_detachments)
             detachments.extend(generated_garrison_detachments)
-        movements_path = data_dir / "movements.csv"
-        if movements_path.exists():
+        movements_path = _manifest_csv_path(manifest, data_dir, "movements", optional=True)
+        if movements_path is not None and movements_path.exists():
             session.add_all(
                 _load_csv(
                     Movement,

@@ -32,14 +32,17 @@ forwantofanail/
     │   ├── supply.py             # Supply capacity + consumption
     │   └── time.py               # Watch progression
     ├── data/
-    │   └── *.csv                 # Scenario source data
+    │   ├── scenario_manifest.json
+    │   ├── *.csv                 # Scenario source data
+    │   └── assets/               # Scenario-specific images copied into runtime locations on reset
     └── web/
         └── static/
             ├── dev_dashboard.html
             ├── player_dashboard.html
             └── icons/
                 ├── strongholds/
-                └── armies/
+                ├── armies/
+                └── map_views/
 ```
 
 # Getting Started
@@ -58,6 +61,15 @@ Run this when starting a new game state from CSVs or after schema changes:
 ```bash
 python -m forwantofanail.core.initialize_db --reset
 ```
+
+This reset now reads [forwantofanail/data/scenario_manifest.json](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/data/scenario_manifest.json), validates the scenario package, copies any declared static assets into `web/static`, and then loads the scenario tables.
+
+The default scenario package currently expects:
+
+* CSVs in [forwantofanail/data](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/data)
+* diegetic map image in [forwantofanail/data/assets/map_diegetic.png](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/data/assets/map_diegetic.png)
+
+If the diegetic map is missing from `data/assets`, reset will accept an already-existing [forwantofanail/web/static/map_diegetic.png](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/web/static/map_diegetic.png). If neither file exists, reset fails before any tables are dropped.
 
 This reset also auto-generates one garrison army for every stronghold based on its type.
 
