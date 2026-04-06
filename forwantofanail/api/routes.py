@@ -1964,7 +1964,18 @@ def _auto_apply_follow_road_orders(session: Session, clock: GameClock) -> None:
             for destination_h3 in [_get_destination_h3(action)]
             if destination_h3
         ]
-        current_watch_cost = _path_watches_for_army(session, army, army.location_id, queued_path)
+        try:
+            current_watch_cost = _path_watches_for_army(session, army, army.location_id, queued_path)
+        except ValueError:
+            standing.follow_road_enabled = False
+            standing.updated_at = datetime.now(timezone.utc)
+            _set_standing_order_report(
+                session,
+                standing,
+                clock=clock,
+                message="Road march halted: queued route no longer contiguous; new orders needed.",
+            )
+            continue
         if current_watch_cost >= max_budget:
             continue
 
