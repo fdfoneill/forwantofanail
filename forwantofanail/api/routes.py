@@ -228,11 +228,12 @@ def _cell_title(
         return _cell_army_display_name(first_army)
     if stronghold_name:
         return stronghold_name
-    if terrain_type.strip().lower() == "river" and has_road:
+    normalized_terrain = terrain_type.strip().lower()
+    if normalized_terrain in {"river", "open water"} and has_road:
         return "bridge"
     if has_road:
         return "road"
-    if terrain_type.strip().lower() == "open water":
+    if normalized_terrain == "open water":
         region_name = str(region_name or "").strip()
         if region_name:
             return region_name

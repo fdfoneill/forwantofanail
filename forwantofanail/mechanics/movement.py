@@ -10,6 +10,7 @@ from forwantofanail.mechanics.time import GameTime, Watch, advance_time
 
 
 RIVER_TERRAIN_NAME = "River"
+OPEN_WATER_TERRAIN_NAME = "Open Water"
 
 
 def _get_h3():
@@ -76,6 +77,10 @@ def _is_river(terrain: TerrainType) -> bool:
     return terrain.terrain_name.strip().lower() == RIVER_TERRAIN_NAME.lower()
 
 
+def _is_open_water(terrain: TerrainType) -> bool:
+    return terrain.terrain_name.strip().lower() == OPEN_WATER_TERRAIN_NAME.lower()
+
+
 def _movement_cost(session: Session, army: Army, origin: Location, destination: Location) -> int:
     origin_is_stronghold = _is_stronghold_location(session, origin.location_id)
     destination_is_stronghold = _is_stronghold_location(session, destination.location_id)
@@ -95,7 +100,7 @@ def _movement_cost(session: Session, army: Army, origin: Location, destination: 
         raise ValueError("Armies with wagons cannot move off-road.")
 
     terrain = _terrain(session, destination)
-    if terrain.is_water and not _is_river(terrain) and not army.is_embarked and not destination_is_stronghold:
+    if terrain.is_water and not _is_river(terrain) and not effective_on_road and not army.is_embarked and not destination_is_stronghold:
         raise ValueError("Armies must be embarked to enter open water.")
 
     if _is_river(terrain) and not effective_on_road and not destination_is_stronghold:
