@@ -284,6 +284,16 @@ def _to_watch_stamp(day: int, watch: int) -> dict[str, int]:
     return {"day": day, "watch": watch}
 
 
+def _watch_sort_key(day: int, watch: int) -> tuple[int, int]:
+    return (int(day), WATCH_CHRONOLOGICAL_SORT.get(int(watch), int(watch)))
+
+
+def _previous_watch_stamp(day: int, watch: int) -> tuple[int, int]:
+    if int(watch) == int(Watch.MATIN):
+        return int(day) - 1, int(Watch.NIGHT)
+    return int(day), (int(watch) - 1) % 5
+
+
 def _is_delivered_filter(day: int, watch: int):
     return or_(
         Message.delivery_day < day,
@@ -4356,6 +4366,59 @@ def _serialize_message_summary(messages: list[Message]) -> dict[str, Any]:
     return {"unread_count": unread_count, "latest": latest}
 
 
+def _load_delivered_messages(session: Session, commander_id: int, clock: GameClock) -> list[Message]:
+    return (
+        session.query(Message)
+        .options(joinedload(Message.sender_commander))
+        .filter(
+            Message.recipient_id == commander_id,
+            Message.status == "received",
+            _is_delivered_filter(clock.day, clock.watch),
+        )
+        .order_by(
+            Message.delivery_day.desc(),
+            _watch_chronological_order_sql(Message.delivery_watch).desc(),
+            Message.message_id.desc(),
+        )
+        .all()
+    )
+
+
+def _load_delivered_alerts(
+    session: Session,
+    commander_id: int,
+    clock: GameClock,
+    *,
+    limit: int | None = None,
+    unread_only: bool = False,
+) -> list[Alert]:
+    query = session.query(Alert).filter(
+        or_(Alert.recipient_commander_id == commander_id, Alert.recipient_commander_id.is_(None)),
+        or_(
+            Alert.delivered_day < clock.day,
+            and_(Alert.delivered_day == clock.day, Alert.delivered_watch <= clock.watch),
+        ),
+        or_(
+            Alert.signal_kind != "state",
+            and_(
+                Alert.signal_kind == "state",
+                Alert.created_day == clock.day,
+                Alert.created_watch == clock.watch,
+            ),
+        ),
+    )
+    if unread_only:
+        query = query.filter(Alert.is_read.is_(False))
+    query = query.order_by(
+        Alert.delivered_day.desc(),
+        _watch_chronological_order_sql(Alert.delivered_watch).desc(),
+        Alert.alert_id.desc(),
+    )
+    if limit is not None:
+        query = query.limit(limit)
+    return query.all()
+
+
 def _serialize_action(session: Session, action: Action, commander_id: int | None = None) -> dict[str, Any]:
     payload = {
         "action_id": _action_ref(action.action_id),
@@ -4433,6 +4496,438 @@ def _serialize_remaining_itinerary(session: Session, commander_id: int) -> dict[
         "remaining_moves": remaining_moves,
         "remaining_rout": remaining_rout,
         "siege_target_h3": siege_target_h3,
+    }
+
+
+def _build_commander_view_payload(
+    session: Session,
+    commander_id: int,
+    *,
+    clock: GameClock | None = None,
+) -> dict[str, Any]:
+    clock = clock or _get_or_create_clock(session)
+    army = _find_commander_army(session, commander_id)
+    environs_radius = _environs_radius_for_army(army)
+    delivered_messages = _load_delivered_messages(session, commander_id, clock)
+    current_action = _get_current_action_row(session, commander_id)
+    standing_order = session.get(StandingOrder, commander_id)
+    return {
+        "time": _clock_payload(clock),
+        "army": _serialize_army(army),
+        "environs": _serialize_environs(
+            session,
+            army.location_id,
+            environs_radius,
+            exclude_army_id=army.army_id,
+            viewer_commander_id=commander_id,
+            viewer_army=army,
+        ),
+        "messages": _serialize_message_summary(delivered_messages),
+        "current_action": _serialize_action(session, current_action, commander_id) if current_action else None,
+        "itinerary": _serialize_remaining_itinerary(session, commander_id),
+        "standing_orders": _serialize_standing_orders(standing_order),
+    }
+
+
+def _brief_cell_label(cell: dict[str, Any]) -> str:
+    stronghold = cell.get("stronghold") or {}
+    stronghold_name = str(stronghold.get("name") or "").strip()
+    if stronghold_name:
+        return stronghold_name
+    title = str(cell.get("cell_title") or "").strip()
+    if title:
+        return title
+    region = str(cell.get("region") or "").strip()
+    if region:
+        return region
+    return str(cell.get("h3") or "").strip()
+
+
+def _brief_supply_status(army_view: dict[str, Any]) -> str:
+    supply = army_view.get("supply") or {}
+    days_estimate = supply.get("days_estimate")
+    if days_estimate is None:
+        return "stable"
+    if days_estimate <= 1:
+        return "critical"
+    if days_estimate <= 3:
+        return "tight"
+    if days_estimate <= 7:
+        return "watch"
+    return "stable"
+
+
+def _brief_morale_status(army_view: dict[str, Any]) -> str:
+    morale = army_view.get("morale") or {}
+    current = int(morale.get("current") or 0)
+    if current <= 4:
+        return "shaken"
+    if current <= 7:
+        return "worn"
+    if current >= 11:
+        return "confident"
+    return "steady"
+
+
+def _brief_posture_summary(
+    session: Session,
+    army: Army,
+    current_action: dict[str, Any] | None,
+) -> str:
+    if _army_is_under_siege(session, army):
+        stronghold = _stronghold_at_h3(session, army.location_id)
+        place = stronghold.stronghold_name if stronghold is not None else "current stronghold"
+        return f"holding under siege at {place}"
+    active_siege = _active_siege_for_besieger(session, army.army_id)
+    if active_siege is not None:
+        stronghold = session.get(Stronghold, active_siege.stronghold_id)
+        place = stronghold.stronghold_name if stronghold is not None else "enemy stronghold"
+        return f"maintaining siege at {place}"
+    if current_action is not None:
+        kind = str(current_action.get("kind") or "").strip()
+        if kind == "move":
+            destination_h3 = str(current_action.get("destination_h3") or "").strip()
+            if destination_h3:
+                return f"marching toward {destination_h3}"
+        if kind == "attack":
+            return "committed to attack"
+        if kind == "forage":
+            return "foraging nearby"
+        if kind == "rout":
+            return "routing and regrouping"
+        if kind == "besiege":
+            target_name = str(current_action.get("target_stronghold_name") or "").strip()
+            if target_name:
+                return f"moving to invest {target_name}"
+    if _army_is_in_stronghold(session, army):
+        stronghold = _stronghold_at_h3(session, army.location_id)
+        place = stronghold.stronghold_name if stronghold is not None else "stronghold"
+        return f"holding at {place}"
+    return "in the field"
+
+
+def _brief_supply_and_readiness(
+    session: Session,
+    army: Army,
+    army_view: dict[str, Any],
+    standing_orders: dict[str, Any],
+) -> dict[str, Any]:
+    supply = army_view.get("supply") or {}
+    status = _brief_supply_status(army_view)
+    constraints: list[str] = []
+    if any(int(det.wagon_count or 0) > 0 for det in army.detachments):
+        constraints.append("wagons prevent off-road movement")
+    if _army_has_long_column(army):
+        constraints.append("long column slows completion at Matin and Night")
+    if army.is_embarked:
+        constraints.append("embarked movement posture")
+    if standing_orders.get("forced_march", {}).get("enabled"):
+        constraints.append("forced march standing order active")
+    forage_gain, forage_cells = _forage_supply_gain_for_army(session, army)
+    viable_forage_hexes = sum(1 for location in forage_cells if int(location.settlement or 0) > 0)
+    return {
+        "status": status,
+        "morale_status": _brief_morale_status(army_view),
+        "supply": supply,
+        "forage_outlook": {
+            "potential_supply_gain": forage_gain,
+            "settlement_cells_in_reach": viable_forage_hexes,
+        },
+        "constraints": constraints,
+    }
+
+
+def _brief_movement_options(
+    session: Session,
+    army: Army,
+    environs: dict[str, Any],
+) -> dict[str, Any]:
+    visible_cells = {str(cell.get("h3")): cell for cell in environs.get("cells", [])}
+    immediate: list[dict[str, Any]] = []
+    try:
+        valid_destinations = list_valid_destinations_from_origin(session, army.army_id, army.location_id)
+    except ValueError:
+        valid_destinations = []
+    filtered_destinations = [
+        h3_index
+        for h3_index in valid_destinations
+        if not _is_enemy_occupied(session, destination_h3=h3_index, moving_army=army)
+    ]
+    for destination_h3 in sorted(filtered_destinations):
+        cell = visible_cells.get(destination_h3, {})
+        stronghold = cell.get("stronghold") or {}
+        immediate.append(
+            {
+                "h3": destination_h3,
+                "label": _brief_cell_label(cell) if cell else destination_h3,
+                "watches_needed": calculate_move_watches_from_origin(session, army.army_id, army.location_id, destination_h3),
+                "terrain_type": cell.get("terrain_type"),
+                "has_road": cell.get("has_road"),
+                "stronghold": stronghold if stronghold else None,
+            }
+        )
+
+    visible_set = set(visible_cells)
+    frontier: list[tuple[int, str, list[str]]] = [(0, army.location_id, [])]
+    best_costs: dict[str, int] = {army.location_id: 0}
+    reachable: list[dict[str, Any]] = []
+    while frontier:
+        cost_so_far, origin_h3, path = frontier.pop(0)
+        try:
+            onward = list_valid_destinations_from_origin(session, army.army_id, origin_h3)
+        except ValueError:
+            continue
+        for destination_h3 in sorted(onward):
+            if destination_h3 not in visible_set:
+                continue
+            if _is_enemy_occupied(session, destination_h3=destination_h3, moving_army=army):
+                continue
+            step_cost = calculate_move_watches_from_origin(session, army.army_id, origin_h3, destination_h3)
+            total_cost = cost_so_far + step_cost
+            if total_cost > 2:
+                continue
+            previous_best = best_costs.get(destination_h3)
+            if previous_best is not None and previous_best <= total_cost:
+                continue
+            best_costs[destination_h3] = total_cost
+            next_path = path + [destination_h3]
+            frontier.append((total_cost, destination_h3, next_path))
+            if destination_h3 == army.location_id:
+                continue
+            cell = visible_cells.get(destination_h3, {})
+            reachable.append(
+                {
+                    "h3": destination_h3,
+                    "label": _brief_cell_label(cell) if cell else destination_h3,
+                    "watches_needed": total_cost,
+                    "path": next_path,
+                }
+            )
+    reachable.sort(key=lambda item: (int(item["watches_needed"]), len(item["path"]), str(item["label"])))
+    return {
+        "immediate": immediate,
+        "reachable_next_2_watches": reachable[:8],
+    }
+
+
+def _brief_threats_and_opportunities(
+    army_view: dict[str, Any],
+    environs: dict[str, Any],
+) -> dict[str, list[dict[str, Any]]]:
+    faction = str(army_view.get("faction") or "").strip()
+    center_h3 = str(environs.get("center_h3") or "").strip()
+    threats: list[dict[str, Any]] = []
+    opportunities: list[dict[str, Any]] = []
+    for cell in environs.get("cells", []):
+        location_h3 = str(cell.get("h3") or "").strip()
+        if not location_h3 or location_h3 == center_h3:
+            continue
+        distance = max(0, _grid_distance(center_h3, location_h3))
+        stronghold = cell.get("stronghold") or {}
+        stronghold_faction = str(stronghold.get("faction") or "").strip()
+        stronghold_name = str(stronghold.get("name") or "").strip()
+        other_armies = list(cell.get("other_armies") or [])
+        for enemy in other_armies:
+            enemy_faction = str(enemy.get("faction") or "").strip()
+            if not enemy_faction or enemy_faction == faction:
+                continue
+            title = str(enemy.get("name") or enemy.get("commander") or enemy_faction).strip()
+            detail_bits = [f"{title} at {_brief_cell_label(cell)}"]
+            if enemy.get("infantry") is not None or enemy.get("cavalry") is not None:
+                detail_bits.append(
+                    f"infantry {int(enemy.get('infantry') or 0)}, cavalry {int(enemy.get('cavalry') or 0)}"
+                )
+            elif enemy.get("strength_rounded") is not None:
+                detail_bits.append(f"estimated strength about {int(enemy.get('strength_rounded') or 0)}")
+            threats.append(
+                {
+                    "kind": "enemy_army",
+                    "priority": "immediate" if distance <= 1 else "watch",
+                    "location_h3": location_h3,
+                    "title": title,
+                    "detail": "; ".join(detail_bits),
+                }
+            )
+        if stronghold_name and stronghold_faction and stronghold_faction != faction and stronghold.get("has_live_defenders"):
+            opportunities.append(
+                {
+                    "kind": "hostile_stronghold",
+                    "priority": "immediate" if distance <= 1 else "watch",
+                    "location_h3": location_h3,
+                    "title": stronghold_name,
+                    "detail": f"{stronghold_name} is held by {stronghold_faction} with defenders present",
+                }
+            )
+        if stronghold_name and stronghold_faction == faction and stronghold.get("under_siege"):
+            threats.append(
+                {
+                    "kind": "friendly_stronghold_under_siege",
+                    "priority": "immediate" if distance <= 1 else "watch",
+                    "location_h3": location_h3,
+                    "title": stronghold_name,
+                    "detail": f"{stronghold_name} is under siege",
+                }
+            )
+    threats.sort(key=lambda item: (item["priority"] != "immediate", item["location_h3"], item["title"]))
+    opportunities.sort(key=lambda item: (item["priority"] != "immediate", item["location_h3"], item["title"]))
+    return {
+        "threats": threats[:8],
+        "opportunities": opportunities[:8],
+    }
+
+
+def _brief_recent_changes(
+    clock: GameClock,
+    alerts: list[Alert],
+    messages: list[Message],
+    environs: dict[str, Any],
+) -> dict[str, Any]:
+    previous_day, previous_watch = _previous_watch_stamp(clock.day, clock.watch)
+    threshold = _watch_sort_key(previous_day, previous_watch)
+    new_alerts = [
+        _serialize_alert(alert)
+        for alert in alerts
+        if _watch_sort_key(int(alert.delivered_day), int(alert.delivered_watch)) > threshold
+    ]
+    new_messages = [
+        {
+            "id": _message_ref(message.message_id),
+            "from": {"name": _message_sender_display_name(message)},
+            "delivered_watch": _to_watch_stamp(message.delivery_day, message.delivery_watch),
+            "priority": message.priority,
+            "is_read": message.is_read,
+        }
+        for message in messages
+        if _watch_sort_key(int(message.delivery_day), int(message.delivery_watch)) > threshold
+    ]
+    sightings = []
+    center_h3 = str(environs.get("center_h3") or "").strip()
+    for cell in environs.get("cells", []):
+        location_h3 = str(cell.get("h3") or "").strip()
+        if not location_h3 or location_h3 == center_h3:
+            continue
+        distance = max(0, _grid_distance(center_h3, location_h3))
+        if distance > 1:
+            continue
+        if cell.get("other_armies"):
+            sightings.append(
+                {
+                    "location_h3": location_h3,
+                    "title": _brief_cell_label(cell),
+                    "detail": f"{len(cell.get('other_armies') or [])} observed army contact(s) adjacent",
+                }
+            )
+    return {
+        "since_watch": _to_watch_stamp(previous_day, previous_watch),
+        "alerts": new_alerts[:8],
+        "messages": new_messages[:5],
+        "sightings": sightings[:5],
+    }
+
+
+def _brief_correspondence(messages: list[Message]) -> dict[str, Any]:
+    unread = [message for message in messages if not message.is_read]
+    high_priority = [message for message in unread if str(message.priority or "").strip().lower() == "high"]
+    highlights = []
+    for message in unread[:5]:
+        content = " ".join(str(message.content or "").strip().split())
+        highlights.append(
+            {
+                "id": _message_ref(message.message_id),
+                "from": {"name": _message_sender_display_name(message)},
+                "priority": message.priority,
+                "delivered_watch": _to_watch_stamp(message.delivery_day, message.delivery_watch),
+                "reply_recommended": True,
+                "excerpt": content[:160],
+            }
+        )
+    return {
+        "unread_count": len(unread),
+        "high_priority_unread_count": len(high_priority),
+        "highlights": highlights,
+    }
+
+
+def _brief_active_intent(
+    current_action: dict[str, Any] | None,
+    itinerary: dict[str, Any],
+    standing_orders: dict[str, Any],
+) -> dict[str, Any]:
+    summary = "awaiting fresh orders"
+    if current_action is not None:
+        kind = str(current_action.get("kind") or "").strip()
+        state = str(current_action.get("state") or "").strip()
+        if kind == "move":
+            destination_h3 = str(current_action.get("destination_h3") or "").strip()
+            summary = f"{state} move toward {destination_h3}" if destination_h3 else f"{state} move order"
+        elif kind == "besiege":
+            target = str(current_action.get("target_stronghold_name") or current_action.get("target_h3") or "").strip()
+            summary = f"{state} siege order against {target}" if target else f"{state} siege order"
+        else:
+            summary = f"{state} {kind} order"
+    elif itinerary.get("remaining_moves"):
+        summary = f"{len(itinerary.get('remaining_moves') or [])} queued march step(s)"
+    follow_road_enabled = bool(standing_orders.get("follow_road", {}).get("enabled"))
+    forced_march_enabled = bool(standing_orders.get("forced_march", {}).get("enabled"))
+    return {
+        "summary": summary,
+        "current_action": current_action,
+        "itinerary": itinerary,
+        "standing_orders": {
+            "follow_road_enabled": follow_road_enabled,
+            "forced_march_enabled": forced_march_enabled,
+            "follow_road_last_report": standing_orders.get("follow_road", {}).get("last_report"),
+        },
+    }
+
+
+def _build_commander_brief_payload(
+    session: Session,
+    commander_id: int,
+    *,
+    clock: GameClock | None = None,
+) -> dict[str, Any]:
+    clock = clock or _get_or_create_clock(session)
+    view = _build_commander_view_payload(session, commander_id, clock=clock)
+    army = _find_commander_army(session, commander_id)
+    alerts = _load_delivered_alerts(session, commander_id, clock)
+    messages = _load_delivered_messages(session, commander_id, clock)
+    army_view = view["army"]
+    environs = view["environs"]
+    current_action = view["current_action"]
+    standing_orders = view["standing_orders"]
+    center_cell = next(
+        (cell for cell in environs.get("cells", []) if str(cell.get("h3") or "") == str(environs.get("center_h3") or "")),
+        None,
+    )
+    center_stronghold = (center_cell or {}).get("stronghold") or {}
+    location_label = _brief_cell_label(center_cell or {"h3": army.location_id})
+    situation_summary = {
+        "location_h3": army.location_id,
+        "location_label": location_label,
+        "watch": view["time"],
+        "posture": _brief_posture_summary(session, army, current_action),
+        "status_flags": army_view.get("status_flags") or [],
+        "location_context": {
+            "terrain_type": (center_cell or {}).get("terrain_type"),
+            "has_road": (center_cell or {}).get("has_road"),
+            "stronghold": center_stronghold if center_stronghold else None,
+        },
+    }
+    return {
+        "time": view["time"],
+        "situation_overview": situation_summary,
+        "immediate": _brief_threats_and_opportunities(army_view, environs),
+        "supply_and_readiness": _brief_supply_and_readiness(session, army, army_view, standing_orders),
+        "movement_options": _brief_movement_options(session, army, environs),
+        "recent_changes": _brief_recent_changes(clock, alerts, messages, environs),
+        "correspondence_highlights": _brief_correspondence(messages),
+        "active_intent": _brief_active_intent(current_action, view["itinerary"], standing_orders),
+        "source_snapshot": {
+            "view_message_unread_count": view["messages"]["unread_count"],
+            "alerts_available": len(alerts),
+            "environs_radius": environs.get("radius"),
+        },
     }
 
 
@@ -4999,44 +5494,15 @@ def get_my_view(
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
-    clock = _get_or_create_clock(session)
-    army = _find_commander_army(session, commander_id)
-    environs_radius = _environs_radius_for_army(army)
+    return _build_commander_view_payload(session, commander_id)
 
-    delivered_messages = (
-        session.query(Message)
-        .filter(
-            Message.recipient_id == commander_id,
-            Message.status == "received",
-            _is_delivered_filter(clock.day, clock.watch),
-        )
-        .order_by(
-            Message.delivery_day.desc(),
-            _watch_chronological_order_sql(Message.delivery_watch).desc(),
-            Message.message_id.desc(),
-        )
-        .all()
-    )
 
-    current_action = _get_current_action_row(session, commander_id)
-    standing_order = session.get(StandingOrder, commander_id)
-
-    return {
-        "time": _clock_payload(clock),
-        "army": _serialize_army(army),
-        "environs": _serialize_environs(
-            session,
-            army.location_id,
-            environs_radius,
-            exclude_army_id=army.army_id,
-            viewer_commander_id=commander_id,
-            viewer_army=army,
-        ),
-        "messages": _serialize_message_summary(delivered_messages),
-        "current_action": _serialize_action(session, current_action, commander_id) if current_action else None,
-        "itinerary": _serialize_remaining_itinerary(session, commander_id),
-        "standing_orders": _serialize_standing_orders(standing_order),
-    }
+@router.get("/me/brief")
+def get_my_brief(
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    return _build_commander_brief_payload(session, commander_id)
 
 
 @router.get("/me/army-management")
@@ -5773,32 +6239,7 @@ def list_alerts(
     session: Session = Depends(_get_session),
 ):
     clock = _get_or_create_clock(session)
-    query = session.query(Alert).filter(
-        or_(Alert.recipient_commander_id == commander_id, Alert.recipient_commander_id.is_(None)),
-        or_(
-            Alert.delivered_day < clock.day,
-            and_(Alert.delivered_day == clock.day, Alert.delivered_watch <= clock.watch),
-        ),
-        or_(
-            Alert.signal_kind != "state",
-            and_(
-                Alert.signal_kind == "state",
-                Alert.created_day == clock.day,
-                Alert.created_watch == clock.watch,
-            ),
-        ),
-    )
-    if unread_only:
-        query = query.filter(Alert.is_read.is_(False))
-    alerts = (
-        query.order_by(
-            Alert.delivered_day.desc(),
-            _watch_chronological_order_sql(Alert.delivered_watch).desc(),
-            Alert.alert_id.desc(),
-        )
-        .limit(limit)
-        .all()
-    )
+    alerts = _load_delivered_alerts(session, commander_id, clock, limit=limit, unread_only=unread_only)
     return [_serialize_alert(alert) for alert in alerts]
 
 
@@ -5887,20 +6328,9 @@ def list_messages(
     session: Session = Depends(_get_session),
 ):
     clock = _get_or_create_clock(session)
-    query = session.query(Message).filter(
-        Message.recipient_id == commander_id,
-        Message.status == "received",
-        _is_delivered_filter(clock.day, clock.watch),
-    )
-    query = query.options(joinedload(Message.sender_commander))
+    messages = _load_delivered_messages(session, commander_id, clock)
     if unread_only:
-        query = query.filter(Message.is_read.is_(False))
-
-    messages = query.order_by(
-        Message.delivery_day.desc(),
-        _watch_chronological_order_sql(Message.delivery_watch).desc(),
-        Message.message_id.desc(),
-    ).all()
+        messages = [message for message in messages if not message.is_read]
 
     response = []
     for message in messages:
