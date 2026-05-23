@@ -158,7 +158,7 @@
       </div>
 
       <div class="status" id="playerStatus"></div>
-      <pre id="viewOutput">Select a commander to log in and load view.</pre>
+      <pre id="viewOutput">Select a commander to log in and load brief.</pre>
     </section>
 
     <section class="panel dev">
@@ -251,14 +251,14 @@
 
     async function refreshPlayerView() {
       if (!state.token) {
-        els.viewOutput.textContent = "Select a commander to log in and load view.";
+        els.viewOutput.textContent = "Select a commander to log in and load brief.";
         return;
       }
       try {
-        const view = await api("/v1/me/view", {}, true);
-        els.viewOutput.textContent = JSON.stringify(view, null, 2);
+        const brief = await api("/v1/me/brief", {}, true);
+        els.viewOutput.textContent = JSON.stringify(brief, null, 2);
       } catch (err) {
-        setStatus(els.playerStatus, `View error: ${err.message}`, true);
+        setStatus(els.playerStatus, `Brief error: ${err.message}`, true);
       }
     }
 
@@ -280,7 +280,7 @@
         state.token = null;
         state.commanderName = null;
         setStatus(els.playerStatus, "");
-        els.viewOutput.textContent = "Select a commander to log in and load view.";
+        els.viewOutput.textContent = "Select a commander to log in and load brief.";
         return;
       }
       try {
