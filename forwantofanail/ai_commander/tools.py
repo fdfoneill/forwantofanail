@@ -10,6 +10,10 @@ from .models import CommanderApiError, ToolExecutionResult
 ToolHandler = Callable[..., Any]
 
 
+def _nullable_schema(base_type: str, **extra: Any) -> dict[str, Any]:
+    return {"type": [base_type, "null"], **extra}
+
+
 def _tool(
     *,
     name: str,
@@ -66,6 +70,7 @@ class CommanderToolRegistry:
                 properties={
                     "unread_only": {"type": "boolean", "description": "If true, only return unread letters."},
                 },
+                required=["unread_only"],
             ),
             _tool(
                 name="read_message",
@@ -81,9 +86,9 @@ class CommanderToolRegistry:
                 properties={
                     "recipient_id": {"type": "string", "description": "Recipient commander ID such as cmd_3."},
                     "content": {"type": "string", "description": "Full letter body to send."},
-                    "priority": {"type": "string", "description": "Letter priority, usually normal or high."},
+                    "priority": _nullable_schema("string", description="Letter priority, usually normal or high."),
                 },
-                required=["recipient_id", "content"],
+                required=["recipient_id", "content", "priority"],
             ),
             _tool(
                 name="get_current_action",
@@ -107,12 +112,12 @@ class CommanderToolRegistry:
                         "enum": ["move", "forage", "attack", "besiege"],
                         "description": "Kind of order to issue.",
                     },
-                    "destination_h3": {"type": "string", "description": "Required for move orders."},
-                    "target_h3": {"type": "string", "description": "Required for attack orders."},
-                    "target_army_id": {"type": "string", "description": "Required for attack orders."},
-                    "target_stronghold_id": {"type": "string", "description": "Required for besiege orders."},
+                    "destination_h3": _nullable_schema("string", description="Required for move orders."),
+                    "target_h3": _nullable_schema("string", description="Required for attack orders."),
+                    "target_army_id": _nullable_schema("string", description="Required for attack orders."),
+                    "target_stronghold_id": _nullable_schema("string", description="Required for besiege orders."),
                 },
-                required=["kind"],
+                required=["kind", "destination_h3", "target_h3", "target_army_id", "target_stronghold_id"],
             ),
             _tool(
                 name="plan_actions",
@@ -135,22 +140,25 @@ class CommanderToolRegistry:
                 name="get_valid_next_destinations",
                 description="List valid adjacent march destinations from the current location or a supplied origin.",
                 properties={
-                    "origin_h3": {"type": "string", "description": "Optional origin H3 to validate from."},
+                    "origin_h3": _nullable_schema("string", description="Optional origin H3 to validate from."),
                 },
+                required=["origin_h3"],
             ),
             _tool(
                 name="get_valid_attack_targets",
                 description="List valid adjacent or siege-context attack targets.",
                 properties={
-                    "origin_h3": {"type": "string", "description": "Optional origin H3 to validate from."},
+                    "origin_h3": _nullable_schema("string", description="Optional origin H3 to validate from."),
                 },
+                required=["origin_h3"],
             ),
             _tool(
                 name="get_valid_besiege_targets",
                 description="List valid adjacent strongholds that can currently be besieged.",
                 properties={
-                    "origin_h3": {"type": "string", "description": "Optional origin H3 to validate from."},
+                    "origin_h3": _nullable_schema("string", description="Optional origin H3 to validate from."),
                 },
+                required=["origin_h3"],
             ),
             _tool(
                 name="get_standing_orders",
@@ -180,6 +188,7 @@ class CommanderToolRegistry:
                     "limit": {"type": "integer", "description": "Maximum alerts to return."},
                     "unread_only": {"type": "boolean", "description": "If true, only return unread alerts."},
                 },
+                required=["limit", "unread_only"],
             ),
             _tool(
                 name="get_border_roads",

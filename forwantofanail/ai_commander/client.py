@@ -128,14 +128,14 @@ class CommanderApiClient:
         response = self._request("GET", f"/v1/me/messages/{message_id}")
         return dict(response) if isinstance(response, dict) else {}
 
-    def send_message(self, recipient_id: str, content: str, *, priority: str = "normal") -> dict[str, Any]:
+    def send_message(self, recipient_id: str, content: str, *, priority: str | None = "normal") -> dict[str, Any]:
         response = self._request(
             "POST",
             "/v1/me/messages",
             json_body={
                 "recipient_id": recipient_id,
                 "content": content,
-                "priority": priority,
+                "priority": priority or "normal",
             },
         )
         return dict(response) if isinstance(response, dict) else {}

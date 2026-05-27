@@ -22,6 +22,7 @@ from forwantofanail.ai_commander.tools import CommanderToolRegistry
 from forwantofanail.core.database import create_session
 from forwantofanail.core.models import (
     Action,
+    Army,
     AuthToken,
     Commander,
     CommanderRun,
@@ -74,6 +75,20 @@ def scheduler_instance_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}"
 
 
+def slugify(value: str) -> str:
+    lowered = str(value or "").strip().lower()
+    pieces: list[str] = []
+    last_was_sep = False
+    for char in lowered:
+        if char.isalnum():
+            pieces.append(char)
+            last_was_sep = False
+        elif not last_was_sep:
+            pieces.append("_")
+            last_was_sep = True
+    return "".join(pieces).strip("_")
+
+
 @dataclass
 class RuntimeConfig:
     base_url: str = "http://127.0.0.1:8000"
@@ -84,6 +99,9 @@ class RuntimeConfig:
     max_run_seconds: int = 30
     recent_run_summaries_limit: int = 3
     log_dir: Path = field(default_factory=lambda: Path(os.environ.get("FWOAN_LOG_DIR", "logs")))
+    dossier_dir: Path = field(
+        default_factory=lambda: Path(__file__).resolve().parents[1] / "data" / "ai_commanders"
+    )
     scheduler_id: str = field(default_factory=scheduler_instance_id)
 
 
@@ -112,6 +130,49 @@ class LocalArtifactLogger:
             handle.write(line)
 
 
+def commander_faction(session: Session, commander_id: int) -> str | None:
+    army = session.query(Army).filter(Army.commander_id == commander_id).first()
+    if army is None:
+        return None
+    faction = str(army.army_faction or "").strip()
+    return faction or None
+
+
+def dossier_candidates(config: RuntimeConfig, commander: Commander, faction: str | None) -> list[Path]:
+    commander_name_slug = slugify(commander.commander_name)
+    display_slug = slugify(f"{commander.commander_title} {commander.commander_name}")
+    candidates = [
+        config.dossier_dir / "commanders" / f"cmd_{commander.commander_id}_{commander_name_slug}.md",
+        config.dossier_dir / "commanders" / f"cmd_{commander.commander_id}_{display_slug}.md",
+        config.dossier_dir / "commanders" / f"{commander_name_slug}.md",
+        config.dossier_dir / "commanders" / f"{display_slug}.md",
+    ]
+    if faction:
+        candidates.append(config.dossier_dir / "factions" / f"faction_{slugify(faction)}.md")
+    return candidates
+
+
+def load_commander_dossier(session: Session, commander_id: int, config: RuntimeConfig) -> dict[str, Any]:
+    commander = session.get(Commander, commander_id)
+    if commander is None:
+        raise ValueError("Commander not found")
+    faction = commander_faction(session, commander_id)
+    for candidate in dossier_candidates(config, commander, faction):
+        if candidate.exists():
+            return {
+                "path": str(candidate.resolve()),
+                "source": "commander" if "commanders" in candidate.parts else "faction_template",
+                "content": candidate.read_text(encoding="utf-8"),
+                "faction": faction,
+            }
+    return {
+        "path": None,
+        "source": "missing",
+        "content": "",
+        "faction": faction,
+    }
+
+
 class DryRunTurnRunner:
     def run_turn(
         self,
@@ -119,6 +180,7 @@ class DryRunTurnRunner:
         client: CommanderApiClient,
         registry: CommanderToolRegistry,
         brief_context: dict[str, Any],
+        dossier: dict[str, Any],
         scratchpad: dict[str, Any],
         recent_summaries: list[dict[str, Any]],
         wake_reasons: list[str],
@@ -137,6 +199,7 @@ class DryRunTurnRunner:
                 "timestamp": utcnow().isoformat(),
                 "summary": summary,
                 "location": overview.get("location_label"),
+                "dossier_source": dossier.get("source"),
             }
         )
         updated["notes"] = notes[-10:]
@@ -158,6 +221,7 @@ class OpenAIResponsesTurnRunner:
         client: CommanderApiClient,
         registry: CommanderToolRegistry,
         brief_context: dict[str, Any],
+        dossier: dict[str, Any],
         scratchpad: dict[str, Any],
         recent_summaries: list[dict[str, Any]],
         wake_reasons: list[str],
@@ -174,6 +238,9 @@ class OpenAIResponsesTurnRunner:
             "You are an AI commander in For Want of a Nail.\n"
             "Your brief is authoritative current context. Use tools only when needed.\n"
             "Return concise operational reasoning through your actions and final answer.\n\n"
+            f"Commander dossier source: {json.dumps(dossier.get('source'))}\n"
+            f"Commander dossier path: {json.dumps(dossier.get('path'))}\n"
+            f"Commander dossier markdown:\n{dossier.get('content') or ''}\n\n"
             f"Wake reasons: {json.dumps(wake_reasons)}\n"
             f"Scratchpad: {json.dumps(scratchpad, sort_keys=True)}\n"
             f"Recent run summaries: {json.dumps(recent_summaries, sort_keys=True)}\n"
@@ -269,8 +336,9 @@ def ensure_runtime_rows(session: Session) -> None:
     session.flush()
 
 
-def runtime_for_commander(session: Session, commander_id: int) -> CommanderRuntime:
-    ensure_runtime_rows(session)
+def runtime_for_commander(session: Session, commander_id: int, *, create_missing: bool = False) -> CommanderRuntime:
+    if create_missing:
+        ensure_runtime_rows(session)
     runtime = session.get(CommanderRuntime, commander_id)
     if runtime is None:
         raise ValueError(f"No runtime found for commander {commander_id}")
@@ -324,7 +392,7 @@ def serialize_run(run: CommanderRun) -> dict[str, Any]:
 
 
 def set_controller_type(session: Session, commander_id: int, controller_type: str) -> CommanderRuntime:
-    runtime = runtime_for_commander(session, commander_id)
+    runtime = runtime_for_commander(session, commander_id, create_missing=True)
     normalized = str(controller_type or "").strip().lower()
     if normalized not in {"human", "ai", "disabled"}:
         raise ValueError("controller_type must be one of: human, ai, disabled")
@@ -352,7 +420,7 @@ def set_controller_type(session: Session, commander_id: int, controller_type: st
 
 
 def mark_manual_attention(session: Session, commander_id: int, reason: str = "manual_nudge") -> CommanderRuntime:
-    runtime = runtime_for_commander(session, commander_id)
+    runtime = runtime_for_commander(session, commander_id, create_missing=True)
     reasons = set(json_loads_safe(runtime.attention_reasons_json, []))
     reasons.add(reason)
     runtime.attention_needed = True
@@ -513,7 +581,7 @@ class CommanderWorker:
     def run(self, *, commander_id: int, run_id: int, lease_token: str) -> dict[str, Any]:
         session = create_session()
         try:
-            runtime = runtime_for_commander(session, commander_id)
+            runtime = runtime_for_commander(session, commander_id, create_missing=True)
             run = session.get(CommanderRun, run_id)
             if run is None or run.commander_id != commander_id:
                 raise ValueError("Commander run not found")
@@ -537,12 +605,13 @@ class CommanderWorker:
             brief_context = client.get_brief()
 
             session = create_session()
-            runtime = runtime_for_commander(session, commander_id)
+            runtime = runtime_for_commander(session, commander_id, create_missing=True)
             run = session.get(CommanderRun, run_id)
             if run is None:
                 raise ValueError("Commander run not found after brief fetch")
             scratchpad_before = json_loads_safe(runtime.scratchpad_json, default_scratchpad())
             wake_reasons = json_loads_safe(run.wake_reasons_json, [])
+            dossier = load_commander_dossier(session, commander_id, self.config)
             run.brief_snapshot_json = json.dumps(brief_context, sort_keys=True)
             run.scratchpad_before_json = json.dumps(scratchpad_before, sort_keys=True)
             session.flush()
@@ -552,6 +621,7 @@ class CommanderWorker:
                 client=client,
                 registry=registry,
                 brief_context=brief_context,
+                dossier=dossier,
                 scratchpad=scratchpad_before,
                 recent_summaries=recent_run_summaries(
                     session,
@@ -591,6 +661,7 @@ class CommanderWorker:
             artifact_payload = {
                 "status": run.status,
                 "wake_reasons": wake_reasons,
+                "commander_dossier": dossier,
                 "brief_snapshot": brief_context,
                 "scratchpad_before": scratchpad_before,
                 "scratchpad_after": scratchpad_after,
@@ -603,7 +674,7 @@ class CommanderWorker:
             session.rollback()
             recovery = create_session()
             try:
-                runtime = runtime_for_commander(recovery, commander_id)
+                runtime = runtime_for_commander(recovery, commander_id, create_missing=True)
                 run = recovery.get(CommanderRun, run_id)
                 finished_at = utcnow()
                 error_payload = {
@@ -634,6 +705,7 @@ class CommanderWorker:
                         {
                             "status": run.status,
                             "wake_reasons": json_loads_safe(run.wake_reasons_json, []),
+                            "commander_dossier": load_commander_dossier(recovery, commander_id, self.config),
                             "brief_snapshot": json_loads_safe(run.brief_snapshot_json, {}),
                             "scratchpad_before": json_loads_safe(run.scratchpad_before_json, {}),
                             "scratchpad_after": json_loads_safe(run.scratchpad_after_json, {}),
@@ -696,7 +768,7 @@ class CommanderHeartbeatScheduler:
                 raise ValueError("Game clock is missing")
             now = utcnow()
             for commander_id in commander_ids:
-                runtime = runtime_for_commander(session, commander_id)
+                runtime = runtime_for_commander(session, commander_id, create_missing=True)
                 if runtime.active_run_id is not None and runtime.lease_expires_at is not None and runtime.lease_expires_at <= now:
                     active_run = session.get(CommanderRun, runtime.active_run_id)
                     if active_run is not None and active_run.status in RUN_ACTIVE_STATUSES:
@@ -754,7 +826,6 @@ class CommanderHeartbeatScheduler:
 
 
 def list_runtime_rows(session: Session) -> list[dict[str, Any]]:
-    ensure_runtime_rows(session)
     runtimes = session.query(CommanderRuntime).order_by(CommanderRuntime.commander_id.asc()).all()
     return [serialize_runtime(runtime) for runtime in runtimes]
 

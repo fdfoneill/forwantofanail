@@ -23,6 +23,7 @@ try:
         current_action_fingerprint,
         evaluate_runtime_attention,
         get_runtime_detail,
+        load_commander_dossier,
         list_runs,
         list_runtime_rows,
         mark_manual_attention,
@@ -39,6 +40,7 @@ except Exception:
     current_action_fingerprint = None
     evaluate_runtime_attention = None
     get_runtime_detail = None
+    load_commander_dossier = None
     list_runs = None
     list_runtime_rows = None
     mark_manual_attention = None
@@ -175,10 +177,21 @@ class AiCommanderUnitOnlyTestCase(unittest.TestCase):
         self.assertTrue(all(tool["strict"] is True for tool in tools))
         self.assertTrue(all(tool["parameters"]["type"] == "object" for tool in tools))
         self.assertTrue(all(tool["parameters"]["additionalProperties"] is False for tool in tools))
+        self.assertTrue(
+            all(
+                sorted(tool["parameters"]["required"]) == sorted(tool["parameters"]["properties"].keys())
+                for tool in tools
+            )
+        )
         by_name = {tool["name"]: tool for tool in tools}
-        self.assertEqual(by_name["create_action"]["parameters"]["required"], ["kind"])
-        self.assertEqual(by_name["send_message"]["parameters"]["required"], ["recipient_id", "content"])
+        self.assertEqual(
+            by_name["create_action"]["parameters"]["required"],
+            ["kind", "destination_h3", "target_h3", "target_army_id", "target_stronghold_id"],
+        )
+        self.assertEqual(by_name["send_message"]["parameters"]["required"], ["recipient_id", "content", "priority"])
         self.assertEqual(by_name["plan_actions"]["parameters"]["required"], ["kind", "path"])
+        self.assertEqual(by_name["list_messages"]["parameters"]["required"], ["unread_only"])
+        self.assertEqual(by_name["get_valid_next_destinations"]["parameters"]["properties"]["origin_h3"]["type"], ["string", "null"])
 
     def test_dispatch_success_and_failure(self):
         success = self.registry.dispatch("list_correspondents")
@@ -290,9 +303,18 @@ class AiCommanderTestCase(unittest.TestCase):
         self.assertTrue(all(tool["strict"] is True for tool in tools))
         self.assertTrue(all(tool["parameters"]["type"] == "object" for tool in tools))
         self.assertTrue(all(tool["parameters"]["additionalProperties"] is False for tool in tools))
+        self.assertTrue(
+            all(
+                sorted(tool["parameters"]["required"]) == sorted(tool["parameters"]["properties"].keys())
+                for tool in tools
+            )
+        )
         by_name = {tool["name"]: tool for tool in tools}
-        self.assertEqual(by_name["create_action"]["parameters"]["required"], ["kind"])
-        self.assertEqual(by_name["send_message"]["parameters"]["required"], ["recipient_id", "content"])
+        self.assertEqual(
+            by_name["create_action"]["parameters"]["required"],
+            ["kind", "destination_h3", "target_h3", "target_army_id", "target_stronghold_id"],
+        )
+        self.assertEqual(by_name["send_message"]["parameters"]["required"], ["recipient_id", "content", "priority"])
         self.assertEqual(by_name["plan_actions"]["parameters"]["required"], ["kind", "path"])
 
     def test_tool_handlers_for_messages_and_delivery_estimate(self):
@@ -611,6 +633,27 @@ class AiCommanderHeartbeatTestCase(unittest.TestCase):
         self.assertTrue(run_log_dir.exists())
         self.assertTrue(any(run_log_dir.iterdir()))
         self.assertTrue(commander_log.exists())
+
+    def test_commander_dossier_specific_and_faction_fallback(self):
+        session = create_session()
+        try:
+            dossier = load_commander_dossier(session, 1, self.config)
+            self.assertEqual(dossier["source"], "commander")
+            self.assertTrue(str(dossier["path"]).endswith("cmd_1_sofonisba.md"))
+            self.assertIn("Queen Sofonisba", dossier["content"])
+
+            custom_dir = Path(_TMPDIR.name) / "dossier_test"
+            (custom_dir / "factions").mkdir(parents=True, exist_ok=True)
+            (custom_dir / "factions" / "faction_delisgar.md").write_text(
+                "# Delisgar Commander Template\n\nFaction fallback content.",
+                encoding="utf-8",
+            )
+            fallback_config = RuntimeConfig(base_url="http://testserver", log_dir=self.logs_dir, dossier_dir=custom_dir)
+            fallback = load_commander_dossier(session, 1, fallback_config)
+            self.assertEqual(fallback["source"], "faction_template")
+            self.assertIn("Faction fallback content.", fallback["content"])
+        finally:
+            session.close()
 
     def test_dev_endpoints_and_list_runs(self):
         response = self.http.post("/v1/admin/ai/runtimes/1/controller", json={"controller_type": "ai"})

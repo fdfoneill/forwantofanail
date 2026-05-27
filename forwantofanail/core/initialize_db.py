@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from datetime import datetime, timezone
 import json
 import shutil
 from datetime import date
@@ -11,6 +12,7 @@ from forwantofanail.core.database import Base, create_session, get_engine
 from forwantofanail.core.models import (
     Army,
     Commander,
+    CommanderRuntime,
     CommanderTrait,
     Detachment,
     DetachmentSpecial,
@@ -18,6 +20,7 @@ from forwantofanail.core.models import (
     Location,
     Movement,
     Siege,
+    StandingOrder,
     Stronghold,
     TerrainType,
 )
@@ -420,6 +423,39 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
 
         if session.get(GameClock, 1) is None:
             session.add(GameClock(singleton_id=1, day=1, watch=1))
+
+        commanders = session.query(Commander).order_by(Commander.commander_id.asc()).all()
+        now = datetime.now(timezone.utc)
+        for commander in commanders:
+            session.add(
+                StandingOrder(
+                    commander_id=commander.commander_id,
+                    follow_road_enabled=False,
+                    forced_march_enabled=False,
+                    last_report=None,
+                    last_report_day=None,
+                    last_report_watch=None,
+                    updated_at=now,
+                )
+            )
+            session.add(
+                CommanderRuntime(
+                    commander_id=commander.commander_id,
+                    controller_type="human",
+                    ai_enabled=False,
+                    attention_needed=False,
+                    attention_reasons_json="[]",
+                    scratchpad_json=json.dumps(
+                        {
+                            "current_hypotheses": [],
+                            "pending_correspondence": [],
+                            "standing_intent": "",
+                            "deferred_checks": [],
+                            "notes": [],
+                        }
+                    ),
+                )
+            )
 
         session.commit()
     except Exception:

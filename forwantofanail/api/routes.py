@@ -1692,6 +1692,11 @@ def _get_or_create_standing_order(session: Session, commander_id: int) -> Standi
     return standing
 
 
+def _get_standing_order_or_default(session: Session, commander_id: int) -> StandingOrder | None:
+    _ = commander_id
+    return session.get(StandingOrder, commander_id)
+
+
 def _set_standing_order_report(
     session: Session,
     standing: StandingOrder,
@@ -6115,9 +6120,7 @@ def get_my_standing_orders(
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
-    standing = _get_or_create_standing_order(session, commander_id)
-    session.commit()
-    session.refresh(standing)
+    standing = _get_standing_order_or_default(session, commander_id)
     return _serialize_standing_orders(standing)
 
 
