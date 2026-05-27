@@ -15,16 +15,52 @@ from forwantofanail.ai_commander import CommanderApiClient, CommanderApiError, C
 from forwantofanail.ai_commander.models import TransportResponse
 
 try:
+    from forwantofanail.ai_commander.runtime import (
+        CommanderHeartbeatScheduler,
+        CommanderWorker,
+        LocalArtifactLogger,
+        RuntimeConfig,
+        current_action_fingerprint,
+        evaluate_runtime_attention,
+        get_runtime_detail,
+        list_runs,
+        list_runtime_rows,
+        mark_manual_attention,
+        runtime_for_commander,
+        set_controller_type,
+    )
+
+    RUNTIME_DEPS_AVAILABLE = True
+except Exception:
+    CommanderHeartbeatScheduler = None
+    CommanderWorker = None
+    LocalArtifactLogger = None
+    RuntimeConfig = None
+    current_action_fingerprint = None
+    evaluate_runtime_attention = None
+    get_runtime_detail = None
+    list_runs = None
+    list_runtime_rows = None
+    mark_manual_attention = None
+    runtime_for_commander = None
+    set_controller_type = None
+    RUNTIME_DEPS_AVAILABLE = False
+
+try:
     from fastapi.testclient import TestClient
     from forwantofanail.api.app import app
     from forwantofanail.core.initialize_db import initialize_database
+    from forwantofanail.core.database import create_session
 
     INTEGRATION_DEPS_AVAILABLE = True
 except Exception:
     TestClient = None
     app = None
     initialize_database = None
+    create_session = None
     INTEGRATION_DEPS_AVAILABLE = False
+
+FULL_RUNTIME_DEPS_AVAILABLE = INTEGRATION_DEPS_AVAILABLE and RUNTIME_DEPS_AVAILABLE
 
 
 DATA_DIR = Path(__file__).resolve().parents[1] / "forwantofanail" / "data"
@@ -347,6 +383,300 @@ class AiCommanderTestCase(unittest.TestCase):
         second_output = json.loads(outputs[1]["output"])
         self.assertTrue(first_output["ok"])
         self.assertTrue(second_output["ok"])
+
+
+@unittest.skipUnless(FULL_RUNTIME_DEPS_AVAILABLE, "runtime integration dependencies are unavailable")
+class AiCommanderHeartbeatTestCase(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.http = TestClient(app)
+
+    def setUp(self):
+        self.logs_dir = Path(_TMPDIR.name) / "logs"
+        initialize_database(DATA_DIR, reset=True)
+        self.transport = TestClientTransport(self.http)
+        self.config = RuntimeConfig(base_url="http://testserver", log_dir=self.logs_dir, lease_duration_seconds=1)
+
+    def _make_client(self, commander_name: str):
+        return CommanderApiClient(
+            base_url="http://testserver",
+            commander_name=commander_name,
+            transport=self.transport,
+        )
+
+    def _advance_time(self, steps: int):
+        response = self.http.post("/v1/admin/time/advance", json={"steps": steps, "execute_actions": True})
+        self.assertEqual(response.status_code, 200, response.text)
+
+    def test_runtime_model_and_controller_transitions(self):
+        session = create_session()
+        try:
+            runtimes = list_runtime_rows(session)
+            self.assertEqual(len(runtimes), 4)
+            self.assertTrue(all(row["controller_type"] == "human" for row in runtimes))
+            runtime = set_controller_type(session, 1, "ai")
+            session.commit()
+            self.assertEqual(runtime.controller_type, "ai")
+            self.assertTrue(runtime.ai_enabled)
+            runtime = set_controller_type(session, 1, "disabled")
+            session.commit()
+            self.assertEqual(runtime.controller_type, "disabled")
+            self.assertFalse(runtime.ai_enabled)
+        finally:
+            session.close()
+
+    def test_attention_detection_for_clock_messages_and_actions(self):
+        session = create_session()
+        try:
+            runtime = set_controller_type(session, 1, "ai")
+            session.commit()
+            evaluation = evaluate_runtime_attention(session, runtime)
+            self.assertIn("startup_reconcile", evaluation["reasons"])
+        finally:
+            session.close()
+
+        session = create_session()
+        try:
+            runtime = runtime_for_commander(session, 1)
+            evaluation = evaluate_runtime_attention(session, runtime)
+            runtime.last_reviewed_day = evaluation["clock"].day
+            runtime.last_reviewed_watch = evaluation["clock"].watch
+            runtime.last_reviewed_message_id = evaluation["latest_message_id"]
+            runtime.last_reviewed_action_fingerprint = evaluation["action_fingerprint"]
+            runtime.attention_needed = False
+            runtime.attention_reasons_json = "[]"
+            session.commit()
+        finally:
+            session.close()
+
+        self._advance_time(1)
+        session = create_session()
+        try:
+            runtime = runtime_for_commander(session, 1)
+            evaluation = evaluate_runtime_attention(session, runtime)
+            self.assertIn("clock_advanced", evaluation["reasons"])
+        finally:
+            session.close()
+
+        soolabab = self._make_client("Soolabab")
+        soolabab.send_message("cmd_1", "Courier for you.")
+        self._advance_time(3)
+        session = create_session()
+        try:
+            runtime = runtime_for_commander(session, 1)
+            evaluation = evaluate_runtime_attention(session, runtime)
+            self.assertIn("message_received", evaluation["reasons"])
+        finally:
+            session.close()
+
+        sofonisba = self._make_client("Sofonisba")
+        next_destinations = sofonisba.get_valid_next_destinations()
+        sofonisba.create_action(kind="move", destination_h3=next_destinations["valid_destinations"][0])
+        session = create_session()
+        try:
+            runtime = runtime_for_commander(session, 1)
+            runtime.last_reviewed_action_fingerprint = "stale"
+            evaluation = evaluate_runtime_attention(session, runtime)
+            self.assertIn("action_state_changed", evaluation["reasons"])
+        finally:
+            session.close()
+
+    def test_scheduler_coalesces_and_respects_leases(self):
+        launched: list[tuple[int, int, str]] = []
+
+        def fake_launcher(**kwargs):
+            launched.append((kwargs["commander_id"], kwargs["run_id"], kwargs["lease_token"]))
+            return None
+
+        session = create_session()
+        try:
+            set_controller_type(session, 1, "ai")
+            mark_manual_attention(session, 1)
+            mark_manual_attention(session, 1, "message_received")
+            set_controller_type(session, 2, "human")
+            session.commit()
+        finally:
+            session.close()
+
+        scheduler = CommanderHeartbeatScheduler(config=self.config, worker_launcher=fake_launcher)
+        launched_run_ids = scheduler.run_once()
+        self.assertEqual(len(launched_run_ids), 1)
+        self.assertEqual(len(launched), 1)
+
+        session = create_session()
+        try:
+            runtime = runtime_for_commander(session, 1)
+            detail = get_runtime_detail(session, 1)
+            self.assertEqual(runtime.active_run_id, launched_run_ids[0])
+            self.assertEqual(detail["recent_runs"][0]["status"], "queued")
+        finally:
+            session.close()
+
+        second_pass = scheduler.run_once()
+        self.assertEqual(second_pass, [])
+
+    def test_expired_lease_is_recoverable(self):
+        launched: list[int] = []
+
+        def fake_launcher(**kwargs):
+            launched.append(kwargs["run_id"])
+            return None
+
+        session = create_session()
+        try:
+            set_controller_type(session, 1, "ai")
+            mark_manual_attention(session, 1)
+            session.commit()
+        finally:
+            session.close()
+
+        scheduler = CommanderHeartbeatScheduler(config=self.config, worker_launcher=fake_launcher)
+        first = scheduler.run_once()
+        self.assertEqual(len(first), 1)
+
+        session = create_session()
+        try:
+            runtime = runtime_for_commander(session, 1)
+            runtime.lease_expires_at = runtime.lease_expires_at.replace(year=2000)
+            session.commit()
+        finally:
+            session.close()
+
+        second = scheduler.run_once()
+        self.assertEqual(len(second), 1)
+        self.assertNotEqual(first[0], second[0])
+
+    def test_worker_persists_summary_and_logs(self):
+        session = create_session()
+        try:
+            set_controller_type(session, 1, "ai")
+            mark_manual_attention(session, 1)
+            session.commit()
+        finally:
+            session.close()
+
+        launched = []
+
+        def fake_launcher(**kwargs):
+            launched.append(kwargs)
+            return None
+
+        scheduler = CommanderHeartbeatScheduler(config=self.config, worker_launcher=fake_launcher)
+        run_ids = scheduler.run_once()
+        self.assertEqual(len(run_ids), 1)
+        launch = launched[0]
+
+        worker = CommanderWorker(
+            config=self.config,
+            turn_runner=SimpleNamespace(
+                run_turn=lambda **kwargs: {
+                    "summary": "Held position after review.",
+                    "scratchpad_after": {
+                        "current_hypotheses": [],
+                        "pending_correspondence": [],
+                        "standing_intent": "Hold",
+                        "deferred_checks": [],
+                        "notes": [{"summary": "Held position after review."}],
+                    },
+                    "tool_calls": [{"name": "list_messages", "arguments": {}, "output": {"ok": True}}],
+                    "model_turns": 1,
+                }
+            ),
+            log_emitter=LocalArtifactLogger(self.logs_dir),
+            client_factory=lambda token: CommanderApiClient(
+                base_url="http://testserver",
+                token=token,
+                transport=self.transport,
+            ),
+        )
+        result = worker.run(
+            commander_id=launch["commander_id"],
+            run_id=launch["run_id"],
+            lease_token=launch["lease_token"],
+        )
+        self.assertEqual(result["status"], "succeeded")
+
+        session = create_session()
+        try:
+            runtime = runtime_for_commander(session, 1)
+            detail = get_runtime_detail(session, 1)
+            self.assertIsNone(runtime.active_run_id)
+            self.assertEqual(runtime.last_run_status, "succeeded")
+            self.assertEqual(detail["recent_runs"][0]["result_summary"]["summary"], "Held position after review.")
+        finally:
+            session.close()
+
+        run_log_dir = self.logs_dir / "commander_runs" / "1"
+        commander_log = self.logs_dir / "commanders" / "1.log"
+        self.assertTrue(run_log_dir.exists())
+        self.assertTrue(any(run_log_dir.iterdir()))
+        self.assertTrue(commander_log.exists())
+
+    def test_dev_endpoints_and_list_runs(self):
+        response = self.http.post("/v1/admin/ai/runtimes/1/controller", json={"controller_type": "ai"})
+        self.assertEqual(response.status_code, 200, response.text)
+        response = self.http.post("/v1/admin/ai/runtimes/1/nudge", json={"reason": "manual_nudge"})
+        self.assertEqual(response.status_code, 200, response.text)
+        runtimes = self.http.get("/v1/admin/ai/runtimes")
+        self.assertEqual(runtimes.status_code, 200, runtimes.text)
+        self.assertEqual(len(runtimes.json()["runtimes"]), 4)
+        detail = self.http.get("/v1/admin/ai/runtimes/1")
+        self.assertEqual(detail.status_code, 200, detail.text)
+        runs = self.http.get("/v1/admin/ai/runs")
+        self.assertEqual(runs.status_code, 200, runs.text)
+
+    def test_mixed_control_all_ai_delivery_and_post_run_recheck(self):
+        session = create_session()
+        try:
+            set_controller_type(session, 1, "ai")
+            set_controller_type(session, 0, "ai")
+            session.commit()
+        finally:
+            session.close()
+
+        launched = []
+
+        def fake_launcher(**kwargs):
+            launched.append(kwargs)
+            return None
+
+        scheduler = CommanderHeartbeatScheduler(config=self.config, worker_launcher=fake_launcher)
+        initial = scheduler.run_once()
+        self.assertEqual(len(initial), 2)
+
+        launch = next(item for item in launched if item["commander_id"] == 0)
+        worker = CommanderWorker(
+            config=self.config,
+            turn_runner=SimpleNamespace(
+                run_turn=lambda **kwargs: {
+                    "summary": "Sent a reply.",
+                    "scratchpad_after": {
+                        "current_hypotheses": [],
+                        "pending_correspondence": [],
+                        "standing_intent": "",
+                        "deferred_checks": [],
+                        "notes": [],
+                    },
+                    "tool_calls": [
+                        {
+                            "name": "send_message",
+                            "arguments": {"recipient_id": "cmd_1", "content": "Advance carefully."},
+                            "output": self._make_client("Soolabab").send_message("cmd_1", "Advance carefully."),
+                        }
+                    ],
+                    "model_turns": 1,
+                }
+            ),
+            client_factory=lambda token: CommanderApiClient(
+                base_url="http://testserver",
+                token=token,
+                transport=self.transport,
+            ),
+        )
+        worker.run(commander_id=launch["commander_id"], run_id=launch["run_id"], lease_token=launch["lease_token"])
+        self._advance_time(3)
+        follow_up = scheduler.run_once()
+        self.assertTrue(follow_up)
 
 
 if __name__ == "__main__":

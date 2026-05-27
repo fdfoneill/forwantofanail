@@ -20,10 +20,19 @@ from forwantofanail.api.schemas import (
     ActionCreateRequest,
     ArmyManagementApplyRequest,
     ActionPlanRequest,
+    CommanderRuntimeControllerUpdateRequest,
+    CommanderRuntimeNudgeRequest,
     LoginRequest,
     MessageCreateRequest,
     StandingFollowRoadUpdateRequest,
     TimeAdvanceRequest,
+)
+from forwantofanail.ai_commander.runtime import (
+    get_runtime_detail,
+    list_runs,
+    list_runtime_rows,
+    mark_manual_attention,
+    set_controller_type,
 )
 from forwantofanail.core.database import create_session
 from forwantofanail.core.models import (
@@ -32,6 +41,7 @@ from forwantofanail.core.models import (
     Army,
     AuthToken,
     Commander,
+    CommanderRun,
     Detachment,
     GameClock,
     Location,
@@ -5489,6 +5499,12 @@ def advance_time_for_development(
     }
 
 
+def _require_admin_token(x_admin_token: str | None) -> None:
+    configured_admin_token = os.getenv("DEV_ADMIN_TOKEN")
+    if configured_admin_token and x_admin_token != configured_admin_token:
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+
+
 @router.get("/me/view")
 def get_my_view(
     commander_id: int = Depends(_get_current_commander_id),
@@ -6380,3 +6396,60 @@ def get_message(
         "delivered_watch": _to_watch_stamp(message.delivery_day, message.delivery_watch),
         "is_read": message.is_read,
     }
+
+
+@router.get("/admin/ai/runtimes")
+def list_ai_runtimes(
+    x_admin_token: str | None = Header(default=None),
+    session: Session = Depends(_get_session),
+):
+    _require_admin_token(x_admin_token)
+    return {"runtimes": list_runtime_rows(session)}
+
+
+@router.get("/admin/ai/runtimes/{commander_id}")
+def get_ai_runtime_detail(
+    commander_id: int,
+    run_limit: int = Query(default=10, ge=1, le=100),
+    x_admin_token: str | None = Header(default=None),
+    session: Session = Depends(_get_session),
+):
+    _require_admin_token(x_admin_token)
+    return get_runtime_detail(session, commander_id, run_limit=run_limit)
+
+
+@router.post("/admin/ai/runtimes/{commander_id}/controller")
+def update_ai_runtime_controller(
+    commander_id: int,
+    payload: CommanderRuntimeControllerUpdateRequest,
+    x_admin_token: str | None = Header(default=None),
+    session: Session = Depends(_get_session),
+):
+    _require_admin_token(x_admin_token)
+    runtime = set_controller_type(session, commander_id, payload.controller_type)
+    session.commit()
+    return {"runtime": get_runtime_detail(session, runtime.commander_id, run_limit=5)["runtime"]}
+
+
+@router.post("/admin/ai/runtimes/{commander_id}/nudge")
+def nudge_ai_runtime(
+    commander_id: int,
+    payload: CommanderRuntimeNudgeRequest,
+    x_admin_token: str | None = Header(default=None),
+    session: Session = Depends(_get_session),
+):
+    _require_admin_token(x_admin_token)
+    runtime = mark_manual_attention(session, commander_id, payload.reason)
+    session.commit()
+    return {"runtime": get_runtime_detail(session, runtime.commander_id, run_limit=5)["runtime"]}
+
+
+@router.get("/admin/ai/runs")
+def list_ai_runs(
+    status: list[str] | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    x_admin_token: str | None = Header(default=None),
+    session: Session = Depends(_get_session),
+):
+    _require_admin_token(x_admin_token)
+    return {"runs": list_runs(session, statuses=status, limit=limit)}

@@ -67,3 +67,11 @@ class ArmyManagementApplyRequest(BaseModel):
     left_army: ArmyManagementArmySideRequest
     right_target: ArmyManagementRightTargetRequest
     right_army: ArmyManagementArmySideRequest | None = None
+
+
+class CommanderRuntimeControllerUpdateRequest(BaseModel):
+    controller_type: Literal["human", "ai", "disabled"]
+
+
+class CommanderRuntimeNudgeRequest(BaseModel):
+    reason: str = "manual_nudge"

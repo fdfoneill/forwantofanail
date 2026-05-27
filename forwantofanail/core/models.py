@@ -82,6 +82,18 @@ class Commander(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    runtime = relationship(
+        "CommanderRuntime",
+        back_populates="commander",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
+    runs = relationship(
+        "CommanderRun",
+        back_populates="commander",
+        cascade="all, delete-orphan",
+        foreign_keys="CommanderRun.commander_id",
+    )
 
 
 class CommanderTrait(Base):
@@ -340,3 +352,50 @@ class Alert(Base):
         back_populates="alerts",
         foreign_keys=[recipient_commander_id],
     )
+
+
+class CommanderRun(Base):
+    __tablename__ = "commander_runs"
+
+    run_id = Column(Integer, primary_key=True, autoincrement=True)
+    commander_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=False, index=True)
+    status = Column(String(20), nullable=False, default="queued", index=True)
+    triggered_at = Column(DateTime, nullable=False, index=True)
+    started_at = Column(DateTime, nullable=True, index=True)
+    finished_at = Column(DateTime, nullable=True, index=True)
+    wake_reasons_json = Column(Text, nullable=False, default="[]")
+    lease_token = Column(String(128), nullable=True, index=True)
+    scheduler_instance_id = Column(String(128), nullable=True, index=True)
+    worker_pid = Column(Integer, nullable=True)
+    brief_snapshot_json = Column(Text, nullable=False, default="{}")
+    scratchpad_before_json = Column(Text, nullable=False, default="{}")
+    scratchpad_after_json = Column(Text, nullable=False, default="{}")
+    tool_calls_json = Column(Text, nullable=False, default="[]")
+    result_summary_json = Column(Text, nullable=False, default="{}")
+    error_json = Column(Text, nullable=False, default="{}")
+
+    commander = relationship("Commander", back_populates="runs", foreign_keys=[commander_id])
+
+
+class CommanderRuntime(Base):
+    __tablename__ = "commander_runtimes"
+
+    commander_id = Column(Integer, ForeignKey("commanders.commander_id"), primary_key=True)
+    controller_type = Column(String(20), nullable=False, default="human", index=True)
+    ai_enabled = Column(Boolean, nullable=False, default=False, index=True)
+    last_reviewed_day = Column(Integer, nullable=True)
+    last_reviewed_watch = Column(Integer, nullable=True)
+    last_reviewed_message_id = Column(Integer, nullable=True)
+    last_reviewed_action_fingerprint = Column(String(128), nullable=True)
+    attention_needed = Column(Boolean, nullable=False, default=False, index=True)
+    attention_reasons_json = Column(Text, nullable=False, default="[]")
+    active_run_id = Column(Integer, ForeignKey("commander_runs.run_id"), nullable=True, index=True)
+    lease_token = Column(String(128), nullable=True, index=True)
+    lease_expires_at = Column(DateTime, nullable=True, index=True)
+    scratchpad_json = Column(Text, nullable=False, default="{}")
+    last_run_started_at = Column(DateTime, nullable=True)
+    last_run_finished_at = Column(DateTime, nullable=True)
+    last_run_status = Column(String(20), nullable=True, index=True)
+
+    commander = relationship("Commander", back_populates="runtime", foreign_keys=[commander_id])
+    active_run = relationship("CommanderRun", foreign_keys=[active_run_id], post_update=True)

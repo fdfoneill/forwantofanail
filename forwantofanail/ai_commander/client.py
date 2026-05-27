@@ -15,6 +15,8 @@ from .models import (
 
 def _strip_trailing_slash(value: str) -> str:
     return value[:-1] if value.endswith("/") else value
+
+
 class UrllibCommanderTransport:
     def request(
         self,
@@ -113,6 +115,10 @@ class CommanderApiClient:
     def list_correspondents(self) -> list[dict[str, Any]]:
         response = self._request("GET", "/v1/correspondents")
         return list(response) if isinstance(response, list) else []
+
+    def get_brief(self) -> dict[str, Any]:
+        response = self._request("GET", "/v1/me/brief")
+        return dict(response) if isinstance(response, dict) else {}
 
     def list_messages(self, *, unread_only: bool = False) -> list[dict[str, Any]]:
         response = self._request("GET", "/v1/me/messages", params={"unread_only": unread_only})
