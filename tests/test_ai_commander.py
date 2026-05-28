@@ -164,6 +164,48 @@ class DummyClient:
     def get_border_roads(self, *, cells: list[str]):
         return {"roads": cells}
 
+    def list_known_strongholds(
+        self,
+        *,
+        stronghold_id: str | None = None,
+        faction: str | None = None,
+        region: str | None = None,
+        search: str | None = None,
+    ):
+        return {
+            "strongholds": [
+                {
+                    "stronghold_id": stronghold_id or "sh_1",
+                    "stronghold_name": search or "Kumba",
+                    "faction": faction or "Delisgar",
+                    "region": region or "West",
+                    "location_h3": "cell_1",
+                    "stronghold_type": "town",
+                }
+            ]
+        }
+
+    def get_stronghold_route(
+        self,
+        *,
+        from_stronghold_id: str,
+        to_stronghold_id: str,
+        avoid_stronghold_ids: list[str] | None = None,
+        on_road: bool = True,
+    ):
+        return {
+            "from": {"stronghold_id": from_stronghold_id},
+            "to": {"stronghold_id": to_stronghold_id},
+            "avoid_stronghold_ids": avoid_stronghold_ids or [],
+            "path_h3": ["cell_1", "cell_2"],
+            "path_length": 2,
+            "path_steps": 1,
+            "on_road_only": on_road,
+            "offroad_allowed": True,
+            "used_offroad": not on_road,
+            "total_cost": 1 if on_road else 2,
+        }
+
 
 class AiCommanderUnitOnlyTestCase(unittest.TestCase):
     def setUp(self):
@@ -192,6 +234,14 @@ class AiCommanderUnitOnlyTestCase(unittest.TestCase):
         self.assertEqual(by_name["plan_actions"]["parameters"]["required"], ["kind", "path"])
         self.assertEqual(by_name["list_messages"]["parameters"]["required"], ["unread_only"])
         self.assertEqual(by_name["get_valid_next_destinations"]["parameters"]["properties"]["origin_h3"]["type"], ["string", "null"])
+        self.assertEqual(
+            by_name["list_known_strongholds"]["parameters"]["required"],
+            ["stronghold_id", "faction", "region", "search"],
+        )
+        self.assertEqual(
+            by_name["get_stronghold_route"]["parameters"]["required"],
+            ["from_stronghold_id", "to_stronghold_id", "avoid_stronghold_ids", "on_road"],
+        )
 
     def test_dispatch_success_and_failure(self):
         success = self.registry.dispatch("list_correspondents")
@@ -206,6 +256,23 @@ class AiCommanderUnitOnlyTestCase(unittest.TestCase):
         self.assertFalse(failure.ok)
         self.assertEqual(failure.error["http_status"], 400)
         self.assertEqual(failure.error["error_code"], "invalid_request")
+
+    def test_geography_tools(self):
+        lookup = self.registry.dispatch("list_known_strongholds", {"faction": "Delisgar"})
+        self.assertTrue(lookup.ok)
+        self.assertEqual(lookup.data["result"]["strongholds"][0]["faction"], "Delisgar")
+
+        route = self.registry.dispatch(
+            "get_stronghold_route",
+            {
+                "from_stronghold_id": "sh_1",
+                "to_stronghold_id": "sh_2",
+                "avoid_stronghold_ids": ["sh_3"],
+                "on_road": True,
+            },
+        )
+        self.assertTrue(route.ok)
+        self.assertEqual(route.data["result"]["path_h3"], ["cell_1", "cell_2"])
 
     def test_example_smoke_function_call_round_trip(self):
         from examples.ai_commander_responses_example import execute_response_function_calls
@@ -266,6 +333,53 @@ class AiCommanderTestCase(unittest.TestCase):
         message = self.sofonisba.read_message(inbox[0]["id"])
         self.assertEqual(message["content"], "Hold the river line.")
         self.assertTrue(message["is_read"])
+
+    def test_geography_lookup_and_route(self):
+        strongholds = self.sofonisba.list_known_strongholds()
+        self.assertTrue(strongholds["strongholds"])
+        ordered_ids = [row["stronghold_id"] for row in strongholds["strongholds"]]
+        self.assertEqual(
+            ordered_ids,
+            sorted(ordered_ids, key=lambda value: int(value.split("_", 1)[1])),
+        )
+
+        boonan_only = self.sofonisba.list_known_strongholds(faction="Boonan")
+        self.assertTrue(boonan_only["strongholds"])
+        self.assertTrue(all(row["faction"].lower() == "boonan" for row in boonan_only["strongholds"]))
+
+        named = self.sofonisba.list_known_strongholds(search="kum")
+        self.assertTrue(named["strongholds"])
+        self.assertTrue(any("kum" in row["stronghold_name"].lower() for row in named["strongholds"]))
+
+        route = self.sofonisba.get_stronghold_route(
+            from_stronghold_id=strongholds["strongholds"][0]["stronghold_id"],
+            to_stronghold_id=strongholds["strongholds"][-1]["stronghold_id"],
+            avoid_stronghold_ids=[],
+            on_road=True,
+        )
+        self.assertGreaterEqual(route["path_length"], 2)
+        self.assertEqual(route["path_h3"][0], route["from"]["location_h3"])
+        self.assertEqual(route["path_h3"][-1], route["to"]["location_h3"])
+
+    def test_geography_route_errors_and_avoidance(self):
+        strongholds = self.sofonisba.list_known_strongholds()["strongholds"]
+        with self.assertRaises(CommanderApiError) as exc:
+            self.sofonisba.get_stronghold_route(
+                from_stronghold_id="sh_9999",
+                to_stronghold_id=strongholds[0]["stronghold_id"],
+            )
+        self.assertEqual(exc.exception.http_status, 400)
+
+        if len(strongholds) >= 3:
+            route = self.sofonisba.get_stronghold_route(
+                from_stronghold_id=strongholds[0]["stronghold_id"],
+                to_stronghold_id=strongholds[-1]["stronghold_id"],
+                avoid_stronghold_ids=[strongholds[1]["stronghold_id"]],
+                on_road=False,
+            )
+            blocked_location = strongholds[1]["location_h3"]
+            if route["path_length"] > 2:
+                self.assertNotIn(blocked_location, route["path_h3"][1:-1])
 
     def test_error_normalization_by_status(self):
         invalid_auth_client = CommanderApiClient(

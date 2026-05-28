@@ -55,6 +55,8 @@ class CommanderToolRegistry:
             "set_forced_march": self.client.set_forced_march,
             "list_alerts": self.client.list_alerts,
             "get_border_roads": self.client.get_border_roads,
+            "list_known_strongholds": self.client.list_known_strongholds,
+            "get_stronghold_route": self.client.get_stronghold_route,
         }
 
     def get_tools(self) -> list[dict[str, Any]]:
@@ -201,6 +203,32 @@ class CommanderToolRegistry:
                     },
                 },
                 required=["cells"],
+            ),
+            _tool(
+                name="list_known_strongholds",
+                description="Look up named strongholds by ID, faction, region, or partial name search.",
+                properties={
+                    "stronghold_id": _nullable_schema("string", description="Optional exact stronghold ID such as sh_3."),
+                    "faction": _nullable_schema("string", description="Optional controlling faction filter."),
+                    "region": _nullable_schema("string", description="Optional region filter."),
+                    "search": _nullable_schema("string", description="Optional partial stronghold name search."),
+                },
+                required=["stronghold_id", "faction", "region", "search"],
+            ),
+            _tool(
+                name="get_stronghold_route",
+                description="Find a route between two strongholds, optionally avoiding named strongholds.",
+                properties={
+                    "from_stronghold_id": {"type": "string", "description": "Origin stronghold ID such as sh_1."},
+                    "to_stronghold_id": {"type": "string", "description": "Destination stronghold ID such as sh_4."},
+                    "avoid_stronghold_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Intermediate stronghold IDs to avoid.",
+                    },
+                    "on_road": {"type": "boolean", "description": "If true, constrain the route to road and stronghold cells."},
+                },
+                required=["from_stronghold_id", "to_stronghold_id", "avoid_stronghold_ids", "on_road"],
             ),
         ]
 

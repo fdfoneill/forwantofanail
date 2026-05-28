@@ -56,6 +56,7 @@ from forwantofanail.core.models import (
 from forwantofanail.mechanics.movement import (
     calculate_move_watches,
     calculate_move_watches_from_origin,
+    find_stronghold_route,
     list_valid_destinations,
     list_valid_destinations_from_origin,
 )
@@ -182,6 +183,18 @@ def _parse_stronghold_ref(value: str) -> int:
         return int(value)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="target_stronghold_id must be an integer or sh_<id>") from exc
+
+
+def _parse_stronghold_ref_list(value: str | None) -> list[int]:
+    if not value:
+        return []
+    parsed: list[int] = []
+    for raw in str(value).split(","):
+        candidate = raw.strip()
+        if not candidate:
+            continue
+        parsed.append(_parse_stronghold_ref(candidate))
+    return parsed
 
 
 def _parse_detachment_ref(value: str) -> int:
@@ -5625,6 +5638,145 @@ def get_border_road_neighbors(
         .all()
     )
     return {"roads": [row[0] for row in road_neighbors]}
+
+
+@router.get("/me/geography/strongholds")
+def get_known_strongholds(
+    stronghold_id: str | None = Query(default=None, description="Exact stronghold ID such as sh_2"),
+    faction: str | None = Query(default=None, description="Filter by controlling faction"),
+    region: str | None = Query(default=None, description="Filter by region"),
+    search: str | None = Query(default=None, description="Case-insensitive partial stronghold name search"),
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    _ = commander_id
+    exact_id: int | None = None
+    if stronghold_id:
+        exact_id = _parse_stronghold_ref(stronghold_id)
+
+    faction_filter = (faction or "").strip().lower()
+    region_filter = (region or "").strip().lower()
+    search_filter = (search or "").strip().lower()
+
+    strongholds = (
+        session.query(Stronghold)
+        .join(Location, Stronghold.location_id == Location.location_id)
+        .order_by(Stronghold.stronghold_id.asc())
+        .all()
+    )
+
+    results: list[dict[str, Any]] = []
+    for stronghold in strongholds:
+        if exact_id is not None and int(stronghold.stronghold_id) != exact_id:
+            continue
+        if faction_filter and str(stronghold.control or "").strip().lower() != faction_filter:
+            continue
+        stronghold_region = str(getattr(stronghold.location, "region", "") or "").strip()
+        if region_filter and stronghold_region.lower() != region_filter:
+            continue
+        stronghold_name = str(stronghold.stronghold_name or "").strip()
+        if search_filter and search_filter not in stronghold_name.lower():
+            continue
+        results.append(
+            {
+                "stronghold_id": _stronghold_ref(stronghold.stronghold_id),
+                "stronghold_name": stronghold_name,
+                "stronghold_type": stronghold.stronghold_type,
+                "faction": stronghold.control,
+                "region": stronghold_region or None,
+                "location_h3": stronghold.location_id,
+            }
+        )
+
+    return {"strongholds": results}
+
+
+@router.get("/me/geography/route")
+def get_geography_route(
+    from_stronghold_id: str = Query(..., description="Origin stronghold ID such as sh_1"),
+    to_stronghold_id: str = Query(..., description="Destination stronghold ID such as sh_4"),
+    avoid_stronghold_ids: str | None = Query(
+        default=None,
+        description="Comma-separated intermediate stronghold IDs to avoid, such as sh_2,sh_3",
+    ),
+    on_road: bool = Query(default=True, description="If true, constrain the route to roads and stronghold cells."),
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    army = _find_commander_army(session, commander_id)
+    from_id = _parse_stronghold_ref(from_stronghold_id)
+    to_id = _parse_stronghold_ref(to_stronghold_id)
+    from_stronghold = session.get(Stronghold, from_id)
+    to_stronghold = session.get(Stronghold, to_id)
+    if from_stronghold is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Unknown from_stronghold_id", "from_stronghold_id": from_stronghold_id},
+        )
+    if to_stronghold is None:
+        raise HTTPException(
+            status_code=400,
+            detail={"message": "Unknown to_stronghold_id", "to_stronghold_id": to_stronghold_id},
+        )
+
+    avoid_ids = _parse_stronghold_ref_list(avoid_stronghold_ids)
+    avoid_strongholds = (
+        session.query(Stronghold)
+        .filter(Stronghold.stronghold_id.in_(avoid_ids))
+        .order_by(Stronghold.stronghold_id.asc())
+        .all()
+    ) if avoid_ids else []
+    known_avoid_ids = {int(stronghold.stronghold_id) for stronghold in avoid_strongholds}
+    unknown_avoid_ids = sorted(set(avoid_ids) - known_avoid_ids)
+    if unknown_avoid_ids:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Unknown avoid_stronghold_ids",
+                "avoid_stronghold_ids": [_stronghold_ref(stronghold_id) for stronghold_id in unknown_avoid_ids],
+            },
+        )
+
+    try:
+        route = find_stronghold_route(
+            session,
+            army=army,
+            start_id=from_stronghold.location_id,
+            destination_id=to_stronghold.location_id,
+            avoid_location_ids={stronghold.location_id for stronghold in avoid_strongholds},
+            on_road_only=bool(on_road),
+        )
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "message": str(exc),
+                "from_stronghold_id": from_stronghold_id,
+                "to_stronghold_id": to_stronghold_id,
+                "on_road": bool(on_road),
+            },
+        ) from exc
+
+    return {
+        "from": {
+            "stronghold_id": _stronghold_ref(from_stronghold.stronghold_id),
+            "stronghold_name": from_stronghold.stronghold_name,
+            "location_h3": from_stronghold.location_id,
+        },
+        "to": {
+            "stronghold_id": _stronghold_ref(to_stronghold.stronghold_id),
+            "stronghold_name": to_stronghold.stronghold_name,
+            "location_h3": to_stronghold.location_id,
+        },
+        "avoid_stronghold_ids": [_stronghold_ref(stronghold.stronghold_id) for stronghold in avoid_strongholds],
+        "path_h3": route.path,
+        "path_length": len(route.path),
+        "path_steps": max(0, len(route.path) - 1),
+        "on_road_only": bool(on_road),
+        "offroad_allowed": route.offroad_allowed,
+        "used_offroad": route.used_offroad,
+        "total_cost": route.total_cost,
+    }
 
 
 @router.get("/me/actions/valid-next")

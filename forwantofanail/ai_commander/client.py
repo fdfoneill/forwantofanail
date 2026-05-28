@@ -219,6 +219,46 @@ class CommanderApiClient:
         response = self._request("GET", "/v1/me/roads/border", params={"cells": list(cells)})
         return dict(response) if isinstance(response, dict) else {}
 
+    def list_known_strongholds(
+        self,
+        *,
+        stronghold_id: str | None = None,
+        faction: str | None = None,
+        region: str | None = None,
+        search: str | None = None,
+    ) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            "/v1/me/geography/strongholds",
+            params={
+                "stronghold_id": stronghold_id,
+                "faction": faction,
+                "region": region,
+                "search": search,
+            },
+        )
+        return dict(response) if isinstance(response, dict) else {}
+
+    def get_stronghold_route(
+        self,
+        *,
+        from_stronghold_id: str,
+        to_stronghold_id: str,
+        avoid_stronghold_ids: list[str] | None = None,
+        on_road: bool = True,
+    ) -> dict[str, Any]:
+        response = self._request(
+            "GET",
+            "/v1/me/geography/route",
+            params={
+                "from_stronghold_id": from_stronghold_id,
+                "to_stronghold_id": to_stronghold_id,
+                "avoid_stronghold_ids": ",".join(avoid_stronghold_ids or []),
+                "on_road": on_road,
+            },
+        )
+        return dict(response) if isinstance(response, dict) else {}
+
     def _request(
         self,
         method: str,
