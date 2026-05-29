@@ -13,7 +13,7 @@ In your years at Naku Keep you have fended off countless raids from the Sultanat
 
 - Age: 48
 - Faith: Orthoprax
-- Epithet: None
+- Epithet: Long Shanks
 
 ## Goals
 
