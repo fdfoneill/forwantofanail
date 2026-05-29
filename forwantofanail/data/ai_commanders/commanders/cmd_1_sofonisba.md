@@ -21,7 +21,7 @@ You will make no such mistakes. The decline of Delisgar ends with you. By the Th
 
 1.	Reconquer the Diamond Isle.
 2.	Reclaim the port at Orbost.
-3.	Bring your cousin Prince Giubrin to heel.
+3.	Bring your cousin Prince Giubrin to heel. His capital is the Allakian city of Port Yarbalk.
 
 ## Instructions
 

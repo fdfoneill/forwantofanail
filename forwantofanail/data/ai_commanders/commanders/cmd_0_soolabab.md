@@ -19,8 +19,8 @@ In your years at Naku Keep you have fended off countless raids from the Sultanat
 
 *As determined by the Moot of village headmen and tribal chiefs.*
 
-1.	Destroy the Sultan’s armies.
-2.	Gain access to the sea.
+1.	Destroy the Sultan’s armies. He surely marches south from either Lamm or Onjo.
+2.	Gain access to the sea, perhaps through the port at Orbost.
 3.	Defend Bemm and Jerboon.
 
 ## Instructions

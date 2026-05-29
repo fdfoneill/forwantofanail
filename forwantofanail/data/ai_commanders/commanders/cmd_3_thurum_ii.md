@@ -22,7 +22,7 @@ Now your eyes turn south, toward the city of Bemm. They speak Dinn there; why sh
 
 1.	Conquer the city of Bemm.
 2.	Destroy the Allakian pirates.
-3.	Open a trade route to the south.
+3.	Open a trade route to the south through Merewey or Taree.
 
 ## Instructions
 
