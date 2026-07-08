@@ -327,7 +327,7 @@ def test_commander_claim_overview_combines_faction_and_commander(sqlite_db, tmp_
         by_id = {row["id"]: row for row in claims}
         assert by_id["cmd_1"]["overview"]["faction"] == "Alpha faction overview."
         assert by_id["cmd_1"]["overview"]["commander"] == "Alpha commander overview."
-        assert by_id["cmd_1"]["overview"]["combined"] == "Alpha faction overview.\n\nAlpha commander overview."
+        assert by_id["cmd_1"]["overview"]["combined"] == "Alpha commander overview.\n\nAlpha faction overview."
     finally:
         session.close()
 

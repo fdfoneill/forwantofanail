@@ -273,7 +273,7 @@ def _commander_overview_payload(session: Session, commander: Commander, faction:
     faction_overviews = _load_overview_mapping(FACTION_OVERVIEWS_PATH)
     faction_overview = faction_overviews.get(str(faction or "").strip(), "")
     commander_overview = _lookup_commander_overview(commander) or _generated_commander_overview(session, commander)
-    parts = [part for part in [faction_overview, commander_overview] if part]
+    parts = [part for part in [commander_overview, faction_overview] if part]
     return {
         "faction": faction_overview,
         "commander": commander_overview,
