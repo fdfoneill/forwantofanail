@@ -13,15 +13,19 @@ from forwantofanail.api.schemas import (
     ArmyManagementApplyRequest,
     ArmyManagementArmySideRequest,
     ArmyManagementRightTargetRequest,
+    LoginRequest,
     MessageCreateRequest,
     StandingFollowRoadUpdateRequest,
 )
 from forwantofanail.core.database import Base, create_session, get_engine, reset_database_runtime
+from forwantofanail.core.initialize_db import _drop_all_tables_for_reset
 from forwantofanail.core.migrate_runtime_tables import migrate_runtime_tables
 from forwantofanail.core.models import (
     Action,
     Army,
+    AuthToken,
     Commander,
+    CommanderClaim,
     Detachment,
     Location,
     Message,
@@ -268,3 +272,87 @@ def test_runtime_migration_indexes_are_idempotent(sqlite_db):
         assert "uq_siege_participants_one_active_per_army" in index_names
     finally:
         session.close()
+
+
+def test_commander_claim_issues_scoped_token_and_blocks_duplicates(sqlite_db):
+    first = _call_with_session(lambda session: routes.claim_commander("cmd_1", session=session))
+    second = _call_with_session(lambda session: routes.claim_commander("cmd_1", session=session))
+
+    assert first["commander"]["id"] == "cmd_1"
+    assert first["commander"]["claimed"] is True
+    assert second == 409
+
+    session = create_session()
+    try:
+        assert routes._get_current_commander_id(authorization=f"Bearer {first['token']}", session=session) == 1
+        assert session.query(CommanderClaim).filter(CommanderClaim.commander_id == 1).count() == 1
+        assert session.query(AuthToken).filter(AuthToken.commander_id == 1).count() == 1
+    finally:
+        session.close()
+
+
+def test_commander_claim_list_marks_claimed_commanders(sqlite_db):
+    _call_with_session(lambda session: routes.claim_commander("cmd_1", session=session))
+
+    session = create_session()
+    try:
+        claims = routes.list_commander_claims(session=session)
+        by_id = {row["id"]: row for row in claims}
+        assert by_id["cmd_1"]["claimed"] is True
+        assert by_id["cmd_2"]["claimed"] is False
+    finally:
+        session.close()
+
+
+def test_direct_login_claims_unclaimed_commander_and_blocks_duplicates(sqlite_db):
+    first = _call_with_session(
+        lambda session: routes.login(LoginRequest(commander_name="Alpha"), session=session, x_admin_token=None)
+    )
+    second = _call_with_session(
+        lambda session: routes.login(LoginRequest(commander_name="Alpha"), session=session, x_admin_token=None)
+    )
+
+    assert first["commander"]["name"] == "Alpha"
+    assert second == 409
+
+
+def test_direct_admin_login_bypasses_claims_when_configured(sqlite_db, monkeypatch):
+    monkeypatch.setenv("DEV_ADMIN_TOKEN", "secret")
+    _call_with_session(lambda session: routes.claim_commander("cmd_1", session=session))
+
+    allowed = _call_with_session(
+        lambda session: routes.login(LoginRequest(commander_name="Alpha"), session=session, x_admin_token="secret")
+    )
+
+    assert allowed["commander"]["name"] == "Alpha"
+
+
+def test_admin_claim_reset_releases_commanders(sqlite_db, monkeypatch):
+    monkeypatch.setenv("DEV_ADMIN_TOKEN", "secret")
+    _call_with_session(lambda session: routes.claim_commander("cmd_1", session=session))
+
+    reset = _call_with_session(lambda session: routes.reset_commander_claims(session=session, x_admin_token="secret"))
+
+    assert reset == {"reset_claims": 1}
+    session = create_session()
+    try:
+        assert session.query(CommanderClaim).count() == 0
+        assert session.query(AuthToken).count() == 0
+    finally:
+        session.close()
+
+
+def test_sqlite_reset_drop_handles_claim_foreign_keys(sqlite_db):
+    _call_with_session(lambda session: routes.claim_commander("cmd_1", session=session))
+
+    engine = get_engine()
+    _drop_all_tables_for_reset(engine)
+
+    with engine.connect() as connection:
+        remaining_tables = {
+            row[0]
+            for row in connection.execute(
+                text("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")
+            ).all()
+        }
+    assert remaining_tables == set()

@@ -23,6 +23,19 @@ from forwantofanail.core.models import (
 )
 
 
+def _drop_all_tables_for_reset(engine) -> None:
+    if engine.dialect.name != "sqlite":
+        Base.metadata.drop_all(engine)
+        return
+
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys=OFF")
+        try:
+            Base.metadata.drop_all(connection)
+        finally:
+            connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+
+
 def _parse_bool(value: str | None) -> bool | None:
     if value is None:
         return None
@@ -219,7 +232,7 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
     engine = get_engine()
     if reset:
         _prepare_scenario_static_assets(manifest, data_dir)
-        Base.metadata.drop_all(engine)
+        _drop_all_tables_for_reset(engine)
     Base.metadata.create_all(engine)
 
     session = create_session(engine)

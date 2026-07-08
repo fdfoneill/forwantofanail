@@ -14,6 +14,7 @@ from typing import Any
 
 import h3
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi.responses import FileResponse
 from sqlalchemy import and_, case, or_
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, joinedload
@@ -34,6 +35,7 @@ from forwantofanail.core.models import (
     Army,
     AuthToken,
     Commander,
+    CommanderClaim,
     Detachment,
     GameClock,
     Location,
@@ -60,6 +62,7 @@ from forwantofanail.mechanics.time import Watch
 
 router = APIRouter(prefix="/v1")
 ARMY_MANAGEMENT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "data" / "army_management_templates.json"
+COMMANDER_PORTRAIT_DIR = Path(__file__).resolve().parents[1] / "data" / "assets"
 _WORLD_MUTATION_LOCK = threading.RLock()
 
 WATCH_LABELS = {
@@ -196,6 +199,41 @@ def _message_sender_display_name(message: Message) -> str:
     if message.sender_commander is not None:
         return _commander_display_name(message.sender_commander)
     return message.sender_name
+
+
+def _commander_portrait_filename(commander: Commander) -> str | None:
+    display_name = _commander_display_name(commander)
+    normalized_display = "".join(ch for ch in display_name.lower() if ch.isalnum())
+    for path in COMMANDER_PORTRAIT_DIR.glob("Portrait - *"):
+        stem = path.stem.removeprefix("Portrait - ")
+        normalized_stem = "".join(ch for ch in stem.lower() if ch.isalnum())
+        if normalized_stem == normalized_display or normalized_display.startswith(normalized_stem):
+            return path.name
+        commander_name = "".join(ch for ch in str(commander.commander_name or "").lower() if ch.isalnum())
+        if commander_name and commander_name.startswith(normalized_stem):
+            return path.name
+        if normalized_stem and normalized_stem in commander_name:
+            return path.name
+    return None
+
+
+def _commander_portrait_url(commander: Commander) -> str | None:
+    filename = _commander_portrait_filename(commander)
+    if filename is None:
+        return None
+    return f"/v1/commander-portraits/{filename}"
+
+
+def _serialize_claim_commander(commander: Commander, claim: CommanderClaim | None = None) -> dict[str, Any]:
+    return {
+        "id": _commander_ref(commander.commander_id),
+        "name": commander.commander_name,
+        "title": commander.commander_title,
+        "display_name": _commander_display_name(commander),
+        "portrait_url": _commander_portrait_url(commander),
+        "claimed": claim is not None,
+        "claimed_at": claim.claimed_at.replace(microsecond=0).isoformat().replace("+00:00", "Z") if claim else None,
+    }
 
 
 def _alert_ref(alert_id: int) -> str:
@@ -4904,8 +4942,25 @@ def _get_current_action_row(session: Session, commander_id: int) -> Action | Non
     )
 
 
+def _claimable_commanders(session: Session) -> list[Commander]:
+    return (
+        session.query(Commander)
+        .join(Army, Army.commander_id == Commander.commander_id)
+        .filter(Army.is_garrison.is_(False))
+        .order_by(Commander.commander_id.asc())
+        .all()
+    )
+
+
 @router.post("/auth/login")
-def login(payload: LoginRequest, session: Session = Depends(_get_session)):
+def login(
+    payload: LoginRequest,
+    session: Session = Depends(_get_session),
+    x_admin_token: str | None = Header(default=None),
+):
+    configured_admin_token = os.getenv("DEV_ADMIN_TOKEN")
+    is_admin_login = bool(configured_admin_token and x_admin_token == configured_admin_token)
+
     def operation():
         commander = (
             session.query(Commander)
@@ -4916,13 +4971,21 @@ def login(payload: LoginRequest, session: Session = Depends(_get_session)):
             raise HTTPException(status_code=404, detail="Commander not found")
 
         token = secrets.token_urlsafe(24)
+        now = datetime.now(timezone.utc)
         session.add(
             AuthToken(
                 token=token,
                 commander_id=commander.commander_id,
-                created_at=datetime.now(timezone.utc),
+                created_at=now,
             )
         )
+        if not is_admin_login:
+            claimable_ids = {row.commander_id for row in _claimable_commanders(session)}
+            if commander.commander_id not in claimable_ids:
+                raise HTTPException(status_code=400, detail="Commander is not available for player claiming")
+            if session.get(CommanderClaim, commander.commander_id) is not None:
+                raise HTTPException(status_code=409, detail="Commander has already been claimed")
+            session.add(CommanderClaim(commander_id=commander.commander_id, token=token, claimed_at=now))
         return {
             "token": token,
             "commander": {
@@ -4932,6 +4995,14 @@ def login(payload: LoginRequest, session: Session = Depends(_get_session)):
         }
 
     return _run_world_mutation(session, operation)
+
+
+@router.get("/commander-portraits/{filename}", include_in_schema=False)
+def commander_portrait(filename: str):
+    safe_names = {path.name for path in COMMANDER_PORTRAIT_DIR.glob("Portrait - *") if path.is_file()}
+    if filename not in safe_names:
+        raise HTTPException(status_code=404, detail="Portrait not found")
+    return FileResponse(COMMANDER_PORTRAIT_DIR / filename)
 
 
 @router.get("/commanders")
@@ -4946,6 +5017,60 @@ def list_commanders(session: Session = Depends(_get_session)):
         }
         for commander in commanders
     ]
+
+
+@router.get("/commanders/claims")
+def list_commander_claims(session: Session = Depends(_get_session)):
+    claims = {claim.commander_id: claim for claim in session.query(CommanderClaim).all()}
+    return [_serialize_claim_commander(commander, claims.get(commander.commander_id)) for commander in _claimable_commanders(session)]
+
+
+@router.post("/commanders/{commander_id}/claim")
+def claim_commander(commander_id: str, session: Session = Depends(_get_session)):
+    def operation():
+        commander_pk = _parse_commander_ref(commander_id)
+        commander = session.get(Commander, commander_pk)
+        if commander is None:
+            raise HTTPException(status_code=404, detail="Commander not found")
+        claimable_ids = {row.commander_id for row in _claimable_commanders(session)}
+        if commander.commander_id not in claimable_ids:
+            raise HTTPException(status_code=400, detail="Commander is not available for player claiming")
+        if session.get(CommanderClaim, commander.commander_id) is not None:
+            raise HTTPException(status_code=409, detail="Commander has already been claimed")
+
+        token = secrets.token_urlsafe(24)
+        now = datetime.now(timezone.utc)
+        session.add(AuthToken(token=token, commander_id=commander.commander_id, created_at=now))
+        claim = CommanderClaim(commander_id=commander.commander_id, token=token, claimed_at=now)
+        session.add(claim)
+        return {
+            "token": token,
+            "commander": _serialize_claim_commander(commander, claim),
+        }
+
+    return _run_world_mutation(session, operation)
+
+
+@router.post("/admin/claims/reset")
+def reset_commander_claims(
+    session: Session = Depends(_get_session),
+    x_admin_token: str | None = Header(default=None),
+):
+    configured_admin_token = os.getenv("DEV_ADMIN_TOKEN")
+    if configured_admin_token and x_admin_token != configured_admin_token:
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+
+    def operation():
+        claims = session.query(CommanderClaim).all()
+        tokens = [claim.token for claim in claims]
+        for claim in claims:
+            session.delete(claim)
+        if tokens:
+            session.flush()
+            session.query(AuthToken).filter(AuthToken.token.in_(tokens)).delete(synchronize_session=False)
+        return {"reset_claims": len(claims)}
+
+    return _run_world_mutation(session, operation)
 
 
 @router.get("/time")
