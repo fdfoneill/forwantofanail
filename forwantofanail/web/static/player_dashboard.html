@@ -919,7 +919,7 @@
         <img id="assignedCommanderPortrait" alt="" />
         <div>
           <div id="assignedCommanderName" class="assigned-commander-name">-</div>
-          <div class="assigned-commander-note">Assigned commander</div>
+          <div id="assignedCommanderFaction" class="assigned-commander-note">-</div>
         </div>
       </div>
       <div class="meta">
@@ -1057,6 +1057,7 @@
       token: null,
       selectedCommander: null,
       selectedCommanderDisplay: "",
+      selectedCommanderFaction: "",
       selectedCommanderPortrait: "",
       claimOptions: [],
       view: null,
@@ -1196,6 +1197,7 @@
       assignedCommander: document.getElementById("assignedCommander"),
       assignedCommanderPortrait: document.getElementById("assignedCommanderPortrait"),
       assignedCommanderName: document.getElementById("assignedCommanderName"),
+      assignedCommanderFaction: document.getElementById("assignedCommanderFaction"),
       armyStatusToggle: document.getElementById("armyStatusToggle"),
       armyStatusText: document.getElementById("armyStatusText"),
       armyStatusChevron: document.getElementById("armyStatusChevron"),
@@ -3210,6 +3212,7 @@
       state.token = null;
       state.selectedCommander = null;
       state.selectedCommanderDisplay = "";
+      state.selectedCommanderFaction = "";
       state.selectedCommanderPortrait = "";
       state.view = null;
       state.alerts = [];
@@ -3275,13 +3278,17 @@
     }
 
     function applyClaim(payload, { persist = true } = {}) {
+      const commander = payload.commander || {};
+      const claimOption = state.claimOptions.find((option) => option.id === commander.id) || {};
+      const hydratedCommander = { ...claimOption, ...commander };
       state.token = payload.token;
-      state.selectedCommander = payload.commander?.name || "";
-      state.selectedCommanderDisplay = payload.commander?.display_name || payload.commander?.name || "";
-      state.selectedCommanderPortrait = payload.commander?.portrait_url || "";
+      state.selectedCommander = hydratedCommander.name || "";
+      state.selectedCommanderDisplay = hydratedCommander.display_name || hydratedCommander.name || "";
+      state.selectedCommanderFaction = hydratedCommander.faction || "";
+      state.selectedCommanderPortrait = hydratedCommander.portrait_url || "";
       state.sessionVersion += 1;
       if (persist) {
-        persistClaim(payload);
+        persistClaim({ ...payload, commander: hydratedCommander });
       }
       renderClaimPanel();
     }
@@ -3306,6 +3313,7 @@
         els.claimPanel.hidden = true;
         els.assignedCommander.hidden = false;
         els.assignedCommanderName.textContent = state.selectedCommanderDisplay || state.selectedCommander || "-";
+        els.assignedCommanderFaction.textContent = state.selectedCommanderFaction || "Faction unknown";
         if (state.selectedCommanderPortrait) {
           els.assignedCommanderPortrait.src = state.selectedCommanderPortrait;
           els.assignedCommanderPortrait.hidden = false;

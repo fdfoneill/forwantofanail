@@ -280,6 +280,7 @@ def test_commander_claim_issues_scoped_token_and_blocks_duplicates(sqlite_db):
 
     assert first["commander"]["id"] == "cmd_1"
     assert first["commander"]["claimed"] is True
+    assert first["commander"]["faction"] == "Alpha"
     assert second == 409
 
     session = create_session()
@@ -299,7 +300,9 @@ def test_commander_claim_list_marks_claimed_commanders(sqlite_db):
         claims = routes.list_commander_claims(session=session)
         by_id = {row["id"]: row for row in claims}
         assert by_id["cmd_1"]["claimed"] is True
+        assert by_id["cmd_1"]["faction"] == "Alpha"
         assert by_id["cmd_2"]["claimed"] is False
+        assert by_id["cmd_2"]["faction"] == "Beta"
     finally:
         session.close()
 
@@ -338,6 +341,20 @@ def test_admin_claim_reset_releases_commanders(sqlite_db, monkeypatch):
     try:
         assert session.query(CommanderClaim).count() == 0
         assert session.query(AuthToken).count() == 0
+    finally:
+        session.close()
+
+
+def test_admin_army_summary_reports_commander_armies(sqlite_db):
+    session = create_session()
+    try:
+        rows = routes.admin_armies_summary(session=session, x_admin_token=None)
+        by_army = {row["army_name"]: row for row in rows}
+        assert by_army["Alpha Host"]["commander_name"] == "Lord Alpha"
+        assert by_army["Alpha Host"]["faction"] == "Alpha"
+        assert by_army["Alpha Host"]["claimed"] is False
+        assert by_army["Alpha Host"]["strength"] == 100
+        assert by_army["Alpha Host"]["status"] == "idle"
     finally:
         session.close()
 

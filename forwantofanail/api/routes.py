@@ -224,12 +224,23 @@ def _commander_portrait_url(commander: Commander) -> str | None:
     return f"/v1/commander-portraits/{filename}"
 
 
-def _serialize_claim_commander(commander: Commander, claim: CommanderClaim | None = None) -> dict[str, Any]:
+def _commander_claim_faction(session: Session, commander_id: int) -> str:
+    army = (
+        session.query(Army)
+        .filter(Army.commander_id == commander_id, Army.is_garrison.is_(False))
+        .order_by(Army.army_id.asc())
+        .first()
+    )
+    return str(army.army_faction or "").strip() if army is not None else ""
+
+
+def _serialize_claim_commander(session: Session, commander: Commander, claim: CommanderClaim | None = None) -> dict[str, Any]:
     return {
         "id": _commander_ref(commander.commander_id),
         "name": commander.commander_name,
         "title": commander.commander_title,
         "display_name": _commander_display_name(commander),
+        "faction": _commander_claim_faction(session, int(commander.commander_id)),
         "portrait_url": _commander_portrait_url(commander),
         "claimed": claim is not None,
         "claimed_at": claim.claimed_at.replace(microsecond=0).isoformat().replace("+00:00", "Z") if claim else None,
@@ -4952,6 +4963,12 @@ def _claimable_commanders(session: Session) -> list[Commander]:
     )
 
 
+def _validate_admin_token(x_admin_token: str | None) -> None:
+    configured_admin_token = os.getenv("DEV_ADMIN_TOKEN")
+    if configured_admin_token and x_admin_token != configured_admin_token:
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+
+
 @router.post("/auth/login")
 def login(
     payload: LoginRequest,
@@ -5022,7 +5039,10 @@ def list_commanders(session: Session = Depends(_get_session)):
 @router.get("/commanders/claims")
 def list_commander_claims(session: Session = Depends(_get_session)):
     claims = {claim.commander_id: claim for claim in session.query(CommanderClaim).all()}
-    return [_serialize_claim_commander(commander, claims.get(commander.commander_id)) for commander in _claimable_commanders(session)]
+    return [
+        _serialize_claim_commander(session, commander, claims.get(commander.commander_id))
+        for commander in _claimable_commanders(session)
+    ]
 
 
 @router.post("/commanders/{commander_id}/claim")
@@ -5045,7 +5065,7 @@ def claim_commander(commander_id: str, session: Session = Depends(_get_session))
         session.add(claim)
         return {
             "token": token,
-            "commander": _serialize_claim_commander(commander, claim),
+            "commander": _serialize_claim_commander(session, commander, claim),
         }
 
     return _run_world_mutation(session, operation)
@@ -5056,9 +5076,7 @@ def reset_commander_claims(
     session: Session = Depends(_get_session),
     x_admin_token: str | None = Header(default=None),
 ):
-    configured_admin_token = os.getenv("DEV_ADMIN_TOKEN")
-    if configured_admin_token and x_admin_token != configured_admin_token:
-        raise HTTPException(status_code=401, detail="Invalid admin token")
+    _validate_admin_token(x_admin_token)
 
     def operation():
         claims = session.query(CommanderClaim).all()
@@ -5071,6 +5089,44 @@ def reset_commander_claims(
         return {"reset_claims": len(claims)}
 
     return _run_world_mutation(session, operation)
+
+
+@router.get("/admin/armies/summary")
+def admin_armies_summary(
+    session: Session = Depends(_get_session),
+    x_admin_token: str | None = Header(default=None),
+):
+    _validate_admin_token(x_admin_token)
+    armies = (
+        session.query(Army)
+        .options(joinedload(Army.commander), joinedload(Army.detachments))
+        .filter(Army.commander_id.is_not(None), Army.is_garrison.is_(False))
+        .order_by(Army.army_id.asc())
+        .all()
+    )
+    rows = []
+    claims = {claim.commander_id for claim in session.query(CommanderClaim.commander_id).all()}
+    for army in armies:
+        current_action = _get_current_action_row(session, int(army.commander_id))
+        if current_action is None:
+            status = "idle"
+        elif current_action.state == "in_progress":
+            status = "routing" if current_action.kind == "rout" else f"{current_action.kind} in progress"
+        else:
+            status = f"{current_action.kind} queued"
+        rows.append(
+            {
+                "army_id": _army_ref(army.army_id),
+                "army_name": army.army_name,
+                "commander_id": _commander_ref(int(army.commander_id)),
+                "commander_name": _commander_display_name(army.commander) if army.commander else "",
+                "faction": army.army_faction,
+                "claimed": int(army.commander_id) in claims,
+                "strength": _live_warrior_count(army),
+                "status": status,
+            }
+        )
+    return rows
 
 
 @router.get("/time")
@@ -5087,9 +5143,7 @@ def advance_time_for_development(
     if payload.steps < 1:
         raise HTTPException(status_code=400, detail="steps must be >= 1")
 
-    configured_admin_token = os.getenv("DEV_ADMIN_TOKEN")
-    if configured_admin_token and x_admin_token != configured_admin_token:
-        raise HTTPException(status_code=401, detail="Invalid admin token")
+    _validate_admin_token(x_admin_token)
 
     def operation():
         clock = _get_or_create_clock(session, for_update=True)
