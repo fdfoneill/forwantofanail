@@ -117,13 +117,15 @@
       border-color: var(--accent);
       background: #f8fbfb;
     }
-    .claim-card:disabled {
+    .claim-card:disabled,
+    .claim-card.is-claimed {
       cursor: not-allowed;
       opacity: 0.6;
       background: #eee9df;
       color: var(--muted);
     }
-    .claim-card:disabled img {
+    .claim-card:disabled img,
+    .claim-card.is-claimed img {
       filter: grayscale(1);
     }
     .claim-card img {
@@ -154,6 +156,9 @@
       border: 1px solid var(--line);
       border-radius: 10px;
       background: #fff;
+    }
+    .assigned-commander:hover {
+      border-color: var(--accent);
     }
     .assigned-commander[hidden] {
       display: none;
@@ -655,6 +660,32 @@
       color: var(--muted);
       margin-right: 6px;
     }
+    .commander-overview-popover {
+      position: fixed;
+      display: none;
+      width: min(340px, calc(100vw - 24px));
+      max-height: min(420px, calc(100vh - 24px));
+      overflow: auto;
+      background: rgba(255, 250, 241, 0.98);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
+      padding: 12px;
+      z-index: 20;
+      pointer-events: none;
+    }
+    .commander-overview-title {
+      font-weight: 800;
+      font-size: 13px;
+      margin-bottom: 6px;
+      color: var(--ink);
+    }
+    .commander-overview-text {
+      white-space: pre-line;
+      font-size: 12px;
+      line-height: 1.5;
+      color: var(--ink);
+    }
     .legend-row {
       display: flex;
       align-items: center;
@@ -1051,13 +1082,20 @@
     </section>
   </div>
 
+  <div id="commanderOverviewPopover" class="commander-overview-popover" role="tooltip">
+    <div id="commanderOverviewTitle" class="commander-overview-title"></div>
+    <div id="commanderOverviewText" class="commander-overview-text"></div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/h3-js@4.1.0/dist/h3-js.umd.js"></script>
   <script>
     const state = {
       token: null,
+      selectedCommanderId: "",
       selectedCommander: null,
       selectedCommanderDisplay: "",
       selectedCommanderFaction: "",
+      selectedCommanderOverview: "",
       selectedCommanderPortrait: "",
       claimOptions: [],
       view: null,
@@ -1198,6 +1236,9 @@
       assignedCommanderPortrait: document.getElementById("assignedCommanderPortrait"),
       assignedCommanderName: document.getElementById("assignedCommanderName"),
       assignedCommanderFaction: document.getElementById("assignedCommanderFaction"),
+      commanderOverviewPopover: document.getElementById("commanderOverviewPopover"),
+      commanderOverviewTitle: document.getElementById("commanderOverviewTitle"),
+      commanderOverviewText: document.getElementById("commanderOverviewText"),
       armyStatusToggle: document.getElementById("armyStatusToggle"),
       armyStatusText: document.getElementById("armyStatusText"),
       armyStatusChevron: document.getElementById("armyStatusChevron"),
@@ -3210,9 +3251,11 @@
     function resetPlayerSession({ clearStoredClaim = false } = {}) {
       state.sessionVersion += 1;
       state.token = null;
+      state.selectedCommanderId = "";
       state.selectedCommander = null;
       state.selectedCommanderDisplay = "";
       state.selectedCommanderFaction = "";
+      state.selectedCommanderOverview = "";
       state.selectedCommanderPortrait = "";
       state.view = null;
       state.alerts = [];
@@ -3277,14 +3320,82 @@
       );
     }
 
+    function commanderOverviewText(commander) {
+      const overview = commander?.overview;
+      if (typeof overview === "string") {
+        return overview.trim();
+      }
+      if (overview && typeof overview === "object") {
+        const combined = String(overview.combined || "").trim();
+        if (combined) {
+          return combined;
+        }
+        return [overview.faction, overview.commander]
+          .map((part) => String(part || "").trim())
+          .filter(Boolean)
+          .join("\n\n");
+      }
+      return "";
+    }
+
+    function commanderOverviewRecord(commanderId) {
+      const claimOption = state.claimOptions.find((option) => option.id === commanderId);
+      if (claimOption) {
+        return {
+          title: claimOption.display_name || claimOption.name || "Commander",
+          text: commanderOverviewText(claimOption),
+        };
+      }
+      if (commanderId && commanderId === state.selectedCommanderId) {
+        return {
+          title: state.selectedCommanderDisplay || state.selectedCommander || "Commander",
+          text: state.selectedCommanderOverview,
+        };
+      }
+      return { title: "Commander", text: "" };
+    }
+
+    function positionCommanderOverviewPopover(clientX, clientY) {
+      const popover = els.commanderOverviewPopover;
+      const rect = popover.getBoundingClientRect();
+      const margin = 12;
+      let x = clientX + 14;
+      let y = clientY + 14;
+      if (x + rect.width + margin > window.innerWidth) {
+        x = window.innerWidth - rect.width - margin;
+      }
+      if (y + rect.height + margin > window.innerHeight) {
+        y = window.innerHeight - rect.height - margin;
+      }
+      popover.style.left = `${Math.max(margin, x)}px`;
+      popover.style.top = `${Math.max(margin, y)}px`;
+    }
+
+    function showCommanderOverview(commanderId, clientX, clientY) {
+      if (!commanderId) {
+        return;
+      }
+      const record = commanderOverviewRecord(commanderId);
+      els.commanderOverviewTitle.textContent = record.title;
+      els.commanderOverviewText.textContent = record.text || "No overview has been written yet.";
+      els.commanderOverviewPopover.style.display = "block";
+      positionCommanderOverviewPopover(clientX, clientY);
+    }
+
+    function hideCommanderOverview() {
+      els.commanderOverviewPopover.style.display = "none";
+    }
+
     function applyClaim(payload, { persist = true } = {}) {
       const commander = payload.commander || {};
       const claimOption = state.claimOptions.find((option) => option.id === commander.id) || {};
       const hydratedCommander = { ...claimOption, ...commander };
       state.token = payload.token;
+      state.selectedCommanderId = hydratedCommander.id || "";
       state.selectedCommander = hydratedCommander.name || "";
       state.selectedCommanderDisplay = hydratedCommander.display_name || hydratedCommander.name || "";
       state.selectedCommanderFaction = hydratedCommander.faction || "";
+      state.selectedCommanderOverview = commanderOverviewText(hydratedCommander);
       state.selectedCommanderPortrait = hydratedCommander.portrait_url || "";
       state.sessionVersion += 1;
       if (persist) {
@@ -3312,6 +3423,7 @@
       if (state.token) {
         els.claimPanel.hidden = true;
         els.assignedCommander.hidden = false;
+        els.assignedCommander.dataset.overviewCommander = state.selectedCommanderId || "";
         els.assignedCommanderName.textContent = state.selectedCommanderDisplay || state.selectedCommander || "-";
         els.assignedCommanderFaction.textContent = state.selectedCommanderFaction || "Faction unknown";
         if (state.selectedCommanderPortrait) {
@@ -3325,6 +3437,7 @@
       }
       els.claimPanel.hidden = false;
       els.assignedCommander.hidden = true;
+      els.assignedCommander.dataset.overviewCommander = "";
       if (!state.claimOptions.length) {
         els.claimGrid.innerHTML = "<div class=\"status\">No commanders are available.</div>";
         return;
@@ -3335,8 +3448,10 @@
           ? `<img src="${escapeHtml(commander.portrait_url)}" alt="${title}" />`
           : `<div class="claim-card-placeholder"></div>`;
         const status = commander.claimed ? "Claimed" : "Available";
+        const claimedClass = commander.claimed ? " is-claimed" : "";
+        const disabledState = commander.claimed ? "true" : "false";
         return (
-          `<button class="claim-card" type="button" data-claim-commander="${escapeHtml(commander.id)}" ${commander.claimed ? "disabled" : ""}>` +
+          `<button class="claim-card${claimedClass}" type="button" data-claim-commander="${escapeHtml(commander.id)}" data-overview-commander="${escapeHtml(commander.id)}" aria-disabled="${disabledState}">` +
             `${portrait}` +
             `<span class="claim-card-title">${title}</span>` +
             `<span class="claim-card-status">${status}</span>` +
@@ -4367,7 +4482,7 @@
 
     els.claimGrid.addEventListener("click", async (event) => {
       const button = event.target.closest("[data-claim-commander]");
-      if (!button || button.disabled) {
+      if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") {
         return;
       }
       try {
@@ -4416,6 +4531,42 @@
         await loadClaimOptions();
         setStatus(`Claim/load error: ${readableErrorMessage(err)}`, true);
       }
+    });
+    els.claimGrid.addEventListener("mouseover", (event) => {
+      const target = event.target.closest("[data-overview-commander]");
+      if (!target || !els.claimGrid.contains(target) || target.contains(event.relatedTarget)) {
+        return;
+      }
+      showCommanderOverview(target.dataset.overviewCommander || "", event.clientX, event.clientY);
+    });
+    els.claimGrid.addEventListener("mousemove", (event) => {
+      if (els.commanderOverviewPopover.style.display === "block") {
+        positionCommanderOverviewPopover(event.clientX, event.clientY);
+      }
+    });
+    els.claimGrid.addEventListener("mouseout", (event) => {
+      const target = event.target.closest("[data-overview-commander]");
+      if (!target || !els.claimGrid.contains(target) || target.contains(event.relatedTarget)) {
+        return;
+      }
+      hideCommanderOverview();
+    });
+    els.assignedCommander.addEventListener("mouseover", (event) => {
+      if (els.assignedCommander.contains(event.relatedTarget)) {
+        return;
+      }
+      showCommanderOverview(els.assignedCommander.dataset.overviewCommander || "", event.clientX, event.clientY);
+    });
+    els.assignedCommander.addEventListener("mousemove", (event) => {
+      if (els.commanderOverviewPopover.style.display === "block") {
+        positionCommanderOverviewPopover(event.clientX, event.clientY);
+      }
+    });
+    els.assignedCommander.addEventListener("mouseout", (event) => {
+      if (els.assignedCommander.contains(event.relatedTarget)) {
+        return;
+      }
+      hideCommanderOverview();
     });
 
     const resizeObserver = new ResizeObserver(() => {

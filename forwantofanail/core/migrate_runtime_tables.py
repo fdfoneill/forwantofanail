@@ -86,6 +86,14 @@ def migrate_runtime_tables() -> None:
                 )
                 session.commit()
 
+        commander_info = session.execute(text("PRAGMA table_info(commanders)")).all()
+        if commander_info:
+            commander_columns = {row[1] for row in commander_info}
+            for column_name in ["created_by_commander_id", "created_day", "created_watch"]:
+                if column_name not in commander_columns:
+                    session.execute(text(f"ALTER TABLE commanders ADD COLUMN {column_name} INTEGER"))
+            session.commit()
+
         if session.get(GameClock, 1) is None:
             session.add(GameClock(singleton_id=1, day=1, watch=1))
             session.commit()

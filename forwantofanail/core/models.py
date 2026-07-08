@@ -54,6 +54,9 @@ class Commander(Base):
     commander_name = Column(String(100), nullable=False)
     commander_age = Column(Integer, nullable=False)
     commander_title = Column(String(100), nullable=False)
+    created_by_commander_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=True)
+    created_day = Column(Integer, nullable=True)
+    created_watch = Column(Integer, nullable=True)
 
     traits = relationship("CommanderTrait", back_populates="commander", cascade="all, delete-orphan")
     armies = relationship("Army", back_populates="commander")

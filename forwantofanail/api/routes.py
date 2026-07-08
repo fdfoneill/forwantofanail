@@ -62,6 +62,8 @@ from forwantofanail.mechanics.time import Watch
 
 router = APIRouter(prefix="/v1")
 ARMY_MANAGEMENT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "data" / "army_management_templates.json"
+COMMANDER_OVERVIEWS_PATH = Path(__file__).resolve().parents[1] / "data" / "commander_overviews.json"
+FACTION_OVERVIEWS_PATH = Path(__file__).resolve().parents[1] / "data" / "faction_overviews.json"
 COMMANDER_PORTRAIT_DIR = Path(__file__).resolve().parents[1] / "data" / "assets"
 _WORLD_MUTATION_LOCK = threading.RLock()
 
@@ -234,13 +236,60 @@ def _commander_claim_faction(session: Session, commander_id: int) -> str:
     return str(army.army_faction or "").strip() if army is not None else ""
 
 
+def _load_overview_mapping(path: Path) -> dict[str, str]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(key).strip(): str(value).strip() for key, value in raw.items() if str(key).strip() and str(value).strip()}
+
+
+def _lookup_commander_overview(commander: Commander) -> str:
+    overviews = _load_overview_mapping(COMMANDER_OVERVIEWS_PATH)
+    keys = [
+        _commander_ref(int(commander.commander_id)),
+        _commander_display_name(commander),
+        str(commander.commander_name or "").strip(),
+    ]
+    for key in keys:
+        if key and key in overviews:
+            return overviews[key]
+    return ""
+
+
+def _generated_commander_overview(session: Session, commander: Commander) -> str:
+    source_id = getattr(commander, "created_by_commander_id", None)
+    created_day = getattr(commander, "created_day", None)
+    if source_id is None or created_day is None:
+        return ""
+    source = session.get(Commander, int(source_id))
+    source_name = _commander_display_name(source) if source is not None else "an unknown commander"
+    return f"Dispatched by {source_name} on {_scenario_date_for_day(int(created_day)).isoformat()}."
+
+
+def _commander_overview_payload(session: Session, commander: Commander, faction: str) -> dict[str, str]:
+    faction_overviews = _load_overview_mapping(FACTION_OVERVIEWS_PATH)
+    faction_overview = faction_overviews.get(str(faction or "").strip(), "")
+    commander_overview = _lookup_commander_overview(commander) or _generated_commander_overview(session, commander)
+    parts = [part for part in [faction_overview, commander_overview] if part]
+    return {
+        "faction": faction_overview,
+        "commander": commander_overview,
+        "combined": "\n\n".join(parts),
+    }
+
+
 def _serialize_claim_commander(session: Session, commander: Commander, claim: CommanderClaim | None = None) -> dict[str, Any]:
+    faction = _commander_claim_faction(session, int(commander.commander_id))
     return {
         "id": _commander_ref(commander.commander_id),
         "name": commander.commander_name,
         "title": commander.commander_title,
         "display_name": _commander_display_name(commander),
-        "faction": _commander_claim_faction(session, int(commander.commander_id)),
+        "faction": faction,
+        "overview": _commander_overview_payload(session, commander, faction),
         "portrait_url": _commander_portrait_url(commander),
         "claimed": claim is not None,
         "claimed_at": claim.claimed_at.replace(microsecond=0).isoformat().replace("+00:00", "Z") if claim else None,
@@ -4841,6 +4890,9 @@ def _validate_and_apply_management_transaction(
             commander_name=_normalized_name(new_commander.name),
             commander_title=_normalized_name(new_commander.title),
             commander_age=30,
+            created_by_commander_id=commander_id,
+            created_day=clock.day,
+            created_watch=clock.watch,
         )
         session.add(created_commander)
         session.flush()

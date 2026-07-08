@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import json
 
 import pytest
 from fastapi import HTTPException
@@ -270,6 +271,11 @@ def test_runtime_migration_indexes_are_idempotent(sqlite_db):
         assert "uq_actions_one_in_progress_per_commander" in index_names
         assert "uq_sieges_one_active_per_stronghold" in index_names
         assert "uq_siege_participants_one_active_per_army" in index_names
+        commander_columns = {
+            row[1]
+            for row in session.execute(text("PRAGMA table_info(commanders)")).all()
+        }
+        assert {"created_by_commander_id", "created_day", "created_watch"}.issubset(commander_columns)
     finally:
         session.close()
 
@@ -303,6 +309,52 @@ def test_commander_claim_list_marks_claimed_commanders(sqlite_db):
         assert by_id["cmd_1"]["faction"] == "Alpha"
         assert by_id["cmd_2"]["claimed"] is False
         assert by_id["cmd_2"]["faction"] == "Beta"
+    finally:
+        session.close()
+
+
+def test_commander_claim_overview_combines_faction_and_commander(sqlite_db, tmp_path, monkeypatch):
+    faction_path = tmp_path / "faction_overviews.json"
+    commander_path = tmp_path / "commander_overviews.json"
+    faction_path.write_text(json.dumps({"Alpha": "Alpha faction overview."}), encoding="utf-8")
+    commander_path.write_text(json.dumps({"cmd_1": "Alpha commander overview."}), encoding="utf-8")
+    monkeypatch.setattr(routes, "FACTION_OVERVIEWS_PATH", faction_path)
+    monkeypatch.setattr(routes, "COMMANDER_OVERVIEWS_PATH", commander_path)
+
+    session = create_session()
+    try:
+        claims = routes.list_commander_claims(session=session)
+        by_id = {row["id"]: row for row in claims}
+        assert by_id["cmd_1"]["overview"]["faction"] == "Alpha faction overview."
+        assert by_id["cmd_1"]["overview"]["commander"] == "Alpha commander overview."
+        assert by_id["cmd_1"]["overview"]["combined"] == "Alpha faction overview.\n\nAlpha commander overview."
+    finally:
+        session.close()
+
+
+def test_generated_commander_claim_overview_uses_dispatch_formula(sqlite_db):
+    session = create_session()
+    try:
+        session.add(Commander(commander_id=4, commander_name="Delta", commander_age=30, commander_title="Captain", created_by_commander_id=1, created_day=4, created_watch=2))
+        session.add(
+            Army(
+                army_id=4,
+                location_id="origin_2",
+                army_name="Delta Host",
+                army_faction="Alpha",
+                commander_id=4,
+                army_supply=100,
+                army_morale=9,
+                army_resting_morale=9,
+            )
+        )
+        session.add(Detachment(detachment_id=4, detachment_name="Delta Spears", army_id=4, warrior_count=100))
+        session.commit()
+
+        claims = routes.list_commander_claims(session=session)
+        by_id = {row["id"]: row for row in claims}
+        expected_date = routes._scenario_date_for_day(4).isoformat()
+        assert by_id["cmd_4"]["overview"]["commander"] == f"Dispatched by Lord Alpha on {expected_date}."
     finally:
         session.close()
 
