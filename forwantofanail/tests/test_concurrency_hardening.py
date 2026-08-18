@@ -588,3 +588,16 @@ def test_player_dashboard_serializes_staged_path_h3_values(sqlite_db):
     assert ".map(stagedStepH3)" in response.text
     assert "state.stagedPath.join" not in response.text
     assert "Order destination lookup failed" in response.text
+
+
+def test_player_dashboard_release_is_only_in_commander_modal(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    assert response.text.count('id="logoutBtn"') == 1
+    assert 'id="commanderModalOverlay"' in response.text
+    assert 'id="commanderModalOverview"' in response.text
+    assert response.text.index('id="commanderModalOverlay"') < response.text.index('id="logoutBtn"')

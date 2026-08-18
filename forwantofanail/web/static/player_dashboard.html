@@ -156,9 +156,14 @@
       border: 1px solid var(--line);
       border-radius: 10px;
       background: #fff;
+      cursor: pointer;
     }
     .assigned-commander:hover {
       border-color: var(--accent);
+    }
+    .assigned-commander:focus-visible {
+      outline: 3px solid rgba(20, 95, 102, 0.28);
+      outline-offset: 2px;
     }
     .assigned-commander[hidden] {
       display: none;
@@ -687,6 +692,85 @@
       line-height: 1.5;
       color: var(--ink);
     }
+    .commander-modal-overlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 22px;
+      background: rgba(27, 26, 24, 0.48);
+      z-index: 30;
+    }
+    .commander-modal-overlay.open { display: flex; }
+    .commander-modal {
+      width: min(560px, 100%);
+      max-height: calc(100vh - 44px);
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.24);
+      padding: 16px;
+    }
+    .commander-modal-header {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .commander-modal-heading {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+    .commander-modal-portrait {
+      width: 72px;
+      height: 72px;
+      flex: 0 0 72px;
+      border-radius: 10px;
+      object-fit: cover;
+      background: #ece4d7;
+    }
+    .commander-modal-portrait[hidden] { display: none; }
+    .commander-modal-title {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.15;
+    }
+    .commander-modal-faction {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .commander-modal-close {
+      width: auto;
+      margin: 0;
+      padding: 8px 10px;
+      background: #f7f1e7;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .commander-modal-overview {
+      white-space: pre-line;
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--ink);
+    }
+    .commander-modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 18px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+    .commander-modal-footer button {
+      width: auto;
+      min-width: 150px;
+      margin: 0;
+    }
     .legend-row {
       display: flex;
       align-items: center;
@@ -947,13 +1031,12 @@
       <div id="claimPanel" class="claim-panel">
         <div id="claimGrid" class="claim-grid"></div>
       </div>
-      <div id="assignedCommander" class="assigned-commander" hidden>
+      <div id="assignedCommander" class="assigned-commander" role="button" tabindex="0" aria-haspopup="dialog" hidden>
         <img id="assignedCommanderPortrait" alt="" />
         <div>
           <div id="assignedCommanderName" class="assigned-commander-name">-</div>
           <div id="assignedCommanderFaction" class="assigned-commander-note">-</div>
         </div>
-        <button id="logoutBtn" type="button">Release</button>
       </div>
       <div class="meta">
         <div><strong>Time:</strong> <span id="timeText">-</span></div>
@@ -1088,6 +1171,25 @@
   <div id="commanderOverviewPopover" class="commander-overview-popover" role="tooltip">
     <div id="commanderOverviewTitle" class="commander-overview-title"></div>
     <div id="commanderOverviewText" class="commander-overview-text"></div>
+  </div>
+
+  <div id="commanderModalOverlay" class="commander-modal-overlay" aria-hidden="true">
+    <section class="commander-modal" role="dialog" aria-modal="true" aria-labelledby="commanderModalTitle">
+      <header class="commander-modal-header">
+        <div class="commander-modal-heading">
+          <img id="commanderModalPortrait" class="commander-modal-portrait" alt="" />
+          <div>
+            <h2 id="commanderModalTitle" class="commander-modal-title">Commander</h2>
+            <div id="commanderModalFaction" class="commander-modal-faction"></div>
+          </div>
+        </div>
+        <button id="commanderModalCloseBtn" class="commander-modal-close" type="button">Close</button>
+      </header>
+      <div id="commanderModalOverview" class="commander-modal-overview"></div>
+      <footer class="commander-modal-footer">
+        <button id="logoutBtn" type="button">Release</button>
+      </footer>
+    </section>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/h3-js@4.1.0/dist/h3-js.umd.js"></script>
@@ -1241,6 +1343,12 @@
       assignedCommanderName: document.getElementById("assignedCommanderName"),
       assignedCommanderFaction: document.getElementById("assignedCommanderFaction"),
       logoutBtn: document.getElementById("logoutBtn"),
+      commanderModalOverlay: document.getElementById("commanderModalOverlay"),
+      commanderModalPortrait: document.getElementById("commanderModalPortrait"),
+      commanderModalTitle: document.getElementById("commanderModalTitle"),
+      commanderModalFaction: document.getElementById("commanderModalFaction"),
+      commanderModalOverview: document.getElementById("commanderModalOverview"),
+      commanderModalCloseBtn: document.getElementById("commanderModalCloseBtn"),
       commanderOverviewPopover: document.getElementById("commanderOverviewPopover"),
       commanderOverviewTitle: document.getElementById("commanderOverviewTitle"),
       commanderOverviewText: document.getElementById("commanderOverviewText"),
@@ -3300,6 +3408,7 @@
     }
 
     function resetPlayerSession({ clearStoredClaim = false } = {}) {
+      closeCommanderModal({ restoreFocus: false });
       state.sessionVersion += 1;
       state.token = null;
       state.selectedCommanderId = "";
@@ -3435,6 +3544,38 @@
 
     function hideCommanderOverview() {
       els.commanderOverviewPopover.style.display = "none";
+    }
+
+    function openCommanderModal() {
+      if (!state.token || !state.selectedCommanderId) {
+        return;
+      }
+      hideCommanderOverview();
+      const record = commanderOverviewRecord(state.selectedCommanderId);
+      els.commanderModalTitle.textContent = record.title;
+      els.commanderModalFaction.textContent = state.selectedCommanderFaction || "Faction unknown";
+      els.commanderModalOverview.textContent = record.text || "No overview has been written yet.";
+      if (state.selectedCommanderPortrait) {
+        els.commanderModalPortrait.src = state.selectedCommanderPortrait;
+        els.commanderModalPortrait.alt = record.title;
+        els.commanderModalPortrait.hidden = false;
+      } else {
+        els.commanderModalPortrait.removeAttribute("src");
+        els.commanderModalPortrait.alt = "";
+        els.commanderModalPortrait.hidden = true;
+      }
+      els.commanderModalOverlay.classList.add("open");
+      els.commanderModalOverlay.setAttribute("aria-hidden", "false");
+      els.commanderModalCloseBtn.focus();
+    }
+
+    function closeCommanderModal({ restoreFocus = true } = {}) {
+      const wasOpen = els.commanderModalOverlay.classList.contains("open");
+      els.commanderModalOverlay.classList.remove("open");
+      els.commanderModalOverlay.setAttribute("aria-hidden", "true");
+      if (wasOpen && restoreFocus && !els.assignedCommander.hidden) {
+        els.assignedCommander.focus();
+      }
     }
 
     function applyClaim(payload, { persist = true } = {}) {
@@ -4646,22 +4787,22 @@
       }
       hideCommanderOverview();
     });
-    els.assignedCommander.addEventListener("mouseover", (event) => {
-      if (els.assignedCommander.contains(event.relatedTarget)) {
-        return;
-      }
-      showCommanderOverview(els.assignedCommander.dataset.overviewCommander || "", event.clientX, event.clientY);
+    els.assignedCommander.addEventListener("click", () => {
+      openCommanderModal();
     });
-    els.assignedCommander.addEventListener("mousemove", (event) => {
-      if (els.commanderOverviewPopover.style.display === "block") {
-        positionCommanderOverviewPopover(event.clientX, event.clientY);
+    els.assignedCommander.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openCommanderModal();
       }
     });
-    els.assignedCommander.addEventListener("mouseout", (event) => {
-      if (els.assignedCommander.contains(event.relatedTarget)) {
-        return;
+    els.commanderModalCloseBtn.addEventListener("click", () => {
+      closeCommanderModal();
+    });
+    els.commanderModalOverlay.addEventListener("click", (event) => {
+      if (event.target === els.commanderModalOverlay) {
+        closeCommanderModal();
       }
-      hideCommanderOverview();
     });
     els.logoutBtn.addEventListener("click", async (event) => {
       event.stopPropagation();
@@ -4672,6 +4813,12 @@
         await loadClaimOptions();
       } catch (err) {
         setStatus(`Logout failed: ${readableErrorMessage(err)}`, true);
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && els.commanderModalOverlay.classList.contains("open")) {
+        event.preventDefault();
+        closeCommanderModal();
       }
     });
     els.olderAlertsBtn.addEventListener("click", () => {
