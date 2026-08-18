@@ -14,6 +14,7 @@
       --accent-2: #8a3c1f;
       --line: #d9cdbd;
       --error: #a81f1f;
+      --ok: #145f39;
     }
     * { box-sizing: border-box; }
     body {
@@ -34,8 +35,9 @@
     }
     .grid {
       display: grid;
-      grid-template-columns: repeat(12, 1fr);
+      grid-template-columns: 360px 1fr;
       gap: 16px;
+      align-items: start;
     }
     .panel {
       background: var(--panel);
@@ -44,9 +46,10 @@
       padding: 16px;
       box-shadow: 0 6px 24px rgba(0, 0, 0, 0.05);
     }
-    .clock { grid-column: span 12; }
-    .player { grid-column: span 8; }
-    .dev { grid-column: span 4; }
+    .stack {
+      display: grid;
+      gap: 16px;
+    }
     .title {
       font-size: 12px;
       text-transform: uppercase;
@@ -75,7 +78,7 @@
       color: var(--muted);
       margin-bottom: 6px;
     }
-    select, input, button {
+    input, button {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -83,46 +86,84 @@
       font-size: 14px;
       background: #fff;
     }
-    input, select { margin-bottom: 10px; }
+    input { margin-bottom: 10px; }
     button {
       cursor: pointer;
       border-color: transparent;
       color: #fff;
       background: linear-gradient(135deg, var(--accent), #138d7f);
       font-weight: 600;
+      margin-bottom: 8px;
     }
     button.secondary {
       background: linear-gradient(135deg, #394a5f, #54718f);
-      margin-top: 8px;
     }
-    button:disabled { opacity: 0.6; cursor: not-allowed; }
-    pre {
-      background: #171614;
-      color: #ece8e2;
-      border-radius: 10px;
-      padding: 12px;
-      margin: 10px 0 0;
-      min-height: 260px;
-      max-height: 430px;
-      overflow: auto;
-      font-size: 12px;
-      line-height: 1.45;
+    button.danger {
+      background: linear-gradient(135deg, #8a2c24, #b14032);
+    }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
     }
     .inline {
       display: grid;
-      grid-template-columns: 1fr auto;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .toggle-row {
+      display: grid;
+      grid-template-columns: auto 1fr;
       gap: 8px;
       align-items: center;
+      margin: 6px 0 10px;
+      color: var(--ink);
+      font-size: 14px;
+    }
+    .toggle-row input {
+      width: auto;
+      margin: 0;
     }
     .status {
-      margin-top: 10px;
+      margin-top: 8px;
       min-height: 18px;
       font-size: 13px;
       color: var(--muted);
+      line-height: 1.35;
     }
-    .error { color: var(--error); }
-    @media (max-width: 960px) {
-      .player, .dev { grid-column: span 12; }
+    .status.error { color: var(--error); }
+    .status.ok { color: var(--ok); }
+    .summary-list {
+      display: grid;
+      gap: 8px;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+    .summary-item {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      padding: 10px 12px;
+      font-size: 14px;
+      line-height: 1.35;
+    }
+    .summary-item strong {
+      font-weight: 800;
+    }
+    .summary-item.unclaimed {
+      background: #eee9df;
+      color: var(--muted);
+      opacity: 0.62;
+    }
+    .summary-item.unclaimed strong {
+      color: var(--muted);
+    }
+    .muted {
+      color: var(--muted);
+    }
+    @media (max-width: 900px) {
+      body { padding: 16px; }
+      .grid { grid-template-columns: 1fr; }
     }
   </style>
 </head>
@@ -130,84 +171,101 @@
   <h1>For Want of a Nail - Dev Dashboard</h1>
 
   <div class="grid">
-    <section class="panel clock">
-      <div class="title">Clock</div>
-      <div class="clock-readout">
-        <div class="clock-day" id="clockDay">Day -</div>
-        <div class="clock-watch" id="clockWatch">Watch -</div>
-      </div>
-      <div class="status" id="clockStatus"></div>
-    </section>
+    <div class="stack">
+      <section class="panel">
+        <div class="title">Clock</div>
+        <div class="clock-readout">
+          <div class="clock-day" id="clockDay">Day -</div>
+          <div class="clock-watch" id="clockWatch">Watch -</div>
+        </div>
+        <div class="status" id="clockStatus"></div>
+      </section>
 
-    <section class="panel player">
-      <div class="title">Player</div>
-      <label for="commanderSelect">Commander</label>
-      <select id="commanderSelect">
-        <option value="">Select commander...</option>
-      </select>
+      <section class="panel">
+        <div class="title">Admin</div>
+        <label for="adminToken">Admin Token</label>
+        <input id="adminToken" type="password" placeholder="matches DEV_ADMIN_TOKEN" autocomplete="off" />
+        <button id="resetClaimsButton" class="danger" type="button">Reset Commander Claims</button>
+        <button id="refreshButton" class="secondary" type="button">Refresh Dashboard</button>
+        <div class="status" id="adminStatus"></div>
+      </section>
 
-      <label for="actionKind">Queue Action</label>
-      <select id="actionKind">
-        <option value="move">Move</option>
-        <option value="forage">Forage</option>
-      </select>
-      <label for="moveDestination">Destination H3 (move only)</label>
-      <div class="inline">
-        <input id="moveDestination" type="text" placeholder="8f6889082cc8cdb" />
-        <button id="moveButton" style="width:auto;">Queue</button>
-      </div>
+      <section class="panel">
+        <div class="title">Time Advancement</div>
+        <label for="stepCount">Manual Advance Watches</label>
+        <input id="stepCount" type="number" min="1" value="1" />
+        <button id="advanceButton" type="button">Advance Time</button>
 
-      <div class="status" id="playerStatus"></div>
-      <pre id="viewOutput">Select a commander to log in and load view.</pre>
-    </section>
+        <div class="toggle-row">
+          <input id="autoAdvanceEnabled" type="checkbox" />
+          <label for="autoAdvanceEnabled">Automatic advancement</label>
+        </div>
+        <label for="autoIntervalSeconds">Wall-Clock Interval Seconds</label>
+        <input id="autoIntervalSeconds" type="number" min="5" step="5" value="60" />
+        <div class="status" id="advanceStatus"></div>
+      </section>
+    </div>
 
-    <section class="panel dev">
-      <div class="title">Dev</div>
-      <label for="adminToken">Admin Token (optional)</label>
-      <input id="adminToken" type="password" placeholder="matches DEV_ADMIN_TOKEN" />
-      <label for="stepCount">Advance Watches</label>
-      <input id="stepCount" type="number" min="1" value="1" />
-      <button id="advanceButton">Advance Time</button>
-      <button id="refreshButton" class="secondary">Refresh Panels</button>
-      <div class="status" id="devStatus"></div>
+    <section class="panel">
+      <div class="title">Commander / Army Status</div>
+      <ul class="summary-list" id="summaryList">
+        <li class="summary-item muted">Loading army summary...</li>
+      </ul>
+      <div class="status" id="summaryStatus"></div>
     </section>
   </div>
 
   <script>
     const state = {
-      token: null,
-      commanderName: null,
-      commanders: [],
-      adminToken: "",
+      autoTimer: null,
+      autoBusy: false,
+      lastAdvanceAt: null,
     };
 
     const els = {
-      commanderSelect: document.getElementById("commanderSelect"),
-      actionKind: document.getElementById("actionKind"),
-      moveDestination: document.getElementById("moveDestination"),
-      moveButton: document.getElementById("moveButton"),
-      viewOutput: document.getElementById("viewOutput"),
-      playerStatus: document.getElementById("playerStatus"),
       clockDay: document.getElementById("clockDay"),
       clockWatch: document.getElementById("clockWatch"),
       clockStatus: document.getElementById("clockStatus"),
       adminToken: document.getElementById("adminToken"),
+      resetClaimsButton: document.getElementById("resetClaimsButton"),
+      refreshButton: document.getElementById("refreshButton"),
+      adminStatus: document.getElementById("adminStatus"),
       stepCount: document.getElementById("stepCount"),
       advanceButton: document.getElementById("advanceButton"),
-      refreshButton: document.getElementById("refreshButton"),
-      devStatus: document.getElementById("devStatus"),
+      autoAdvanceEnabled: document.getElementById("autoAdvanceEnabled"),
+      autoIntervalSeconds: document.getElementById("autoIntervalSeconds"),
+      advanceStatus: document.getElementById("advanceStatus"),
+      summaryList: document.getElementById("summaryList"),
+      summaryStatus: document.getElementById("summaryStatus"),
     };
 
-    function setStatus(el, message, isError = false) {
-      el.textContent = message || "";
-      el.classList.toggle("error", !!isError);
+    function adminHeaders() {
+      const token = els.adminToken.value.trim();
+      return token ? { "X-Admin-Token": token } : {};
     }
 
-    async function api(path, options = {}, useAuth = false) {
-      const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-      if (useAuth && state.token) {
-        headers["Authorization"] = `Bearer ${state.token}`;
+    function setStatus(el, message, kind = "") {
+      el.textContent = message || "";
+      el.classList.toggle("error", kind === "error");
+      el.classList.toggle("ok", kind === "ok");
+    }
+
+    function readableErrorMessage(err) {
+      const raw = String(err?.message || err || "").trim();
+      if (!raw) {
+        return "Unknown error";
       }
+      try {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object" && typeof parsed.detail === "string" && parsed.detail.trim()) {
+          return parsed.detail.trim();
+        }
+      } catch (_) {}
+      return raw;
+    }
+
+    async function api(path, options = {}) {
+      const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
       const response = await fetch(path, { ...options, headers });
       const contentType = response.headers.get("content-type") || "";
       const data = contentType.includes("application/json") ? await response.json() : await response.text();
@@ -218,151 +276,157 @@
       return data;
     }
 
-    async function loadCommanders() {
-      const commanders = await api("/v1/commanders");
-      state.commanders = commanders;
-      const options = ["<option value=''>Select commander...</option>"];
-      for (const commander of commanders) {
-        options.push(`<option value="${commander.name}">${commander.name} (${commander.id})</option>`);
-      }
-      els.commanderSelect.innerHTML = options.join("");
-    }
-
-    async function loginCommander(commanderName) {
-      const payload = await api("/v1/auth/login", {
-        method: "POST",
-        body: JSON.stringify({ commander_name: commanderName }),
-      });
-      state.token = payload.token;
-      state.commanderName = payload.commander.name;
-      setStatus(els.playerStatus, `Logged in as ${state.commanderName}`);
-    }
-
     async function refreshClock() {
+      const time = await api("/v1/time");
+      els.clockDay.textContent = `Day ${time.day}`;
+      els.clockWatch.textContent = `Watch ${time.watch} (${time.watch_label})`;
+      setStatus(els.clockStatus, `Synced ${new Date().toLocaleTimeString()}`);
+    }
+
+    function renderSummary(rows) {
+      if (!rows.length) {
+        els.summaryList.innerHTML = "<li class=\"summary-item muted\">No commander-led armies found.</li>";
+        return;
+      }
+      els.summaryList.innerHTML = rows.map((row) => {
+        const army = escapeHtml(row.army_name || "Unnamed army");
+        const commander = escapeHtml(row.commander_name || "No commander");
+        const faction = escapeHtml(row.faction || "No faction");
+        const strength = Number(row.strength || 0).toLocaleString();
+        const status = escapeHtml(row.status || "unknown");
+        const claimed = !!row.claimed;
+        const claimStatus = claimed ? "" : " <span class=\"muted\">(unclaimed)</span>";
+        return `<li class="summary-item${claimed ? "" : " unclaimed"}"><strong>${army}</strong> (${commander}, ${faction}): ${strength} strong, ${status}${claimStatus}</li>`;
+      }).join("");
+    }
+
+    function escapeHtml(value) {
+      return String(value ?? "")
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;")
+        .replaceAll("\"", "&quot;")
+        .replaceAll("'", "&#039;");
+    }
+
+    async function refreshSummary() {
+      const rows = await api("/v1/admin/armies/summary", { headers: adminHeaders() });
+      renderSummary(rows);
+      setStatus(els.summaryStatus, `Updated ${new Date().toLocaleTimeString()}`);
+    }
+
+    async function refreshDashboard() {
       try {
-        const time = await api("/v1/time");
-        els.clockDay.textContent = `Day ${time.day}`;
-        els.clockWatch.textContent = `Watch ${time.watch} (${time.watch_label})`;
-        setStatus(els.clockStatus, "Clock synced");
+        await refreshClock();
+        await refreshSummary();
       } catch (err) {
-        setStatus(els.clockStatus, `Clock error: ${err.message}`, true);
+        setStatus(els.summaryStatus, `Refresh error: ${readableErrorMessage(err)}`, "error");
       }
     }
 
-    async function refreshPlayerView() {
-      if (!state.token) {
-        els.viewOutput.textContent = "Select a commander to log in and load view.";
-        return;
-      }
-      try {
-        const view = await api("/v1/me/view", {}, true);
-        els.viewOutput.textContent = JSON.stringify(view, null, 2);
-      } catch (err) {
-        setStatus(els.playerStatus, `View error: ${err.message}`, true);
-      }
-    }
-
-    async function refreshAll() {
-      await refreshClock();
-      await refreshPlayerView();
-    }
-
-    function updateActionInputs() {
-      const kind = (els.actionKind.value || "move").trim().toLowerCase();
-      const isMove = kind === "move";
-      els.moveDestination.disabled = !isMove;
-      els.moveDestination.placeholder = isMove ? "8f6889082cc8cdb" : "Not used for forage";
-    }
-
-    els.commanderSelect.addEventListener("change", async (event) => {
-      const commanderName = event.target.value;
-      if (!commanderName) {
-        state.token = null;
-        state.commanderName = null;
-        setStatus(els.playerStatus, "");
-        els.viewOutput.textContent = "Select a commander to log in and load view.";
-        return;
-      }
-      try {
-        await loginCommander(commanderName);
-        await refreshAll();
-      } catch (err) {
-        setStatus(els.playerStatus, `Login error: ${err.message}`, true);
-      }
-    });
-
-    els.actionKind.addEventListener("change", updateActionInputs);
-
-    els.moveButton.addEventListener("click", async () => {
-      if (!state.token) {
-        setStatus(els.playerStatus, "Select a commander first.", true);
-        return;
-      }
-      const kind = (els.actionKind.value || "move").trim().toLowerCase();
-      const destination = els.moveDestination.value.trim();
-      if (kind === "move" && !destination) {
-        setStatus(els.playerStatus, "Enter a destination H3 index.", true);
-        return;
-      }
-      try {
-        const payload = kind === "move"
-          ? { kind: "move", destination_h3: destination }
-          : { kind: "forage" };
-        const result = await api("/v1/me/actions", {
-          method: "POST",
-          body: JSON.stringify(payload),
-        }, true);
-        setStatus(els.playerStatus, `Action queued: ${result.action_id} (${result.kind})`);
-        if (kind === "move") {
-          els.moveDestination.value = "";
-        }
-        await refreshPlayerView();
-      } catch (err) {
-        setStatus(els.playerStatus, `Action error: ${err.message}`, true);
-      }
-    });
-
-    els.advanceButton.addEventListener("click", async () => {
-      const steps = Number(els.stepCount.value || "1");
+    async function advanceTime(steps, { automatic = false } = {}) {
       if (!Number.isFinite(steps) || steps < 1) {
-        setStatus(els.devStatus, "Steps must be >= 1", true);
+        setStatus(els.advanceStatus, "Steps must be >= 1", "error");
         return;
       }
-      const adminToken = els.adminToken.value.trim();
-      const headers = {};
-      if (adminToken) {
-        headers["X-Admin-Token"] = adminToken;
+      if (state.autoBusy) {
+        return;
       }
+      state.autoBusy = true;
+      els.advanceButton.disabled = true;
       try {
-        els.advanceButton.disabled = true;
         const result = await api("/v1/admin/time/advance", {
           method: "POST",
-          headers,
+          headers: adminHeaders(),
           body: JSON.stringify({ steps, execute_actions: true }),
         });
+        state.lastAdvanceAt = new Date();
+        const prefix = automatic ? "Auto-advanced" : "Advanced";
         setStatus(
-          els.devStatus,
-          `Advanced to day ${result.end_time.day}, watch ${result.end_time.watch} (${result.end_time.watch_label}). ` +
-            `Actions: +${result.actions_summary.started} start, ${result.actions_summary.completed} done, ${result.actions_summary.failed} failed.`
+          els.advanceStatus,
+          `${prefix} to day ${result.end_time.day}, watch ${result.end_time.watch} (${result.end_time.watch_label}). ` +
+            `Actions: ${result.actions_summary.started} started, ${result.actions_summary.completed} completed, ${result.actions_summary.failed} failed.`,
+          "ok"
         );
-        await refreshAll();
+        await refreshDashboard();
       } catch (err) {
-        setStatus(els.devStatus, `Advance error: ${err.message}`, true);
+        setStatus(els.advanceStatus, `Advance error: ${readableErrorMessage(err)}`, "error");
+        if (automatic) {
+          stopAutoAdvance();
+        }
       } finally {
+        state.autoBusy = false;
         els.advanceButton.disabled = false;
+      }
+    }
+
+    function stopAutoAdvance() {
+      if (state.autoTimer !== null) {
+        window.clearInterval(state.autoTimer);
+      }
+      state.autoTimer = null;
+      els.autoAdvanceEnabled.checked = false;
+    }
+
+    function startAutoAdvance() {
+      const intervalSeconds = Number(els.autoIntervalSeconds.value || "60");
+      if (!Number.isFinite(intervalSeconds) || intervalSeconds < 5) {
+        setStatus(els.advanceStatus, "Automatic interval must be at least 5 seconds.", "error");
+        els.autoAdvanceEnabled.checked = false;
+        return;
+      }
+      if (state.autoTimer !== null) {
+        window.clearInterval(state.autoTimer);
+      }
+      setStatus(els.advanceStatus, `Automatic advancement enabled: one watch every ${intervalSeconds} seconds.`, "ok");
+      state.autoTimer = window.setInterval(() => {
+        advanceTime(1, { automatic: true });
+      }, intervalSeconds * 1000);
+    }
+
+    els.advanceButton.addEventListener("click", () => {
+      advanceTime(Number(els.stepCount.value || "1"));
+    });
+
+    els.resetClaimsButton.addEventListener("click", async () => {
+      const confirmed = window.confirm("Reset all commander claims and invalidate those player tokens?");
+      if (!confirmed) {
+        return;
+      }
+      try {
+        els.resetClaimsButton.disabled = true;
+        const result = await api("/v1/admin/claims/reset", {
+          method: "POST",
+          headers: adminHeaders(),
+        });
+        setStatus(els.adminStatus, `Reset ${result.reset_claims} commander claims.`, "ok");
+        await refreshDashboard();
+      } catch (err) {
+        setStatus(els.adminStatus, `Claim reset error: ${readableErrorMessage(err)}`, "error");
+      } finally {
+        els.resetClaimsButton.disabled = false;
       }
     });
 
-    els.refreshButton.addEventListener("click", refreshAll);
+    els.refreshButton.addEventListener("click", refreshDashboard);
+
+    els.autoAdvanceEnabled.addEventListener("change", () => {
+      if (els.autoAdvanceEnabled.checked) {
+        startAutoAdvance();
+      } else {
+        stopAutoAdvance();
+        setStatus(els.advanceStatus, "Automatic advancement disabled.");
+      }
+    });
+
+    els.autoIntervalSeconds.addEventListener("change", () => {
+      if (els.autoAdvanceEnabled.checked) {
+        startAutoAdvance();
+      }
+    });
 
     (async function init() {
-      try {
-        updateActionInputs();
-        await loadCommanders();
-        await refreshClock();
-      } catch (err) {
-        setStatus(els.clockStatus, `Init error: ${err.message}`, true);
-      }
+      await refreshDashboard();
     })();
   </script>
 </body>

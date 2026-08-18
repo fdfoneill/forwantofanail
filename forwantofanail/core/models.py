@@ -12,6 +12,7 @@ from sqlalchemy import (
     PrimaryKeyConstraint,
     String,
     Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
 
@@ -53,6 +54,9 @@ class Commander(Base):
     commander_name = Column(String(100), nullable=False)
     commander_age = Column(Integer, nullable=False)
     commander_title = Column(String(100), nullable=False)
+    created_by_commander_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=True)
+    created_day = Column(Integer, nullable=True)
+    created_watch = Column(Integer, nullable=True)
 
     traits = relationship("CommanderTrait", back_populates="commander", cascade="all, delete-orphan")
     armies = relationship("Army", back_populates="commander")
@@ -70,6 +74,12 @@ class Commander(Base):
         foreign_keys="Message.recipient_id",
     )
     auth_tokens = relationship("AuthToken", back_populates="commander", cascade="all, delete-orphan")
+    claim = relationship(
+        "CommanderClaim",
+        back_populates="commander",
+        uselist=False,
+        cascade="all, delete-orphan",
+    )
     alerts = relationship(
         "Alert",
         back_populates="recipient",
@@ -248,6 +258,21 @@ class AuthToken(Base):
     created_at = Column(DateTime, nullable=False)
 
     commander = relationship("Commander", back_populates="auth_tokens")
+    claim = relationship("CommanderClaim", back_populates="auth_token", uselist=False)
+
+
+class CommanderClaim(Base):
+    __tablename__ = "commander_claims"
+    __table_args__ = (
+        UniqueConstraint("token", name="uq_commander_claims_token"),
+    )
+
+    commander_id = Column(Integer, ForeignKey("commanders.commander_id"), primary_key=True)
+    token = Column(String(128), ForeignKey("auth_tokens.token"), nullable=False)
+    claimed_at = Column(DateTime, nullable=False)
+
+    commander = relationship("Commander", back_populates="claim")
+    auth_token = relationship("AuthToken", back_populates="claim")
 
 
 class Action(Base):

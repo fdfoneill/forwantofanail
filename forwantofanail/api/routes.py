@@ -9,11 +9,14 @@ import json
 from pathlib import Path
 import random
 import secrets
+import threading
 from typing import Any
 
 import h3
 from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi.responses import FileResponse
 from sqlalchemy import and_, case, or_
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, joinedload
 
 from forwantofanail.api.schemas import (
@@ -32,6 +35,7 @@ from forwantofanail.core.models import (
     Army,
     AuthToken,
     Commander,
+    CommanderClaim,
     Detachment,
     GameClock,
     Location,
@@ -58,6 +62,10 @@ from forwantofanail.mechanics.time import Watch
 
 router = APIRouter(prefix="/v1")
 ARMY_MANAGEMENT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "data" / "army_management_templates.json"
+COMMANDER_OVERVIEWS_PATH = Path(__file__).resolve().parents[1] / "data" / "commander_overviews.json"
+FACTION_OVERVIEWS_PATH = Path(__file__).resolve().parents[1] / "data" / "faction_overviews.json"
+COMMANDER_PORTRAIT_DIR = Path(__file__).resolve().parents[1] / "data" / "assets"
+_WORLD_MUTATION_LOCK = threading.RLock()
 
 WATCH_LABELS = {
     Watch.NIGHT: "night",
@@ -195,6 +203,99 @@ def _message_sender_display_name(message: Message) -> str:
     return message.sender_name
 
 
+def _commander_portrait_filename(commander: Commander) -> str | None:
+    display_name = _commander_display_name(commander)
+    normalized_display = "".join(ch for ch in display_name.lower() if ch.isalnum())
+    for path in COMMANDER_PORTRAIT_DIR.glob("Portrait - *"):
+        stem = path.stem.removeprefix("Portrait - ")
+        normalized_stem = "".join(ch for ch in stem.lower() if ch.isalnum())
+        if normalized_stem == normalized_display or normalized_display.startswith(normalized_stem):
+            return path.name
+        commander_name = "".join(ch for ch in str(commander.commander_name or "").lower() if ch.isalnum())
+        if commander_name and commander_name.startswith(normalized_stem):
+            return path.name
+        if normalized_stem and normalized_stem in commander_name:
+            return path.name
+    return None
+
+
+def _commander_portrait_url(commander: Commander) -> str | None:
+    filename = _commander_portrait_filename(commander)
+    if filename is None:
+        return None
+    return f"/v1/commander-portraits/{filename}"
+
+
+def _commander_claim_faction(session: Session, commander_id: int) -> str:
+    army = (
+        session.query(Army)
+        .filter(Army.commander_id == commander_id, Army.is_garrison.is_(False))
+        .order_by(Army.army_id.asc())
+        .first()
+    )
+    return str(army.army_faction or "").strip() if army is not None else ""
+
+
+def _load_overview_mapping(path: Path) -> dict[str, str]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(key).strip(): str(value).strip() for key, value in raw.items() if str(key).strip() and str(value).strip()}
+
+
+def _lookup_commander_overview(commander: Commander) -> str:
+    overviews = _load_overview_mapping(COMMANDER_OVERVIEWS_PATH)
+    keys = [
+        _commander_ref(int(commander.commander_id)),
+        _commander_display_name(commander),
+        str(commander.commander_name or "").strip(),
+    ]
+    for key in keys:
+        if key and key in overviews:
+            return overviews[key]
+    return ""
+
+
+def _generated_commander_overview(session: Session, commander: Commander) -> str:
+    source_id = getattr(commander, "created_by_commander_id", None)
+    created_day = getattr(commander, "created_day", None)
+    if source_id is None or created_day is None:
+        return ""
+    source = session.get(Commander, int(source_id))
+    source_name = _commander_display_name(source) if source is not None else "an unknown commander"
+    return f"Dispatched by {source_name} on {_scenario_date_for_day(int(created_day)).isoformat()}."
+
+
+def _commander_overview_payload(session: Session, commander: Commander, faction: str) -> dict[str, str]:
+    faction_overviews = _load_overview_mapping(FACTION_OVERVIEWS_PATH)
+    faction_overview = faction_overviews.get(str(faction or "").strip(), "")
+    commander_overview = _lookup_commander_overview(commander) or _generated_commander_overview(session, commander)
+    parts = [part for part in [commander_overview, faction_overview] if part]
+    return {
+        "faction": faction_overview,
+        "commander": commander_overview,
+        "combined": "\n\n".join(parts),
+    }
+
+
+def _serialize_claim_commander(session: Session, commander: Commander, claim: CommanderClaim | None = None) -> dict[str, Any]:
+    faction = _commander_claim_faction(session, int(commander.commander_id))
+    return {
+        "id": _commander_ref(commander.commander_id),
+        "name": commander.commander_name,
+        "title": commander.commander_title,
+        "display_name": _commander_display_name(commander),
+        "faction": faction,
+        "overview": _commander_overview_payload(session, commander, faction),
+        "portrait_url": _commander_portrait_url(commander),
+        "claimed": claim is not None,
+        "claimed_at": claim.claimed_at.replace(microsecond=0).isoformat().replace("+00:00", "Z") if claim else None,
+    }
+
+
 def _alert_ref(alert_id: int) -> str:
     return f"alt_{alert_id}"
 
@@ -260,13 +361,42 @@ def _get_session():
         session.close()
 
 
-def _get_or_create_clock(session: Session) -> GameClock:
+def _is_database_busy_error(exc: BaseException) -> bool:
+    message = str(exc).lower()
+    return "database is locked" in message or "database is busy" in message or "database table is locked" in message
+
+
+def _run_world_mutation(session: Session, operation):
+    with _WORLD_MUTATION_LOCK:
+        try:
+            result = operation()
+            session.flush()
+            session.commit()
+            return result
+        except HTTPException:
+            session.rollback()
+            raise
+        except IntegrityError as exc:
+            session.rollback()
+            if _is_database_busy_error(exc):
+                raise HTTPException(status_code=503, detail="Database is busy; retry the request.") from exc
+            raise HTTPException(status_code=409, detail="Game state changed; refresh and try again.") from exc
+        except OperationalError as exc:
+            session.rollback()
+            if _is_database_busy_error(exc):
+                raise HTTPException(status_code=503, detail="Database is busy; retry the request.") from exc
+            raise
+        except Exception:
+            session.rollback()
+            raise
+
+
+def _get_or_create_clock(session: Session, *, for_update: bool = False) -> GameClock:
     clock = session.get(GameClock, 1)
     if clock is None:
         clock = GameClock(singleton_id=1, day=1, watch=int(Watch.MATIN))
-        session.add(clock)
-        session.commit()
-        session.refresh(clock)
+        if for_update:
+            session.add(clock)
     return clock
 
 
@@ -4760,6 +4890,9 @@ def _validate_and_apply_management_transaction(
             commander_name=_normalized_name(new_commander.name),
             commander_title=_normalized_name(new_commander.title),
             commander_age=30,
+            created_by_commander_id=commander_id,
+            created_day=clock.day,
+            created_watch=clock.watch,
         )
         session.add(created_commander)
         session.flush()
@@ -4872,33 +5005,73 @@ def _get_current_action_row(session: Session, commander_id: int) -> Action | Non
     )
 
 
-@router.post("/auth/login")
-def login(payload: LoginRequest, session: Session = Depends(_get_session)):
-    commander = (
+def _claimable_commanders(session: Session) -> list[Commander]:
+    return (
         session.query(Commander)
-        .filter(Commander.commander_name.ilike(payload.commander_name.strip()))
-        .first()
+        .join(Army, Army.commander_id == Commander.commander_id)
+        .filter(Army.is_garrison.is_(False))
+        .order_by(Commander.commander_id.asc())
+        .all()
     )
-    if commander is None:
-        raise HTTPException(status_code=404, detail="Commander not found")
 
-    token = secrets.token_urlsafe(24)
-    session.add(
-        AuthToken(
-            token=token,
-            commander_id=commander.commander_id,
-            created_at=datetime.now(timezone.utc),
+
+def _validate_admin_token(x_admin_token: str | None) -> None:
+    configured_admin_token = os.getenv("DEV_ADMIN_TOKEN")
+    if configured_admin_token and x_admin_token != configured_admin_token:
+        raise HTTPException(status_code=401, detail="Invalid admin token")
+
+
+@router.post("/auth/login")
+def login(
+    payload: LoginRequest,
+    session: Session = Depends(_get_session),
+    x_admin_token: str | None = Header(default=None),
+):
+    configured_admin_token = os.getenv("DEV_ADMIN_TOKEN")
+    is_admin_login = bool(configured_admin_token and x_admin_token == configured_admin_token)
+
+    def operation():
+        commander = (
+            session.query(Commander)
+            .filter(Commander.commander_name.ilike(payload.commander_name.strip()))
+            .first()
         )
-    )
-    session.commit()
+        if commander is None:
+            raise HTTPException(status_code=404, detail="Commander not found")
 
-    return {
-        "token": token,
-        "commander": {
-            "id": _commander_ref(commander.commander_id),
-            "name": commander.commander_name,
-        },
-    }
+        token = secrets.token_urlsafe(24)
+        now = datetime.now(timezone.utc)
+        session.add(
+            AuthToken(
+                token=token,
+                commander_id=commander.commander_id,
+                created_at=now,
+            )
+        )
+        if not is_admin_login:
+            claimable_ids = {row.commander_id for row in _claimable_commanders(session)}
+            if commander.commander_id not in claimable_ids:
+                raise HTTPException(status_code=400, detail="Commander is not available for player claiming")
+            if session.get(CommanderClaim, commander.commander_id) is not None:
+                raise HTTPException(status_code=409, detail="Commander has already been claimed")
+            session.add(CommanderClaim(commander_id=commander.commander_id, token=token, claimed_at=now))
+        return {
+            "token": token,
+            "commander": {
+                "id": _commander_ref(commander.commander_id),
+                "name": commander.commander_name,
+            },
+        }
+
+    return _run_world_mutation(session, operation)
+
+
+@router.get("/commander-portraits/{filename}", include_in_schema=False)
+def commander_portrait(filename: str):
+    safe_names = {path.name for path in COMMANDER_PORTRAIT_DIR.glob("Portrait - *") if path.is_file()}
+    if filename not in safe_names:
+        raise HTTPException(status_code=404, detail="Portrait not found")
+    return FileResponse(COMMANDER_PORTRAIT_DIR / filename)
 
 
 @router.get("/commanders")
@@ -4915,6 +5088,99 @@ def list_commanders(session: Session = Depends(_get_session)):
     ]
 
 
+@router.get("/commanders/claims")
+def list_commander_claims(session: Session = Depends(_get_session)):
+    claims = {claim.commander_id: claim for claim in session.query(CommanderClaim).all()}
+    return [
+        _serialize_claim_commander(session, commander, claims.get(commander.commander_id))
+        for commander in _claimable_commanders(session)
+    ]
+
+
+@router.post("/commanders/{commander_id}/claim")
+def claim_commander(commander_id: str, session: Session = Depends(_get_session)):
+    def operation():
+        commander_pk = _parse_commander_ref(commander_id)
+        commander = session.get(Commander, commander_pk)
+        if commander is None:
+            raise HTTPException(status_code=404, detail="Commander not found")
+        claimable_ids = {row.commander_id for row in _claimable_commanders(session)}
+        if commander.commander_id not in claimable_ids:
+            raise HTTPException(status_code=400, detail="Commander is not available for player claiming")
+        if session.get(CommanderClaim, commander.commander_id) is not None:
+            raise HTTPException(status_code=409, detail="Commander has already been claimed")
+
+        token = secrets.token_urlsafe(24)
+        now = datetime.now(timezone.utc)
+        session.add(AuthToken(token=token, commander_id=commander.commander_id, created_at=now))
+        claim = CommanderClaim(commander_id=commander.commander_id, token=token, claimed_at=now)
+        session.add(claim)
+        return {
+            "token": token,
+            "commander": _serialize_claim_commander(session, commander, claim),
+        }
+
+    return _run_world_mutation(session, operation)
+
+
+@router.post("/admin/claims/reset")
+def reset_commander_claims(
+    session: Session = Depends(_get_session),
+    x_admin_token: str | None = Header(default=None),
+):
+    _validate_admin_token(x_admin_token)
+
+    def operation():
+        claims = session.query(CommanderClaim).all()
+        tokens = [claim.token for claim in claims]
+        for claim in claims:
+            session.delete(claim)
+        if tokens:
+            session.flush()
+            session.query(AuthToken).filter(AuthToken.token.in_(tokens)).delete(synchronize_session=False)
+        return {"reset_claims": len(claims)}
+
+    return _run_world_mutation(session, operation)
+
+
+@router.get("/admin/armies/summary")
+def admin_armies_summary(
+    session: Session = Depends(_get_session),
+    x_admin_token: str | None = Header(default=None),
+):
+    _validate_admin_token(x_admin_token)
+    armies = (
+        session.query(Army)
+        .options(joinedload(Army.commander), joinedload(Army.detachments))
+        .filter(Army.commander_id.is_not(None), Army.is_garrison.is_(False))
+        .order_by(Army.army_id.asc())
+        .all()
+    )
+    rows = []
+    claims = {claim.commander_id for claim in session.query(CommanderClaim.commander_id).all()}
+    for army in armies:
+        current_action = _get_current_action_row(session, int(army.commander_id))
+        if current_action is None:
+            status = "idle"
+        elif current_action.state == "in_progress":
+            status = "routing" if current_action.kind == "rout" else f"{current_action.kind} in progress"
+        else:
+            status = f"{current_action.kind} queued"
+        rows.append(
+            {
+                "army_id": _army_ref(army.army_id),
+                "army_name": army.army_name,
+                "commander_id": _commander_ref(int(army.commander_id)),
+                "commander_name": _commander_display_name(army.commander) if army.commander else "",
+                "faction": army.army_faction,
+                "claimed": int(army.commander_id) in claims,
+                "strength": _live_warrior_count(army),
+                "status": status,
+            }
+        )
+    return rows
+
+
 @router.get("/time")
 def get_time(session: Session = Depends(_get_session)):
     return _clock_payload(_get_or_create_clock(session))
@@ -4929,69 +5195,69 @@ def advance_time_for_development(
     if payload.steps < 1:
         raise HTTPException(status_code=400, detail="steps must be >= 1")
 
-    configured_admin_token = os.getenv("DEV_ADMIN_TOKEN")
-    if configured_admin_token and x_admin_token != configured_admin_token:
-        raise HTTPException(status_code=401, detail="Invalid admin token")
+    _validate_admin_token(x_admin_token)
 
-    clock = _get_or_create_clock(session)
-    start = _clock_payload(clock)
-    timeline = []
-    actions_started = 0
-    actions_completed = 0
-    actions_failed = 0
+    def operation():
+        clock = _get_or_create_clock(session, for_update=True)
+        start = _clock_payload(clock)
+        timeline = []
+        actions_started = 0
+        actions_completed = 0
+        actions_failed = 0
 
-    for _ in range(payload.steps):
-        siege_state_at_watch_start = _stronghold_ids_sieged_at_watch_start(session, clock.day, clock.watch)
-        clock.day, clock.watch = _advance_day_watch(clock.day, clock.watch, 1)
-        _auto_disable_forced_march_at_night(session, clock)
-        message_result = _process_messages_tick(session, clock)
-        tick_result = {"started": 0, "completed": 0, "failed": 0}
-        if payload.execute_actions:
-            _process_sieges_matin_tick(session, clock)
-            tick_result = _execute_action_tick(session, clock)
-            _auto_apply_follow_road_orders(session, clock)
-            actions_started += tick_result["started"]
-            actions_completed += tick_result["completed"]
-            actions_failed += tick_result["failed"]
-        _emit_siege_transition_alerts(
-            session,
-            start_stronghold_ids=siege_state_at_watch_start,
-            clock=clock,
-        )
-        supply_result = None
-        if clock.watch == int(Watch.NIGHT):
-            # Night supply checks run after action resolution so completed forage can replenish first.
-            supply_result = consume_supply_for_all_armies(session)
-            _emit_supply_alerts_after_consumption(session, clock)
-        _emit_no_supply_state_alerts(session, clock)
-        _emit_enemy_proximity_alerts(session, clock)
-        _emit_rout_state_alerts(session, clock)
-        timeline.append(
-            {
-                "time": _clock_payload(clock),
-                "actions": tick_result,
-                "supply": supply_result,
-                "messages": {
-                    "generated": 0,
-                    "received": message_result["received"],
-                    "lost": message_result["lost"],
-                },
-            }
-        )
+        for _ in range(payload.steps):
+            siege_state_at_watch_start = _stronghold_ids_sieged_at_watch_start(session, clock.day, clock.watch)
+            clock.day, clock.watch = _advance_day_watch(clock.day, clock.watch, 1)
+            _auto_disable_forced_march_at_night(session, clock)
+            message_result = _process_messages_tick(session, clock)
+            tick_result = {"started": 0, "completed": 0, "failed": 0}
+            if payload.execute_actions:
+                _process_sieges_matin_tick(session, clock)
+                tick_result = _execute_action_tick(session, clock)
+                _auto_apply_follow_road_orders(session, clock)
+                actions_started += tick_result["started"]
+                actions_completed += tick_result["completed"]
+                actions_failed += tick_result["failed"]
+            _emit_siege_transition_alerts(
+                session,
+                start_stronghold_ids=siege_state_at_watch_start,
+                clock=clock,
+            )
+            supply_result = None
+            if clock.watch == int(Watch.NIGHT):
+                # Night supply checks run after action resolution so completed forage can replenish first.
+                supply_result = consume_supply_for_all_armies(session)
+                _emit_supply_alerts_after_consumption(session, clock)
+            _emit_no_supply_state_alerts(session, clock)
+            _emit_enemy_proximity_alerts(session, clock)
+            _emit_rout_state_alerts(session, clock)
+            timeline.append(
+                {
+                    "time": _clock_payload(clock),
+                    "actions": tick_result,
+                    "supply": supply_result,
+                    "messages": {
+                        "generated": 0,
+                        "received": message_result["received"],
+                        "lost": message_result["lost"],
+                    },
+                }
+            )
 
-    session.commit()
-    return {
-        "start_time": start,
-        "end_time": _clock_payload(clock),
-        "steps": payload.steps,
-        "execute_actions": payload.execute_actions,
-        "timeline": timeline,
-        "actions_summary": {
-            "started": actions_started,
-            "completed": actions_completed,
-            "failed": actions_failed,
-        },
-    }
+        return {
+            "start_time": start,
+            "end_time": _clock_payload(clock),
+            "steps": payload.steps,
+            "execute_actions": payload.execute_actions,
+            "timeline": timeline,
+            "actions_summary": {
+                "started": actions_started,
+                "completed": actions_completed,
+                "failed": actions_failed,
+            },
+        }
+
+    return _run_world_mutation(session, operation)
 
 
 @router.get("/me/view")
@@ -5097,15 +5363,16 @@ def apply_army_management(
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
-    clock = _get_or_create_clock(session)
-    result = _validate_and_apply_management_transaction(
-        session,
-        commander_id=commander_id,
-        clock=clock,
-        payload=payload,
-    )
-    session.commit()
-    return result
+    def operation():
+        clock = _get_or_create_clock(session, for_update=True)
+        return _validate_and_apply_management_transaction(
+            session,
+            commander_id=commander_id,
+            clock=clock,
+            payload=payload,
+        )
+
+    return _run_world_mutation(session, operation)
 
 
 @router.get("/me/roads/border")
@@ -5313,211 +5580,287 @@ def create_action(
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
-    army = _find_commander_army(session, commander_id)
-    clock = _get_or_create_clock(session)
-    current_action = _get_current_action_row(session, commander_id)
-    if current_action is not None and current_action.state == "in_progress" and current_action.kind == "rout":
-        raise HTTPException(status_code=409, detail="Army is routing; new orders unavailable until regroup.")
-    action_params: dict[str, Any] = {}
-    attack_target_name: str | None = None
-    active_siege = _active_siege_for_besieger(session, army.army_id)
-    sortie_stronghold, sortie_siege = _sortie_context_for_army(session, army)
-    siege_to_preserve = False
-    if payload.kind == "move":
-        if clock.watch == int(Watch.NIGHT):
-            raise HTTPException(status_code=400, detail="Move actions cannot be submitted during Night watch")
-        destination_h3 = payload.destination_h3
-        if not destination_h3:
-            raise HTTPException(status_code=400, detail="destination_h3 is required for move actions")
-        destination = session.get(Location, destination_h3)
-        if destination is None:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "message": "Unknown move destination_h3",
-                    "destination_h3": destination_h3,
-                },
-        )
-        action_params["destination_h3"] = destination_h3
-    elif payload.kind == "forage":
-        # Forage orders may be issued at Night or Matin; they only start at Matin.
-        if _army_is_under_siege(session, army):
-            raise HTTPException(status_code=400, detail="Armies under siege cannot forage")
-        if clock.watch not in {int(Watch.NIGHT), int(Watch.MATIN)}:
-            action = Action(
-                commander_id=commander_id,
-                kind=payload.kind,
-                state="failed",
-                parameters_json=json.dumps(action_params),
-                accepted_at=datetime.now(timezone.utc),
-            )
-            session.add(action)
-            session.commit()
-            session.refresh(action)
-            return {
-                "action_id": _action_ref(action.action_id),
-                "kind": action.kind,
-                "state": action.state,
-                "accepted_at": action.accepted_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-            }
+    def operation():
+        army = _find_commander_army(session, commander_id)
+        clock = _get_or_create_clock(session, for_update=True)
+        current_action = _get_current_action_row(session, commander_id)
+        if current_action is not None and current_action.state == "in_progress" and current_action.kind == "rout":
+            raise HTTPException(status_code=409, detail="Army is routing; new orders unavailable until regroup.")
+        action_params: dict[str, Any] = {}
+        attack_target_name: str | None = None
+        active_siege = _active_siege_for_besieger(session, army.army_id)
+        sortie_stronghold, sortie_siege = _sortie_context_for_army(session, army)
+        siege_to_preserve = False
+        if payload.kind == "move":
+            if clock.watch == int(Watch.NIGHT):
+                raise HTTPException(status_code=400, detail="Move actions cannot be submitted during Night watch")
+            destination_h3 = payload.destination_h3
+            if not destination_h3:
+                raise HTTPException(status_code=400, detail="destination_h3 is required for move actions")
+            destination = session.get(Location, destination_h3)
+            if destination is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": "Unknown move destination_h3",
+                        "destination_h3": destination_h3,
+                    },
+                )
+            action_params["destination_h3"] = destination_h3
+        elif payload.kind == "forage":
+            # Forage orders may be issued at Night or Matin; they only start at Matin.
+            if _army_is_under_siege(session, army):
+                raise HTTPException(status_code=400, detail="Armies under siege cannot forage")
+            if clock.watch not in {int(Watch.NIGHT), int(Watch.MATIN)}:
+                action = Action(
+                    commander_id=commander_id,
+                    kind=payload.kind,
+                    state="failed",
+                    parameters_json=json.dumps(action_params),
+                    accepted_at=datetime.now(timezone.utc),
+                )
+                session.add(action)
+                session.flush()
+                return {
+                    "action_id": _action_ref(action.action_id),
+                    "kind": action.kind,
+                    "state": action.state,
+                    "accepted_at": action.accepted_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+                }
 
-        # Night forage preempts all existing active actions for this commander.
-        active_actions = (
-            session.query(Action)
-            .filter(
-                Action.commander_id == commander_id,
-                Action.state.in_(ACTIVE_ACTION_STATES),
+            # Night forage preempts all existing active actions for this commander.
+            active_actions = (
+                session.query(Action)
+                .filter(
+                    Action.commander_id == commander_id,
+                    Action.state.in_(ACTIVE_ACTION_STATES),
+                )
+                .all()
             )
-            .all()
-        )
-        for existing in active_actions:
-            existing.state = "cancelled"
-    elif payload.kind == "attack":
-        if _army_is_in_stronghold(session, army) and sortie_siege is None:
-            raise HTTPException(status_code=400, detail="Armies occupying strongholds cannot attack")
-        target_h3 = (payload.target_h3 or "").strip()
-        if not target_h3:
-            raise HTTPException(status_code=400, detail="target_h3 is required for attack actions")
-        target_army_ref = (payload.target_army_id or "").strip()
-        if not target_army_ref:
-            raise HTTPException(status_code=400, detail="target_army_id is required for attack actions")
-        target_army_id = _parse_army_ref(target_army_ref)
-        target_army = session.get(Army, target_army_id)
-        if target_army is None:
-            raise HTTPException(status_code=400, detail={"message": "Unknown target_army_id", "target_army_id": target_army_ref})
-        if not _army_has_live_detachments(target_army):
-            raise HTTPException(status_code=400, detail="Cannot attack an army with no live detachments")
-        if target_army.army_faction == army.army_faction:
-            raise HTTPException(status_code=400, detail="Cannot attack a friendly army")
-        if target_army.location_id != target_h3:
-            raise HTTPException(
-                status_code=400,
-                detail={
-                    "message": "target_army is not currently in target_h3",
-                    "target_h3": target_h3,
-                    "target_army_id": target_army_ref,
-                },
+            for existing in active_actions:
+                existing.state = "cancelled"
+        elif payload.kind == "attack":
+            if _army_is_in_stronghold(session, army) and sortie_siege is None:
+                raise HTTPException(status_code=400, detail="Armies occupying strongholds cannot attack")
+            target_h3 = (payload.target_h3 or "").strip()
+            if not target_h3:
+                raise HTTPException(status_code=400, detail="target_h3 is required for attack actions")
+            target_army_ref = (payload.target_army_id or "").strip()
+            if not target_army_ref:
+                raise HTTPException(status_code=400, detail="target_army_id is required for attack actions")
+            target_army_id = _parse_army_ref(target_army_ref)
+            target_army = session.get(Army, target_army_id)
+            if target_army is None:
+                raise HTTPException(status_code=400, detail={"message": "Unknown target_army_id", "target_army_id": target_army_ref})
+            if not _army_has_live_detachments(target_army):
+                raise HTTPException(status_code=400, detail="Cannot attack an army with no live detachments")
+            if target_army.army_faction == army.army_faction:
+                raise HTTPException(status_code=400, detail="Cannot attack a friendly army")
+            if target_army.location_id != target_h3:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "message": "target_army is not currently in target_h3",
+                        "target_h3": target_h3,
+                        "target_army_id": target_army_ref,
+                    },
+                )
+            try:
+                adjacent = set(h3.grid_ring(army.location_id, 1))
+            except Exception:
+                adjacent = set()
+            target_stronghold = _stronghold_at_h3(session, target_h3)
+            if active_siege is None and sortie_siege is None and target_h3 not in adjacent:
+                raise HTTPException(status_code=400, detail="Attack target must be adjacent")
+            if active_siege is None and sortie_siege is None and target_stronghold is not None:
+                raise HTTPException(status_code=400, detail="Occupied strongholds must be besieged before they can be assaulted")
+            if active_siege is not None:
+                stronghold = session.get(Stronghold, active_siege.stronghold_id)
+                if stronghold is None or target_h3 != stronghold.location_id:
+                    raise HTTPException(status_code=400, detail="While besieging, attack targets must be inside the besieged stronghold")
+                defender_ids = {defender.army_id for defender in _defender_armies_in_stronghold(session, stronghold, army.army_faction)}
+                if target_army_id not in defender_ids:
+                    raise HTTPException(status_code=400, detail="While besieging, only stronghold defenders may be attacked")
+                siege_to_preserve = True
+            elif sortie_siege is not None:
+                participant_army_ids = {
+                    participant.besieger_army_id
+                    for participant in _active_siege_participants_for_siege(session, sortie_siege)
+                }
+                if target_army_id not in participant_army_ids:
+                    raise HTTPException(status_code=400, detail="While under siege, only active besiegers may be attacked")
+                if target_h3 not in adjacent:
+                    raise HTTPException(status_code=400, detail="Sortie targets must be adjacent to the stronghold")
+            attack_target_name = str(target_army.army_name or f"{target_army.army_faction} army").strip()
+            action_params["target_h3"] = target_h3
+            action_params["target_army_id"] = target_army_id
+            active_actions = (
+                session.query(Action)
+                .filter(Action.commander_id == commander_id, Action.state.in_(ACTIVE_ACTION_STATES))
+                .all()
             )
-        try:
-            adjacent = set(h3.grid_ring(army.location_id, 1))
-        except Exception:
-            adjacent = set()
-        target_stronghold = _stronghold_at_h3(session, target_h3)
-        if active_siege is None and sortie_siege is None and target_h3 not in adjacent:
-            raise HTTPException(status_code=400, detail="Attack target must be adjacent")
-        if active_siege is None and sortie_siege is None and target_stronghold is not None:
-            raise HTTPException(status_code=400, detail="Occupied strongholds must be besieged before they can be assaulted")
-        if active_siege is not None:
-            stronghold = session.get(Stronghold, active_siege.stronghold_id)
-            if stronghold is None or target_h3 != stronghold.location_id:
-                raise HTTPException(status_code=400, detail="While besieging, attack targets must be inside the besieged stronghold")
-            defender_ids = {defender.army_id for defender in _defender_armies_in_stronghold(session, stronghold, army.army_faction)}
-            if target_army_id not in defender_ids:
-                raise HTTPException(status_code=400, detail="While besieging, only stronghold defenders may be attacked")
-            siege_to_preserve = True
-        elif sortie_siege is not None:
-            participant_army_ids = {
-                participant.besieger_army_id
-                for participant in _active_siege_participants_for_siege(session, sortie_siege)
-            }
-            if target_army_id not in participant_army_ids:
-                raise HTTPException(status_code=400, detail="While under siege, only active besiegers may be attacked")
-            if target_h3 not in adjacent:
-                raise HTTPException(status_code=400, detail="Sortie targets must be adjacent to the stronghold")
-        attack_target_name = str(target_army.army_name or f"{target_army.army_faction} army").strip()
-        action_params["target_h3"] = target_h3
-        action_params["target_army_id"] = target_army_id
-        # Attack preempts all existing queued and in-progress actions.
-        active_actions = (
-            session.query(Action)
-            .filter(Action.commander_id == commander_id, Action.state.in_(ACTIVE_ACTION_STATES))
-            .all()
-        )
-        for existing in active_actions:
-            existing.state = "cancelled"
-    elif payload.kind == "besiege":
-        if _army_is_in_stronghold(session, army):
-            raise HTTPException(status_code=400, detail="Armies occupying strongholds cannot besiege other strongholds")
-        target_stronghold_ref = (payload.target_stronghold_id or "").strip()
-        if not target_stronghold_ref:
-            raise HTTPException(status_code=400, detail="target_stronghold_id is required for besiege actions")
-        stronghold_id = _parse_stronghold_ref(target_stronghold_ref)
-        stronghold = session.get(Stronghold, stronghold_id)
-        if stronghold is None:
-            raise HTTPException(status_code=400, detail={"message": "Unknown target_stronghold_id", "target_stronghold_id": target_stronghold_ref})
-        if stronghold.control == army.army_faction:
-            raise HTTPException(status_code=400, detail="Cannot besiege a friendly stronghold")
-        try:
-            adjacent = set(h3.grid_ring(army.location_id, 1))
-        except Exception:
-            adjacent = set()
-        if stronghold.location_id not in adjacent:
-            raise HTTPException(status_code=400, detail="Besiege target must be adjacent")
-        defenders = _defender_armies_in_stronghold(session, stronghold, army.army_faction)
-        if not defenders:
-            raise HTTPException(status_code=400, detail="Besiege target must contain enemy defenders")
-        if _active_siege_for_besieger(session, army.army_id) is not None:
-            raise HTTPException(status_code=409, detail="This army is already maintaining a siege")
-        existing_siege = _active_siege_for_stronghold(session, stronghold.stronghold_id)
-        if existing_siege is not None:
-            besieger_faction = _active_siege_faction(session, existing_siege)
-            if besieger_faction and besieger_faction != army.army_faction:
-                raise HTTPException(status_code=409, detail="That stronghold is already under siege by another faction")
-        action_params["target_stronghold_id"] = stronghold.stronghold_id
-        action_params["target_h3"] = stronghold.location_id
-        action_params["target_stronghold_name"] = stronghold.stronghold_name
-        active_actions = (
-            session.query(Action)
-            .filter(Action.commander_id == commander_id, Action.state.in_(ACTIVE_ACTION_STATES))
-            .all()
-        )
-        for existing in active_actions:
-            existing.state = "cancelled"
-
-    if active_siege is not None and not siege_to_preserve and payload.kind != "besiege":
-        _remove_siege_participant(session, siege=active_siege, army_id=army.army_id, clock=clock, reason="cancelled")
-
-    action = Action(
-        commander_id=commander_id,
-        kind=payload.kind,
-        state="queued",
-        parameters_json=json.dumps(action_params),
-        accepted_at=datetime.now(timezone.utc),
-    )
-    session.add(action)
-
-    # Immediate start: if commander has no in-progress action, this action becomes active now.
-    if payload.kind == "forage":
-        _start_action_now_if_valid(session, action, army, clock)
-    elif payload.kind == "attack":
-        _start_action_now_if_valid(session, action, army, clock)
-    elif payload.kind == "besiege":
-        _start_action_now_if_valid(session, action, army, clock)
-        if action.state == "in_progress":
-            stronghold = session.get(Stronghold, int(action_params["target_stronghold_id"]))
-            if stronghold is not None:
-                _start_siege(session, army=army, commander_id=commander_id, stronghold=stronghold, clock=clock, action=action)
-    else:
-        in_progress_exists = (
-            session.query(Action)
-            .filter(
-                Action.commander_id == commander_id,
-                Action.state == "in_progress",
+            for existing in active_actions:
+                existing.state = "cancelled"
+        elif payload.kind == "besiege":
+            if _army_is_in_stronghold(session, army):
+                raise HTTPException(status_code=400, detail="Armies occupying strongholds cannot besiege other strongholds")
+            target_stronghold_ref = (payload.target_stronghold_id or "").strip()
+            if not target_stronghold_ref:
+                raise HTTPException(status_code=400, detail="target_stronghold_id is required for besiege actions")
+            stronghold_id = _parse_stronghold_ref(target_stronghold_ref)
+            stronghold = session.get(Stronghold, stronghold_id)
+            if stronghold is None:
+                raise HTTPException(status_code=400, detail={"message": "Unknown target_stronghold_id", "target_stronghold_id": target_stronghold_ref})
+            if stronghold.control == army.army_faction:
+                raise HTTPException(status_code=400, detail="Cannot besiege a friendly stronghold")
+            try:
+                adjacent = set(h3.grid_ring(army.location_id, 1))
+            except Exception:
+                adjacent = set()
+            if stronghold.location_id not in adjacent:
+                raise HTTPException(status_code=400, detail="Besiege target must be adjacent")
+            defenders = _defender_armies_in_stronghold(session, stronghold, army.army_faction)
+            if not defenders:
+                raise HTTPException(status_code=400, detail="Besiege target must contain enemy defenders")
+            if _active_siege_for_besieger(session, army.army_id) is not None:
+                raise HTTPException(status_code=409, detail="This army is already maintaining a siege")
+            existing_siege = _active_siege_for_stronghold(session, stronghold.stronghold_id)
+            if existing_siege is not None:
+                besieger_faction = _active_siege_faction(session, existing_siege)
+                if besieger_faction and besieger_faction != army.army_faction:
+                    raise HTTPException(status_code=409, detail="That stronghold is already under siege by another faction")
+            action_params["target_stronghold_id"] = stronghold.stronghold_id
+            action_params["target_h3"] = stronghold.location_id
+            action_params["target_stronghold_name"] = stronghold.stronghold_name
+            active_actions = (
+                session.query(Action)
+                .filter(Action.commander_id == commander_id, Action.state.in_(ACTIVE_ACTION_STATES))
+                .all()
             )
-            .first()
-            is not None
+            for existing in active_actions:
+                existing.state = "cancelled"
+
+        if active_siege is not None and not siege_to_preserve and payload.kind != "besiege":
+            _remove_siege_participant(session, siege=active_siege, army_id=army.army_id, clock=clock, reason="cancelled")
+
+        action = Action(
+            commander_id=commander_id,
+            kind=payload.kind,
+            state="queued",
+            parameters_json=json.dumps(action_params),
+            accepted_at=datetime.now(timezone.utc),
         )
-        if not in_progress_exists:
+        session.add(action)
+
+        if payload.kind == "forage":
             _start_action_now_if_valid(session, action, army, clock)
-
-    if payload.kind == "attack" and action.state in ACTIVE_ACTION_STATES:
-        if siege_to_preserve and active_siege is not None:
-            stronghold = session.get(Stronghold, active_siege.stronghold_id)
-            target_name = stronghold.stronghold_name if stronghold is not None else "stronghold"
-            alert_message = f"Assault ordered against {target_name}."
+        elif payload.kind == "attack":
+            _start_action_now_if_valid(session, action, army, clock)
+        elif payload.kind == "besiege":
+            _start_action_now_if_valid(session, action, army, clock)
+            if action.state == "in_progress":
+                stronghold = session.get(Stronghold, int(action_params["target_stronghold_id"]))
+                if stronghold is not None:
+                    _start_siege(session, army=army, commander_id=commander_id, stronghold=stronghold, clock=clock, action=action)
         else:
-            target_name = attack_target_name or "enemy army"
-            alert_message = f"Attack ordered against {target_name}."
+            in_progress_exists = (
+                session.query(Action)
+                .filter(
+                    Action.commander_id == commander_id,
+                    Action.state == "in_progress",
+                )
+                .first()
+                is not None
+            )
+            if not in_progress_exists:
+                _start_action_now_if_valid(session, action, army, clock)
+
+        if payload.kind == "attack" and action.state in ACTIVE_ACTION_STATES:
+            if siege_to_preserve and active_siege is not None:
+                stronghold = session.get(Stronghold, active_siege.stronghold_id)
+                target_name = stronghold.stronghold_name if stronghold is not None else "stronghold"
+                alert_message = f"Assault ordered against {target_name}."
+            else:
+                target_name = attack_target_name or "enemy army"
+                alert_message = f"Attack ordered against {target_name}."
+            _create_alert(
+                session,
+                recipient_commander_id=commander_id,
+                alert_type="action",
+                signal_kind="event",
+                category="orders",
+                importance="normal",
+                message=alert_message,
+                created_day=clock.day,
+                created_watch=clock.watch,
+            )
+        if payload.kind == "besiege" and action.state in ACTIVE_ACTION_STATES:
+            _create_alert(
+                session,
+                recipient_commander_id=commander_id,
+                alert_type="action",
+                signal_kind="event",
+                category="orders",
+                importance="normal",
+                message=f"Siege ordered against {action_params.get('target_stronghold_name', 'stronghold')}.",
+                created_day=clock.day,
+                created_watch=clock.watch,
+            )
+
+        session.flush()
+        return {
+            "action_id": _action_ref(action.action_id),
+            "kind": action.kind,
+            "state": action.state,
+            "accepted_at": action.accepted_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        }
+
+    return _run_world_mutation(session, operation)
+
+
+@router.post("/me/actions/plan")
+def plan_actions(
+    payload: ActionPlanRequest,
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    def operation():
+        army = _find_commander_army(session, commander_id)
+        clock = _get_or_create_clock(session, for_update=True)
+        current_action = _get_current_action_row(session, commander_id)
+        if current_action is not None and current_action.state == "in_progress" and current_action.kind == "rout":
+            raise HTTPException(status_code=409, detail="Army is routing; new orders unavailable until regroup.")
+        active_siege = _active_siege_for_besieger(session, army.army_id)
+        if active_siege is not None:
+            _remove_siege_participant(session, siege=active_siege, army_id=army.army_id, clock=clock, reason="cancelled")
+        path = [str(cell).strip() for cell in payload.path if str(cell).strip()]
+        if payload.kind == "march":
+            total_watch_cost = _path_watches_for_army(session, army, army.location_id, path)
+            available_budget = _remaining_march_watch_budget_for_watch(
+                int(clock.watch),
+                army,
+                _forced_march_enabled_for_army(session, army),
+            )
+            if total_watch_cost > available_budget:
+                raise HTTPException(status_code=400, detail="March path exceeds remaining watch budget for this day.")
+        created_actions, cancelled_count, cancelled_by_kind = _apply_plan(
+            session,
+            commander_id=commander_id,
+            army=army,
+            clock=clock,
+            kind=payload.kind,
+            path=path,
+            now=datetime.now(timezone.utc),
+            disable_follow_road=False,
+        )
+        cancelled_note = _cancellation_narrative(cancelled_by_kind)
+        if payload.kind == "march" and not path:
+            alert_message = f"Halt ordered, {cancelled_note}." if cancelled_note else "Halt ordered."
+        elif payload.kind == "forage":
+            alert_message = f"Forage ordered, {cancelled_note}." if cancelled_note else "Forage ordered."
+        else:
+            march_text = f"{len(path)}-league march ordered"
+            alert_message = f"{march_text}, {cancelled_note}." if cancelled_note else f"{march_text}."
         _create_alert(
             session,
             recipient_commander_id=commander_id,
@@ -5529,103 +5872,25 @@ def create_action(
             created_day=clock.day,
             created_watch=clock.watch,
         )
-    if payload.kind == "besiege" and action.state in ACTIVE_ACTION_STATES:
-        _create_alert(
-            session,
-            recipient_commander_id=commander_id,
-            alert_type="action",
-            signal_kind="event",
-            category="orders",
-            importance="normal",
-            message=f"Siege ordered against {action_params.get('target_stronghold_name', 'stronghold')}.",
-            created_day=clock.day,
-            created_watch=clock.watch,
-        )
 
-    session.commit()
-    session.refresh(action)
+        session.flush()
+        return {
+            "kind": payload.kind,
+            "hold": payload.kind == "march" and len(created_actions) == 0,
+            "cancelled_count": cancelled_count,
+            "cancelled_queued_count": cancelled_count,
+            "cancelled_by_kind": cancelled_by_kind,
+            "created": [
+                {
+                    "action_id": _action_ref(action.action_id),
+                    "kind": action.kind,
+                    "state": action.state,
+                }
+                for action in created_actions
+            ],
+        }
 
-    return {
-        "action_id": _action_ref(action.action_id),
-        "kind": action.kind,
-        "state": action.state,
-        "accepted_at": action.accepted_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
-    }
-
-
-@router.post("/me/actions/plan")
-def plan_actions(
-    payload: ActionPlanRequest,
-    commander_id: int = Depends(_get_current_commander_id),
-    session: Session = Depends(_get_session),
-):
-    army = _find_commander_army(session, commander_id)
-    clock = _get_or_create_clock(session)
-    current_action = _get_current_action_row(session, commander_id)
-    if current_action is not None and current_action.state == "in_progress" and current_action.kind == "rout":
-        raise HTTPException(status_code=409, detail="Army is routing; new orders unavailable until regroup.")
-    active_siege = _active_siege_for_besieger(session, army.army_id)
-    if active_siege is not None:
-        _remove_siege_participant(session, siege=active_siege, army_id=army.army_id, clock=clock, reason="cancelled")
-    path = [str(cell).strip() for cell in payload.path if str(cell).strip()]
-    if payload.kind == "march":
-        total_watch_cost = _path_watches_for_army(session, army, army.location_id, path)
-        available_budget = _remaining_march_watch_budget_for_watch(
-            int(clock.watch),
-            army,
-            _forced_march_enabled_for_army(session, army),
-        )
-        if total_watch_cost > available_budget:
-            raise HTTPException(status_code=400, detail="March path exceeds remaining watch budget for this day.")
-    created_actions, cancelled_count, cancelled_by_kind = _apply_plan(
-        session,
-        commander_id=commander_id,
-        army=army,
-        clock=clock,
-        kind=payload.kind,
-        path=path,
-        now=datetime.now(timezone.utc),
-        disable_follow_road=False,
-    )
-    cancelled_note = _cancellation_narrative(cancelled_by_kind)
-    if payload.kind == "march" and not path:
-        alert_message = f"Halt ordered, {cancelled_note}." if cancelled_note else "Halt ordered."
-    elif payload.kind == "forage":
-        alert_message = f"Forage ordered, {cancelled_note}." if cancelled_note else "Forage ordered."
-    else:
-        march_text = f"{len(path)}-league march ordered"
-        alert_message = f"{march_text}, {cancelled_note}." if cancelled_note else f"{march_text}."
-    _create_alert(
-        session,
-        recipient_commander_id=commander_id,
-        alert_type="action",
-        signal_kind="event",
-        category="orders",
-        importance="normal",
-        message=alert_message,
-        created_day=clock.day,
-        created_watch=clock.watch,
-    )
-
-    session.commit()
-    for action in created_actions:
-        session.refresh(action)
-
-    return {
-        "kind": payload.kind,
-        "hold": payload.kind == "march" and len(created_actions) == 0,
-        "cancelled_count": cancelled_count,
-        "cancelled_queued_count": cancelled_count,
-        "cancelled_by_kind": cancelled_by_kind,
-        "created": [
-            {
-                "action_id": _action_ref(action.action_id),
-                "kind": action.kind,
-                "state": action.state,
-            }
-            for action in created_actions
-        ],
-    }
+    return _run_world_mutation(session, operation)
 
 
 @router.get("/me/orders/standing")
@@ -5633,9 +5898,7 @@ def get_my_standing_orders(
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
-    standing = _get_or_create_standing_order(session, commander_id)
-    session.commit()
-    session.refresh(standing)
+    standing = session.get(StandingOrder, commander_id)
     return _serialize_standing_orders(standing)
 
 
@@ -5645,43 +5908,44 @@ def set_follow_road_standing_order(
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
-    standing = _get_or_create_standing_order(session, commander_id)
-    clock = _get_or_create_clock(session)
-    standing.follow_road_enabled = bool(payload.enabled)
-    if payload.enabled:
-        standing.last_report = "Standing order issued: follow road."
-        standing.last_report_day = None
-        standing.last_report_watch = None
-        _create_alert(
-            session,
-            recipient_commander_id=commander_id,
-            alert_type="action",
-            signal_kind="event",
-            category="standing-order",
-            importance="normal",
-            message="Standing order issued: follow road.",
-            created_day=clock.day,
-            created_watch=clock.watch,
-        )
-    else:
-        standing.last_report = "Standing order rescinded: follow road."
-        standing.last_report_day = clock.day
-        standing.last_report_watch = clock.watch
-        _create_alert(
-            session,
-            recipient_commander_id=commander_id,
-            alert_type="action",
-            signal_kind="event",
-            category="standing-order",
-            importance="normal",
-            message="Standing order rescinded: follow road.",
-            created_day=clock.day,
-            created_watch=clock.watch,
-        )
-    standing.updated_at = datetime.now(timezone.utc)
-    session.commit()
-    session.refresh(standing)
-    return _serialize_standing_orders(standing)
+    def operation():
+        standing = _get_or_create_standing_order(session, commander_id)
+        clock = _get_or_create_clock(session, for_update=True)
+        standing.follow_road_enabled = bool(payload.enabled)
+        if payload.enabled:
+            standing.last_report = "Standing order issued: follow road."
+            standing.last_report_day = None
+            standing.last_report_watch = None
+            _create_alert(
+                session,
+                recipient_commander_id=commander_id,
+                alert_type="action",
+                signal_kind="event",
+                category="standing-order",
+                importance="normal",
+                message="Standing order issued: follow road.",
+                created_day=clock.day,
+                created_watch=clock.watch,
+            )
+        else:
+            standing.last_report = "Standing order rescinded: follow road."
+            standing.last_report_day = clock.day
+            standing.last_report_watch = clock.watch
+            _create_alert(
+                session,
+                recipient_commander_id=commander_id,
+                alert_type="action",
+                signal_kind="event",
+                category="standing-order",
+                importance="normal",
+                message="Standing order rescinded: follow road.",
+                created_day=clock.day,
+                created_watch=clock.watch,
+            )
+        standing.updated_at = datetime.now(timezone.utc)
+        return _serialize_standing_orders(standing)
+
+    return _run_world_mutation(session, operation)
 
 
 @router.post("/me/orders/standing/forced-march")
@@ -5690,40 +5954,41 @@ def set_forced_march_standing_order(
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
-    army = _find_commander_army(session, commander_id)
-    clock = _get_or_create_clock(session)
-    current_action = _get_current_action_row(session, commander_id)
-    if current_action is not None and current_action.state == "in_progress" and current_action.kind == "rout":
-        raise HTTPException(status_code=409, detail="Army is routing; new orders unavailable until regroup.")
-    standing = _get_or_create_standing_order(session, commander_id)
-    requested_enabled = bool(payload.enabled)
-    current_enabled = bool(standing.forced_march_enabled)
-    _ = army
-    if (
-        current_enabled
-        and not requested_enabled
-        and _forced_march_is_locked_for_watch(int(clock.watch))
-    ):
-        raise HTTPException(status_code=400, detail="Forced march cannot be manually disabled in this watch.")
-    if current_enabled == requested_enabled:
+    def operation():
+        army = _find_commander_army(session, commander_id)
+        clock = _get_or_create_clock(session, for_update=True)
+        current_action = _get_current_action_row(session, commander_id)
+        if current_action is not None and current_action.state == "in_progress" and current_action.kind == "rout":
+            raise HTTPException(status_code=409, detail="Army is routing; new orders unavailable until regroup.")
+        standing = _get_or_create_standing_order(session, commander_id)
+        requested_enabled = bool(payload.enabled)
+        current_enabled = bool(standing.forced_march_enabled)
+        _ = army
+        if (
+            current_enabled
+            and not requested_enabled
+            and _forced_march_is_locked_for_watch(int(clock.watch))
+        ):
+            raise HTTPException(status_code=400, detail="Forced march cannot be manually disabled in this watch.")
+        if current_enabled == requested_enabled:
+            return _serialize_standing_orders(standing)
+        standing.forced_march_enabled = requested_enabled
+        standing.updated_at = datetime.now(timezone.utc)
+        if requested_enabled:
+            _create_alert(
+                session,
+                recipient_commander_id=commander_id,
+                alert_type="action",
+                signal_kind="event",
+                category="standing-order",
+                importance="normal",
+                message="Standing order issued: forced march.",
+                created_day=clock.day,
+                created_watch=clock.watch,
+            )
         return _serialize_standing_orders(standing)
-    standing.forced_march_enabled = requested_enabled
-    standing.updated_at = datetime.now(timezone.utc)
-    if requested_enabled:
-        _create_alert(
-            session,
-            recipient_commander_id=commander_id,
-            alert_type="action",
-            signal_kind="event",
-            category="standing-order",
-            importance="normal",
-            message="Standing order issued: forced march.",
-            created_day=clock.day,
-            created_watch=clock.watch,
-        )
-    session.commit()
-    session.refresh(standing)
-    return _serialize_standing_orders(standing)
+
+    return _run_world_mutation(session, operation)
 
 
 @router.get("/correspondents")
@@ -5808,19 +6073,21 @@ def cancel_action(
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
-    action_pk = _parse_action_ref(action_id)
-    action = session.get(Action, action_pk)
-    if action is None or action.commander_id != commander_id:
-        raise HTTPException(status_code=404, detail="Action not found")
-    if action.state not in ACTIVE_ACTION_STATES:
-        raise HTTPException(status_code=409, detail="Action cannot be cancelled in current state")
+    def operation():
+        action_pk = _parse_action_ref(action_id)
+        action = session.get(Action, action_pk)
+        if action is None or action.commander_id != commander_id:
+            raise HTTPException(status_code=404, detail="Action not found")
+        if action.state not in ACTIVE_ACTION_STATES:
+            raise HTTPException(status_code=409, detail="Action cannot be cancelled in current state")
 
-    action.state = "cancelled"
-    session.commit()
-    return {
-        "action_id": _action_ref(action.action_id),
-        "state": action.state,
-    }
+        action.state = "cancelled"
+        return {
+            "action_id": _action_ref(action.action_id),
+            "state": action.state,
+        }
+
+    return _run_world_mutation(session, operation)
 
 
 @router.post("/me/messages")
@@ -5829,55 +6096,56 @@ def send_message(
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
-    sender = session.get(Commander, commander_id)
-    if sender is None:
-        raise HTTPException(status_code=404, detail="Sender commander not found")
+    def operation():
+        sender = session.get(Commander, commander_id)
+        if sender is None:
+            raise HTTPException(status_code=404, detail="Sender commander not found")
 
-    recipient_id = _parse_commander_ref(payload.recipient_id)
-    recipient = session.get(Commander, recipient_id)
-    if recipient is None:
-        raise HTTPException(status_code=404, detail="Recipient not found")
+        recipient_id = _parse_commander_ref(payload.recipient_id)
+        recipient = session.get(Commander, recipient_id)
+        if recipient is None:
+            raise HTTPException(status_code=404, detail="Recipient not found")
 
-    clock = _get_or_create_clock(session)
-    sender_h3 = _commander_location_h3(session, commander_id)
-    recipient_h3 = _commander_location_h3(session, recipient_id)
-    if sender_h3 is None or recipient_h3 is None:
-        raise HTTPException(status_code=422, detail="Sender or recipient has no mappable army location")
+        clock = _get_or_create_clock(session, for_update=True)
+        sender_h3 = _commander_location_h3(session, commander_id)
+        recipient_h3 = _commander_location_h3(session, recipient_id)
+        if sender_h3 is None or recipient_h3 is None:
+            raise HTTPException(status_code=422, detail="Sender or recipient has no mappable army location")
 
-    message = _create_message(
-        session,
-        sender_name=_commander_display_name(sender),
-        sender_commander_id=commander_id,
-        sender_stronghold_id=None,
-        recipient_id=recipient_id,
-        origin_h3=sender_h3,
-        destination_h3=recipient_h3,
-        content=payload.content,
-        priority=payload.priority,
-        sent_day=clock.day,
-        sent_watch=clock.watch,
-    )
-    _create_alert(
-        session,
-        recipient_commander_id=commander_id,
-        alert_type="report",
-        signal_kind="event",
-        category="messages",
-        importance="normal",
-        message=f"Letter sent to {_commander_display_name(recipient)}.",
-        created_day=clock.day,
-        created_watch=clock.watch,
-    )
-    session.commit()
-    session.refresh(message)
+        message = _create_message(
+            session,
+            sender_name=_commander_display_name(sender),
+            sender_commander_id=commander_id,
+            sender_stronghold_id=None,
+            recipient_id=recipient_id,
+            origin_h3=sender_h3,
+            destination_h3=recipient_h3,
+            content=payload.content,
+            priority=payload.priority,
+            sent_day=clock.day,
+            sent_watch=clock.watch,
+        )
+        _create_alert(
+            session,
+            recipient_commander_id=commander_id,
+            alert_type="report",
+            signal_kind="event",
+            category="messages",
+            importance="normal",
+            message=f"Letter sent to {_commander_display_name(recipient)}.",
+            created_day=clock.day,
+            created_watch=clock.watch,
+        )
+        session.flush()
 
-    sent_watch = _to_watch_stamp(message.sent_day, message.sent_watch)
-    return {
-        "message_id": _message_ref(message.message_id),
-        "sent_watch": sent_watch,
-        "estimated_delivery_watch": _to_watch_stamp(message.delivery_day, message.delivery_watch),
-        "status": message.status,
-    }
+        return {
+            "message_id": _message_ref(message.message_id),
+            "sent_watch": _to_watch_stamp(message.sent_day, message.sent_watch),
+            "estimated_delivery_watch": _to_watch_stamp(message.delivery_day, message.delivery_watch),
+            "status": message.status,
+        }
+
+    return _run_world_mutation(session, operation)
 
 
 @router.get("/me/messages")
@@ -5922,31 +6190,33 @@ def get_message(
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
-    message_pk = _parse_message_ref(message_id)
-    message = session.get(Message, message_pk)
-    if message is None or message.recipient_id != commander_id:
-        raise HTTPException(status_code=404, detail="Message not found")
-    if message.status != "received":
-        if message.status == "lost":
-            raise HTTPException(status_code=404, detail="Message was lost in transit")
-        raise HTTPException(status_code=404, detail="Message not delivered yet")
+    def operation():
+        message_pk = _parse_message_ref(message_id)
+        message = session.get(Message, message_pk)
+        if message is None or message.recipient_id != commander_id:
+            raise HTTPException(status_code=404, detail="Message not found")
+        if message.status != "received":
+            if message.status == "lost":
+                raise HTTPException(status_code=404, detail="Message was lost in transit")
+            raise HTTPException(status_code=404, detail="Message not delivered yet")
 
-    clock = _get_or_create_clock(session)
-    if (message.delivery_day > clock.day) or (
-        message.delivery_day == clock.day and message.delivery_watch > clock.watch
-    ):
-        raise HTTPException(status_code=404, detail="Message not delivered yet")
+        clock = _get_or_create_clock(session, for_update=True)
+        if (message.delivery_day > clock.day) or (
+            message.delivery_day == clock.day and message.delivery_watch > clock.watch
+        ):
+            raise HTTPException(status_code=404, detail="Message not delivered yet")
 
-    if not message.is_read:
-        message.is_read = True
-        session.commit()
+        if not message.is_read:
+            message.is_read = True
 
-    return {
-        "id": _message_ref(message.message_id),
-        "from": {"name": _message_sender_display_name(message)},
-        "content": message.content,
-        "priority": message.priority,
-        "sent_watch": _to_watch_stamp(message.sent_day, message.sent_watch),
-        "delivered_watch": _to_watch_stamp(message.delivery_day, message.delivery_watch),
-        "is_read": message.is_read,
-    }
+        return {
+            "id": _message_ref(message.message_id),
+            "from": {"name": _message_sender_display_name(message)},
+            "content": message.content,
+            "priority": message.priority,
+            "sent_watch": _to_watch_stamp(message.sent_day, message.sent_watch),
+            "delivered_watch": _to_watch_stamp(message.delivery_day, message.delivery_watch),
+            "is_read": message.is_read,
+        }
+
+    return _run_world_mutation(session, operation)
