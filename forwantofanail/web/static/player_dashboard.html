@@ -4621,6 +4621,21 @@
       els.hoverCard.style.top = `${y}px`;
     }
 
+    function settlementDescription(settlementValue) {
+      const descriptions = {
+        0: "Uninhabitable",
+        1: "Empty",
+        2: "Sparse",
+        3: "Light",
+        4: "Heavy",
+        5: "Dense",
+      };
+      const settlement = Number(settlementValue);
+      return Object.prototype.hasOwnProperty.call(descriptions, settlement)
+        ? descriptions[settlement]
+        : "Unknown";
+    }
+
     function showHoverCard(h3Index, clientX, clientY) {
       if (isDiegeticMapMode()) {
         return;
@@ -4629,7 +4644,7 @@
       const cell = state.view?.environs?.cells?.find((c) => c.h3 === h3Index);
       if (cell) {
         const terrain = cell.terrain_type || "unknown";
-        const settlementText = cell.settlement == null ? "0" : String(cell.settlement);
+        const settlementText = settlementDescription(cell.settlement);
         const forageCount = Number(cell.foraged_this_season);
         const foragedText = Number.isFinite(forageCount) ? String(forageCount) : "0";
         const hasStronghold = !!(cell.stronghold && cell.stronghold.name);

@@ -847,3 +847,15 @@ def test_player_environs_omits_region_control_but_keeps_stronghold_faction(sqlit
         assert by_h3["fort_1"]["stronghold"]["faction"] == "Beta"
     finally:
         session.close()
+
+
+def test_player_dashboard_uses_diegetic_settlement_descriptions_in_hover_cards(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    for value, description in enumerate(("Uninhabitable", "Empty", "Sparse", "Light", "Heavy", "Dense")):
+        assert f'{value}: "{description}"' in response.text
+    assert "const settlementText = settlementDescription(cell.settlement);" in response.text
