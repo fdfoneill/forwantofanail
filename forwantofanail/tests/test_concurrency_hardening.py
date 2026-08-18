@@ -367,6 +367,33 @@ def test_generated_commander_claim_overview_uses_dispatch_formula(sqlite_db):
         session.close()
 
 
+def test_runtime_commander_portrait_falls_back_to_faction_asset(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "COMMANDER_PORTRAIT_DIR", tmp_path)
+    commander = Commander(commander_name="Delta", commander_title="Captain", commander_age=30)
+    faction_portrait = tmp_path / "portrait_boonan.png"
+    faction_portrait.write_bytes(b"faction portrait")
+
+    assert routes._commander_portrait_filename(commander, "Boonan") == "portrait_boonan.png"
+    assert routes._commander_portrait_url(commander, "Boonan") == "/v1/commander-portraits/portrait_boonan.png"
+
+
+def test_named_commander_portrait_takes_precedence_over_faction_asset(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "COMMANDER_PORTRAIT_DIR", tmp_path)
+    commander = Commander(commander_name="Delta", commander_title="Captain", commander_age=30)
+    (tmp_path / "Portrait - Captain Delta.png").write_bytes(b"named portrait")
+    (tmp_path / "portrait_boonan.png").write_bytes(b"faction portrait")
+
+    assert routes._commander_portrait_filename(commander, "Boonan") == "Portrait - Captain Delta.png"
+
+
+def test_runtime_commander_without_portrait_asset_keeps_empty_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "COMMANDER_PORTRAIT_DIR", tmp_path)
+    commander = Commander(commander_name="Delta", commander_title="Captain", commander_age=30)
+
+    assert routes._commander_portrait_filename(commander, "Boonan") is None
+    assert routes._commander_portrait_url(commander, "Boonan") is None
+
+
 def test_direct_login_claims_unclaimed_commander_and_blocks_duplicates(sqlite_db):
     first = _call_with_session(
         lambda session: routes.login(LoginRequest(commander_name="Alpha"), session=session, x_admin_token=None)
