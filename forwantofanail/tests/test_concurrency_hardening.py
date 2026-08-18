@@ -859,3 +859,23 @@ def test_player_dashboard_uses_diegetic_settlement_descriptions_in_hover_cards(s
     for value, description in enumerate(("Uninhabitable", "Empty", "Sparse", "Light", "Heavy", "Dense")):
         assert f'{value}: "{description}"' in response.text
     assert "const settlementText = settlementDescription(cell.settlement);" in response.text
+
+
+def test_player_dashboard_uses_forage_condition_descriptions_in_hover_cards(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    for value, description in enumerate(("Untouched", "Harvested", "Picked-Over", "Exhausted")):
+        assert f'{value}: "{description}"' in response.text
+    assert "const forageText = forageDescription(cell.foraged_this_season);" in response.text
+    assert "const canForage = Number(cell.settlement) > 0;" in response.text
+    assert "if (canForage) {" in response.text
+    settlement_row = '<span class=\\"k\\">Settlement:</span>${escapeHtml(settlementText)}'
+    forage_row = '<span class=\\"k\\">Forage:</span>${escapeHtml(forageText)}'
+    forageable_block = response.text[response.text.index("if (canForage) {"):]
+    assert settlement_row in forageable_block
+    assert forage_row in forageable_block
+    assert "Times Foraged This Season:" not in response.text

@@ -4636,6 +4636,19 @@
         : "Unknown";
     }
 
+    function forageDescription(forageValue) {
+      const descriptions = {
+        0: "Untouched",
+        1: "Harvested",
+        2: "Picked-Over",
+        3: "Exhausted",
+      };
+      const forageCount = Number(forageValue);
+      return Object.prototype.hasOwnProperty.call(descriptions, forageCount)
+        ? descriptions[forageCount]
+        : "Unknown";
+    }
+
     function showHoverCard(h3Index, clientX, clientY) {
       if (isDiegeticMapMode()) {
         return;
@@ -4645,8 +4658,8 @@
       if (cell) {
         const terrain = cell.terrain_type || "unknown";
         const settlementText = settlementDescription(cell.settlement);
-        const forageCount = Number(cell.foraged_this_season);
-        const foragedText = Number.isFinite(forageCount) ? String(forageCount) : "0";
+        const forageText = forageDescription(cell.foraged_this_season);
+        const canForage = Number(cell.settlement) > 0;
         const hasStronghold = !!(cell.stronghold && cell.stronghold.name);
         const otherArmies = Array.isArray(cell.other_armies) ? cell.other_armies : [];
         const primaryArmy = otherArmies.length ? otherArmies[0] : null;
@@ -4697,10 +4710,10 @@
           metaRows.push(`<div><span class=\"k\">Under Siege:</span>${escapeHtml(siegeDaysText)}</div>`);
           metaRows.push(`<div><span class=\"k\">Gates:</span>${escapeHtml(gatesText)}</div>`);
         }
-        metaRows.push(
-          `<div><span class=\"k\">Settlement:</span>${escapeHtml(settlementText)}</div>`,
-          `<div><span class=\"k\">Times Foraged This Season:</span>${escapeHtml(foragedText)}</div>`
-        );
+        if (canForage) {
+          metaRows.push(`<div><span class=\"k\">Settlement:</span>${escapeHtml(settlementText)}</div>`);
+          metaRows.push(`<div><span class=\"k\">Forage:</span>${escapeHtml(forageText)}</div>`);
+        }
         els.hoverMeta.innerHTML = metaRows.join("");
         updateStageMoveButtonVisibility(h3Index);
         updateHoveredMoveOutline(h3Index);
