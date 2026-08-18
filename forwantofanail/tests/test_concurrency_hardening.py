@@ -794,3 +794,20 @@ def test_player_dashboard_labels_original_and_created_commander_roles(sqlite_db)
     assert response.status_code == 200
     assert 'state.selectedCommanderIsOriginal ? "High Commander" : "Subcommander"' in response.text
     assert "`${state.selectedCommanderFaction} ${role}`" in response.text
+
+
+def test_player_dashboard_merges_alert_cursors_and_only_acknowledges_rendered_rows(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    assert "function alertFeedRow(" in response.text
+    assert "function mergeAlertEvents(" in response.text
+    assert "function fetchAlertsAfter(" in response.text
+    assert "after_id=${encodeURIComponent(cursor)}" in response.text
+    assert "const events = mergeAlertEvents(existingEvents, incomingEvents" in response.text
+    assert "const beforeId = state.alertsBeforeId" in response.text
+    assert "await acknowledgeRenderedAlerts(renderedIds);" in response.text
+    assert "const deliveredIds = rows.map" not in response.text
