@@ -315,6 +315,7 @@ def test_commander_claim_list_marks_claimed_commanders(sqlite_db):
         by_id = {row["id"]: row for row in claims}
         assert by_id["cmd_1"]["claimed"] is True
         assert by_id["cmd_1"]["faction"] == "Alpha"
+        assert by_id["cmd_1"]["is_original"] is True
         assert by_id["cmd_2"]["claimed"] is False
         assert by_id["cmd_2"]["faction"] == "Beta"
     finally:
@@ -363,8 +364,36 @@ def test_generated_commander_claim_overview_uses_dispatch_formula(sqlite_db):
         by_id = {row["id"]: row for row in claims}
         expected_date = routes._scenario_date_for_day(4).isoformat()
         assert by_id["cmd_4"]["overview"]["commander"] == f"Dispatched by Lord Alpha on {expected_date}."
+        assert by_id["cmd_4"]["is_original"] is False
     finally:
         session.close()
+
+
+def test_runtime_commander_portrait_falls_back_to_faction_asset(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "COMMANDER_PORTRAIT_DIR", tmp_path)
+    commander = Commander(commander_name="Delta", commander_title="Captain", commander_age=30)
+    faction_portrait = tmp_path / "portrait_boonan.png"
+    faction_portrait.write_bytes(b"faction portrait")
+
+    assert routes._commander_portrait_filename(commander, "Boonan") == "portrait_boonan.png"
+    assert routes._commander_portrait_url(commander, "Boonan") == "/v1/commander-portraits/portrait_boonan.png"
+
+
+def test_named_commander_portrait_takes_precedence_over_faction_asset(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "COMMANDER_PORTRAIT_DIR", tmp_path)
+    commander = Commander(commander_name="Delta", commander_title="Captain", commander_age=30)
+    (tmp_path / "Portrait - Captain Delta.png").write_bytes(b"named portrait")
+    (tmp_path / "portrait_boonan.png").write_bytes(b"faction portrait")
+
+    assert routes._commander_portrait_filename(commander, "Boonan") == "Portrait - Captain Delta.png"
+
+
+def test_runtime_commander_without_portrait_asset_keeps_empty_fallback(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, "COMMANDER_PORTRAIT_DIR", tmp_path)
+    commander = Commander(commander_name="Delta", commander_title="Captain", commander_age=30)
+
+    assert routes._commander_portrait_filename(commander, "Boonan") is None
+    assert routes._commander_portrait_url(commander, "Boonan") is None
 
 
 def test_direct_login_claims_unclaimed_commander_and_blocks_duplicates(sqlite_db):
@@ -754,3 +783,14 @@ def test_player_dashboard_letters_use_modals_and_direction_labels(sqlite_db):
     assert 'const directionLabel = isSent ? "TO: " : "FROM: ";' in response.text
     assert 'isSent ? "Sent Letter" : "Received Letter"' in response.text
     assert "els.letterDetailDeliveredLabel.hidden = isSent" in response.text
+
+
+def test_player_dashboard_labels_original_and_created_commander_roles(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    assert 'state.selectedCommanderIsOriginal ? "High Commander" : "Subcommander"' in response.text
+    assert "`${state.selectedCommanderFaction} ${role}`" in response.text

@@ -217,10 +217,22 @@ def _message_recipient_display_name(message: Message) -> str:
     return _commander_display_name(message.recipient)
 
 
-def _commander_portrait_filename(commander: Commander) -> str | None:
+def _faction_portrait_filename(faction: str) -> str | None:
+    faction_slug = "_".join(
+        part for part in "".join(ch.lower() if ch.isalnum() else " " for ch in str(faction or "")).split() if part
+    )
+    if not faction_slug:
+        return None
+    filename = f"portrait_{faction_slug}.png"
+    return filename if (COMMANDER_PORTRAIT_DIR / filename).is_file() else None
+
+
+def _commander_portrait_filename(commander: Commander, faction: str = "") -> str | None:
     display_name = _commander_display_name(commander)
     normalized_display = "".join(ch for ch in display_name.lower() if ch.isalnum())
     for path in COMMANDER_PORTRAIT_DIR.glob("Portrait - *"):
+        if not path.is_file():
+            continue
         stem = path.stem.removeprefix("Portrait - ")
         normalized_stem = "".join(ch for ch in stem.lower() if ch.isalnum())
         if normalized_stem == normalized_display or normalized_display.startswith(normalized_stem):
@@ -230,11 +242,11 @@ def _commander_portrait_filename(commander: Commander) -> str | None:
             return path.name
         if normalized_stem and normalized_stem in commander_name:
             return path.name
-    return None
+    return _faction_portrait_filename(faction)
 
 
-def _commander_portrait_url(commander: Commander) -> str | None:
-    filename = _commander_portrait_filename(commander)
+def _commander_portrait_url(commander: Commander, faction: str = "") -> str | None:
+    filename = _commander_portrait_filename(commander, faction)
     if filename is None:
         return None
     return f"/v1/commander-portraits/{filename}"
@@ -303,8 +315,9 @@ def _serialize_claim_commander(session: Session, commander: Commander, claim: Co
         "title": commander.commander_title,
         "display_name": _commander_display_name(commander),
         "faction": faction,
+        "is_original": commander.created_by_commander_id is None,
         "overview": _commander_overview_payload(session, commander, faction),
-        "portrait_url": _commander_portrait_url(commander),
+        "portrait_url": _commander_portrait_url(commander, faction),
         "claimed": claim is not None,
         "claimed_at": claim.claimed_at.replace(microsecond=0).isoformat().replace("+00:00", "Z") if claim else None,
     }
@@ -5390,7 +5403,12 @@ def login(
 
 @router.get("/commander-portraits/{filename}", include_in_schema=False)
 def commander_portrait(filename: str):
-    safe_names = {path.name for path in COMMANDER_PORTRAIT_DIR.glob("Portrait - *") if path.is_file()}
+    safe_names = {
+        path.name
+        for pattern in ("Portrait - *", "portrait_*.png")
+        for path in COMMANDER_PORTRAIT_DIR.glob(pattern)
+        if path.is_file()
+    }
     if filename not in safe_names:
         raise HTTPException(status_code=404, detail="Portrait not found")
     return FileResponse(COMMANDER_PORTRAIT_DIR / filename)
