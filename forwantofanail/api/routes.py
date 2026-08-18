@@ -4512,13 +4512,6 @@ def _serialize_environs(
         .order_by(Army.army_id.asc())
         .all()
     )
-    region_names = {loc.region for loc in locations if loc.region}
-    region_control_by_name = {}
-    if region_names:
-        region_control_by_name = {
-            sh.stronghold_name: sh.control
-            for sh in session.query(Stronghold).filter(Stronghold.stronghold_name.in_(region_names)).all()
-        }
     other_armies_by_location: dict[str, list[dict[str, Any]]] = {}
     armies_by_location: dict[str, list[Army]] = {}
     for located_army in armies_in_disk:
@@ -4613,7 +4606,6 @@ def _serialize_environs(
                     other_armies=other_armies,
                 ),
                 "region": location.region,
-                "region_control": region_control_by_name.get(location.region) if location.region else None,
                 "settlement": location.settlement,
                 "foraged_this_season": location.foraged_this_season,
                 "stronghold": (

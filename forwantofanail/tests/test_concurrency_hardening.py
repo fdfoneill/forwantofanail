@@ -794,3 +794,88 @@ def test_player_dashboard_labels_original_and_created_commander_roles(sqlite_db)
     assert response.status_code == 200
     assert 'state.selectedCommanderIsOriginal ? "High Commander" : "Subcommander"' in response.text
     assert "`${state.selectedCommanderFaction} ${role}`" in response.text
+
+
+def test_player_dashboard_merges_alert_cursors_and_only_acknowledges_rendered_rows(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    assert "function alertFeedRow(" in response.text
+    assert "function mergeAlertEvents(" in response.text
+    assert "function fetchAlertsAfter(" in response.text
+    assert "after_id=${encodeURIComponent(cursor)}" in response.text
+    assert "const events = mergeAlertEvents(existingEvents, incomingEvents" in response.text
+    assert "const beforeId = state.alertsBeforeId" in response.text
+    assert "await acknowledgeRenderedAlerts(renderedIds);" in response.text
+    assert "const deliveredIds = rows.map" not in response.text
+
+
+def test_player_dashboard_only_displays_cell_faction_for_strongholds(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    assert "cell.region_control" not in response.text
+    faction_row = 'metaRows.push(`<div><span class=\\"k\\">Faction:'
+    stronghold_type_row = 'metaRows.push(`<div><span class=\\"k\\">Stronghold Type:'
+    conditional_index = response.text.rindex("if (hasStronghold) {", 0, response.text.index(faction_row))
+    assert conditional_index < response.text.index(stronghold_type_row)
+    assert conditional_index < response.text.index(faction_row)
+
+
+def test_player_environs_omits_region_control_but_keeps_stronghold_faction(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes.h3, "grid_disk", lambda _center, _radius: ["origin_1", "origin_2", "fort_1"])
+    session = create_session()
+    try:
+        army = session.get(Army, 1)
+        environs = routes._serialize_environs(
+            session,
+            army.location_id,
+            radius=2,
+            exclude_army_id=army.army_id,
+            viewer_commander_id=1,
+            viewer_army=army,
+        )
+        by_h3 = {cell["h3"]: cell for cell in environs["cells"]}
+
+        assert all("region_control" not in cell for cell in environs["cells"])
+        assert by_h3["fort_1"]["stronghold"]["faction"] == "Beta"
+    finally:
+        session.close()
+
+
+def test_player_dashboard_uses_diegetic_settlement_descriptions_in_hover_cards(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    for value, description in enumerate(("Uninhabitable", "Empty", "Sparse", "Light", "Heavy", "Dense")):
+        assert f'{value}: "{description}"' in response.text
+    assert "const settlementText = settlementDescription(cell.settlement);" in response.text
+
+
+def test_player_dashboard_uses_forage_condition_descriptions_in_hover_cards(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    for value, description in enumerate(("Untouched", "Harvested", "Picked-Over", "Exhausted")):
+        assert f'{value}: "{description}"' in response.text
+    assert "const forageText = forageDescription(cell.foraged_this_season);" in response.text
+    assert "const canForage = Number(cell.settlement) > 0;" in response.text
+    assert "if (canForage) {" in response.text
+    settlement_row = '<span class=\\"k\\">Settlement:</span>${escapeHtml(settlementText)}'
+    forage_row = '<span class=\\"k\\">Forage:</span>${escapeHtml(forageText)}'
+    forageable_block = response.text[response.text.index("if (canForage) {"):]
+    assert settlement_row in forageable_block
+    assert forage_row in forageable_block
+    assert "Times Foraged This Season:" not in response.text

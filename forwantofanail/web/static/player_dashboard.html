@@ -1355,6 +1355,7 @@
       validBesiegeTargets: new Map(),
       alerts: [],
       alertsHasMore: false,
+      alertsBeforeId: "",
       followRoadEnabled: false,
       forcedMarchEnabled: false,
       armyPanelExpanded: false,
@@ -3550,6 +3551,7 @@
       state.view = null;
       state.alerts = [];
       state.alertsHasMore = false;
+      state.alertsBeforeId = "";
       state.correspondents = [];
       state.inbox = [];
       state.openMessageId = null;
@@ -3987,25 +3989,140 @@
       renderInbox();
     }
 
+    function alertIdNumber(alertId) {
+      const value = Number(String(alertId || "").replace(/^alt_/, ""));
+      return Number.isFinite(value) ? value : -1;
+    }
+
+    function alertFeedRow(item, currentDay, currentWatch) {
+      const rawMessage = String(item?.message || "").trim();
+      if (!rawMessage) {
+        return null;
+      }
+      const importance = String(item?.importance || "normal").toLowerCase();
+      const signalKind = String(item?.signal_kind || "event").toLowerCase();
+      const category = String(item?.category || "").toLowerCase();
+      const createdDay = Number(item?.created_watch?.day);
+      const createdWatch = Number(item?.created_watch?.watch);
+      const deliveredDay = Number(item?.delivered_watch?.day);
+      const deliveredWatch = Number(item?.delivered_watch?.watch);
+      const isCurrentWatchKnown = Number.isFinite(currentDay) && Number.isFinite(currentWatch);
+
+      if (signalKind === "state") {
+        if (!isCurrentWatchKnown || createdDay !== currentDay || createdWatch !== currentWatch) {
+          return null;
+        }
+        return {
+          kind: "state",
+          deliveryId: item.id || "",
+          row: {
+            source_alert_id: item.id || "",
+            message: normalizeAlertMessage(rawMessage),
+            heading: "",
+            importance,
+            signal_kind: "state",
+            category,
+            created_watch: item.created_watch || null,
+          },
+        };
+      }
+
+      if ((category === "orders" || category === "standing-order") && isCurrentWatchKnown) {
+        const age = watchStampAge(currentDay, currentWatch, createdDay, createdWatch);
+        if (age !== null && age >= 5) {
+          return null;
+        }
+      }
+
+      const hasDeliveredStamp = Number.isFinite(deliveredDay) && Number.isFinite(deliveredWatch);
+      return {
+        kind: "event",
+        deliveryId: item.id || "",
+        row: {
+          id: item.id,
+          message: normalizeAlertMessage(rawMessage),
+          heading: hasDeliveredStamp
+            ? `${formatScenarioDateNoYear(deliveredDay)}, ${formatWatchLabelLower(deliveredWatch)}`
+            : "",
+          importance,
+          signal_kind: "event",
+          category,
+          created_watch: item.created_watch || null,
+          delivered_watch: item.delivered_watch || null,
+          is_read: !!item.is_read,
+        },
+      };
+    }
+
+    function mergeAlertEvents(existingRows, incomingRows, currentDay, currentWatch) {
+      const merged = new Map();
+      for (const row of [...existingRows, ...incomingRows]) {
+        if (!row?.id) continue;
+        const refreshed = alertFeedRow(row, currentDay, currentWatch);
+        if (refreshed?.kind === "event") {
+          merged.set(refreshed.row.id, refreshed.row);
+        }
+      }
+      return [...merged.values()].sort((left, right) => alertIdNumber(right.id) - alertIdNumber(left.id));
+    }
+
+    async function acknowledgeRenderedAlerts(alertIds) {
+      const renderedIds = [...new Set(alertIds.filter(Boolean))];
+      if (!renderedIds.length) return;
+      await api("/v1/me/alerts/ack-delivered", {
+        method: "POST",
+        body: JSON.stringify({ alert_ids: renderedIds }),
+      }, true);
+    }
+
+    async function fetchAlertsAfter(afterId) {
+      const rows = [];
+      let cursor = afterId;
+      while (cursor) {
+        const response = await api(
+          `/v1/me/alerts?limit=200&after_id=${encodeURIComponent(cursor)}`,
+          {},
+          true
+        );
+        rows.push(...(response.items || []));
+        const nextCursor = response.next_after_id || "";
+        if (!response.has_more || !nextCursor || nextCursor === cursor) break;
+        cursor = nextCursor;
+      }
+      return rows;
+    }
+
     async function refreshAlerts() {
       if (!state.token) {
         state.alerts = [];
+        state.alertsHasMore = false;
+        state.alertsBeforeId = "";
         renderAlerts();
         return;
       }
       const requestId = ++alertsRequestId;
       const sessionSnapshot = snapshotSession();
-      const response = await api("/v1/me/alerts?limit=50", {}, true);
-      const rows = Array.isArray(response) ? response : (response.items || []);
+      const existingSourceIds = state.alerts
+        .map((item) => item?.id || item?.source_alert_id)
+        .filter(Boolean);
+      const newestKnownId = existingSourceIds.sort(
+        (left, right) => alertIdNumber(right) - alertIdNumber(left)
+      )[0] || "";
+      const response = newestKnownId
+        ? null
+        : await api("/v1/me/alerts?limit=50", {}, true);
+      const rows = newestKnownId
+        ? await fetchAlertsAfter(newestKnownId)
+        : (Array.isArray(response) ? response : (response.items || []));
       if (!isCurrentSession(sessionSnapshot) || requestId !== alertsRequestId) {
         return;
       }
       const currentDay = Number(state.view?.time?.day);
       const currentWatch = Number(state.view?.time?.watch);
-      const isCurrentWatchKnown = Number.isFinite(currentDay) && Number.isFinite(currentWatch);
 
       const stateCurrent = [];
-      const events = [];
+      const incomingEvents = [];
+      const renderedIds = [];
       const unreadInboxCount = state.inbox.reduce((count, message) => (
         message && message.is_read === false ? count + 1 : count
       ), 0);
@@ -4017,51 +4134,19 @@
           signal_kind: "state",
         });
       }
+      for (const existing of state.alerts) {
+        if (!existing?.source_alert_id) continue;
+        const refreshed = alertFeedRow(existing, currentDay, currentWatch);
+        if (refreshed?.kind === "state") {
+          stateCurrent.push(refreshed.row);
+        }
+      }
       for (const item of rows) {
-        const rawMessage = String(item?.message || "").trim();
-        if (!rawMessage) {
-          continue;
-        }
-        const importance = String(item?.importance || "normal").toLowerCase();
-        const signalKind = String(item?.signal_kind || "event").toLowerCase();
-        const category = String(item?.category || "").toLowerCase();
-        const createdDay = Number(item?.created_watch?.day);
-        const createdWatch = Number(item?.created_watch?.watch);
-        const deliveredDay = Number(item?.delivered_watch?.day);
-        const deliveredWatch = Number(item?.delivered_watch?.watch);
-
-        if (signalKind === "state") {
-          if (!isCurrentWatchKnown || createdDay !== currentDay || createdWatch !== currentWatch) {
-            continue; // stale state alerts are hidden
-          }
-          stateCurrent.push({
-            message: normalizeAlertMessage(rawMessage),
-            heading: "",
-            importance,
-            signal_kind: "state",
-          });
-          continue;
-        }
-
-        if ((category === "orders" || category === "standing-order") && isCurrentWatchKnown) {
-          const age = watchStampAge(currentDay, currentWatch, createdDay, createdWatch);
-          if (age !== null && age >= 5) {
-            continue;
-          }
-        }
-
-        const hasDeliveredStamp = Number.isFinite(deliveredDay) && Number.isFinite(deliveredWatch);
-        const eventHeading = hasDeliveredStamp
-          ? `${formatScenarioDateNoYear(deliveredDay)}, ${formatWatchLabelLower(deliveredWatch)}`
-          : "";
-        events.push({
-          id: item.id,
-          message: normalizeAlertMessage(rawMessage),
-          heading: eventHeading,
-          importance,
-          signal_kind: "event",
-          is_read: !!item.is_read,
-        });
+        const feedItem = alertFeedRow(item, currentDay, currentWatch);
+        if (!feedItem) continue;
+        renderedIds.push(feedItem.deliveryId);
+        if (feedItem.kind === "state") stateCurrent.push(feedItem.row);
+        if (feedItem.kind === "event") incomingEvents.push(feedItem.row);
       }
 
       if (unreadInboxCount > 0) {
@@ -4072,46 +4157,41 @@
           signal_kind: "state",
         });
       }
+      const existingEvents = state.alerts.filter((item) => item?.id);
+      const events = mergeAlertEvents(existingEvents, incomingEvents, currentDay, currentWatch);
       state.alerts = [...stateCurrent, ...events];
-      state.alertsHasMore = !!response?.has_more;
+      if (response) {
+        state.alertsHasMore = !!response?.has_more;
+        state.alertsBeforeId = response?.next_before_id || "";
+      }
       els.olderAlertsBtn.hidden = !state.alertsHasMore;
       renderAlerts();
-      const deliveredIds = rows.map((item) => item?.id).filter(Boolean);
-      if (deliveredIds.length) {
-        await api("/v1/me/alerts/ack-delivered", {
-          method: "POST",
-          body: JSON.stringify({ alert_ids: deliveredIds }),
-        }, true);
-      }
+      await acknowledgeRenderedAlerts(renderedIds);
     }
 
     async function loadOlderAlerts() {
       const eventRows = state.alerts.filter((item) => item?.id);
-      const beforeId = eventRows.length ? eventRows[eventRows.length - 1].id : "";
+      const beforeId = state.alertsBeforeId || (eventRows.length ? eventRows[eventRows.length - 1].id : "");
       if (!beforeId) return;
       const response = await api(`/v1/me/alerts?limit=50&before_id=${encodeURIComponent(beforeId)}`, {}, true);
-      const known = new Set(eventRows.map((item) => item.id));
-      const appended = (response.items || []).filter((item) => !known.has(item.id)).map((item) => {
-        const stamp = item?.delivered_watch || {};
-        return {
-          id: item.id,
-          message: normalizeAlertMessage(item.message),
-          heading: `${formatScenarioDateNoYear(Number(stamp.day))}, ${formatWatchLabelLower(Number(stamp.watch))}`,
-          importance: String(item.importance || "normal"),
-          signal_kind: "event",
-          is_read: !!item.is_read,
-        };
-      });
-      state.alerts.push(...appended);
+      const currentDay = Number(state.view?.time?.day);
+      const currentWatch = Number(state.view?.time?.watch);
+      const appended = [];
+      const renderedIds = [];
+      for (const item of (response.items || [])) {
+        const feedItem = alertFeedRow(item, currentDay, currentWatch);
+        if (feedItem?.kind !== "event") continue;
+        appended.push(feedItem.row);
+        renderedIds.push(feedItem.deliveryId);
+      }
+      const stateRows = state.alerts.filter((item) => !item?.id);
+      const mergedEvents = mergeAlertEvents(eventRows, appended, currentDay, currentWatch);
+      state.alerts = [...stateRows, ...mergedEvents];
       state.alertsHasMore = !!response.has_more;
+      state.alertsBeforeId = response.next_before_id || "";
       els.olderAlertsBtn.hidden = !state.alertsHasMore;
       renderAlerts();
-      if (appended.length) {
-        await api("/v1/me/alerts/ack-delivered", {
-          method: "POST",
-          body: JSON.stringify({ alert_ids: appended.map((item) => item.id) }),
-        }, true);
-      }
+      await acknowledgeRenderedAlerts(renderedIds);
     }
 
     function projectCells(cells, width, height) {
@@ -4541,6 +4621,34 @@
       els.hoverCard.style.top = `${y}px`;
     }
 
+    function settlementDescription(settlementValue) {
+      const descriptions = {
+        0: "Uninhabitable",
+        1: "Empty",
+        2: "Sparse",
+        3: "Light",
+        4: "Heavy",
+        5: "Dense",
+      };
+      const settlement = Number(settlementValue);
+      return Object.prototype.hasOwnProperty.call(descriptions, settlement)
+        ? descriptions[settlement]
+        : "Unknown";
+    }
+
+    function forageDescription(forageValue) {
+      const descriptions = {
+        0: "Untouched",
+        1: "Harvested",
+        2: "Picked-Over",
+        3: "Exhausted",
+      };
+      const forageCount = Number(forageValue);
+      return Object.prototype.hasOwnProperty.call(descriptions, forageCount)
+        ? descriptions[forageCount]
+        : "Unknown";
+    }
+
     function showHoverCard(h3Index, clientX, clientY) {
       if (isDiegeticMapMode()) {
         return;
@@ -4549,9 +4657,9 @@
       const cell = state.view?.environs?.cells?.find((c) => c.h3 === h3Index);
       if (cell) {
         const terrain = cell.terrain_type || "unknown";
-        const settlementText = cell.settlement == null ? "0" : String(cell.settlement);
-        const forageCount = Number(cell.foraged_this_season);
-        const foragedText = Number.isFinite(forageCount) ? String(forageCount) : "0";
+        const settlementText = settlementDescription(cell.settlement);
+        const forageText = forageDescription(cell.foraged_this_season);
+        const canForage = Number(cell.settlement) > 0;
         const hasStronghold = !!(cell.stronghold && cell.stronghold.name);
         const otherArmies = Array.isArray(cell.other_armies) ? cell.other_armies : [];
         const primaryArmy = otherArmies.length ? otherArmies[0] : null;
@@ -4564,8 +4672,6 @@
         }
         if (hasStronghold && cell.stronghold && cell.stronghold.faction) {
           strongholdFactionText = String(cell.stronghold.faction);
-        } else if (!hasStronghold && cell.region_control) {
-          strongholdFactionText = String(cell.region_control);
         }
         if (cell.stronghold?.under_siege) {
           const matinTicksElapsed = Math.max(0, Number(cell?.stronghold?.siege?.matin_ticks_elapsed || 0));
@@ -4595,19 +4701,19 @@
             metaRows.push(`<div><span class=\"k\">Commanded By:</span>${escapeHtml(String(primaryArmy.commander))}</div>`);
           }
         }
-        metaRows.push(
-          `<div><span class=\"k\">Terrain:</span>${escapeHtml(terrain)}</div>`,
-          `<div><span class=\"k\">Stronghold Type:</span>${escapeHtml(strongholdTypeText)}</div>`,
-          `<div><span class=\"k\">Faction:</span>${escapeHtml(strongholdFactionText)}</div>`
-        );
+        metaRows.push(`<div><span class=\"k\">Terrain:</span>${escapeHtml(terrain)}</div>`);
+        if (hasStronghold) {
+          metaRows.push(`<div><span class=\"k\">Stronghold Type:</span>${escapeHtml(strongholdTypeText)}</div>`);
+          metaRows.push(`<div><span class=\"k\">Faction:</span>${escapeHtml(strongholdFactionText)}</div>`);
+        }
         if (siegeDaysText) {
           metaRows.push(`<div><span class=\"k\">Under Siege:</span>${escapeHtml(siegeDaysText)}</div>`);
           metaRows.push(`<div><span class=\"k\">Gates:</span>${escapeHtml(gatesText)}</div>`);
         }
-        metaRows.push(
-          `<div><span class=\"k\">Settlement:</span>${escapeHtml(settlementText)}</div>`,
-          `<div><span class=\"k\">Times Foraged This Season:</span>${escapeHtml(foragedText)}</div>`
-        );
+        if (canForage) {
+          metaRows.push(`<div><span class=\"k\">Settlement:</span>${escapeHtml(settlementText)}</div>`);
+          metaRows.push(`<div><span class=\"k\">Forage:</span>${escapeHtml(forageText)}</div>`);
+        }
         els.hoverMeta.innerHTML = metaRows.join("");
         updateStageMoveButtonVisibility(h3Index);
         updateHoveredMoveOutline(h3Index);
@@ -4929,6 +5035,8 @@
         state.openMessageId = null;
         closeLetterDetailModal({ restoreFocus: false });
         state.alerts = [];
+        state.alertsHasMore = false;
+        state.alertsBeforeId = "";
         renderAlerts();
         state.ordersPanelExpanded = false;
         await claimCommander(commanderId);
