@@ -14,6 +14,29 @@ class Watch(IntEnum):
 
 
 WATCHES_PER_DAY = 5
+WATCH_CHRONOLOGICAL_ORDER = {
+    Watch.MATIN: 0,
+    Watch.PRIME: 1,
+    Watch.NOON: 2,
+    Watch.VESPER: 3,
+    Watch.NIGHT: 4,
+}
+WATCH_BY_CHRONOLOGICAL_ORDER = {rank: watch for watch, rank in WATCH_CHRONOLOGICAL_ORDER.items()}
+
+
+def to_world_tick(day: int, watch: int | Watch) -> int:
+    if int(day) < 1:
+        raise ValueError("day must be >= 1")
+    normalized = _normalize_watch(watch)
+    return (int(day) - 1) * WATCHES_PER_DAY + WATCH_CHRONOLOGICAL_ORDER[normalized]
+
+
+def from_world_tick(world_tick: int) -> tuple[int, Watch]:
+    tick = int(world_tick)
+    if tick < 0:
+        raise ValueError("world_tick must be non-negative")
+    day, rank = divmod(tick, WATCHES_PER_DAY)
+    return day + 1, WATCH_BY_CHRONOLOGICAL_ORDER[rank]
 
 
 def _normalize_watch(value: int | Watch) -> Watch:

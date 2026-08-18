@@ -1,4 +1,6 @@
-# For Want of a Nail – Minimal REST API Design (v0.1)
+# For Want of a Nail – REST API Design (v0.2)
+
+> The authentication examples from v0.1 below are historical. The implemented v0.2 interface uses `/v1/auth/commanders`, password-protected `/v1/auth/claim`, hashed game-long sessions, and `/v1/auth/logout`; legacy name login is not exposed.
 
 ## Purpose
 

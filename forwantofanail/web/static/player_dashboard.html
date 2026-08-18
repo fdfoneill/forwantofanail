@@ -156,9 +156,14 @@
       border: 1px solid var(--line);
       border-radius: 10px;
       background: #fff;
+      cursor: pointer;
     }
     .assigned-commander:hover {
       border-color: var(--accent);
+    }
+    .assigned-commander:focus-visible {
+      outline: 3px solid rgba(20, 95, 102, 0.28);
+      outline-offset: 2px;
     }
     .assigned-commander[hidden] {
       display: none;
@@ -435,6 +440,90 @@
       min-height: 88px;
       white-space: pre-wrap;
     }
+    .letter-modal-overlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 22px;
+      background: rgba(27, 26, 24, 0.48);
+      z-index: 30;
+    }
+    .letter-modal-overlay.open { display: flex; }
+    .letter-modal {
+      width: min(620px, 100%);
+      max-height: calc(100vh - 44px);
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.24);
+      padding: 16px;
+    }
+    .letter-modal-header {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .letter-modal-title {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.15;
+    }
+    .letter-modal-close {
+      width: auto;
+      margin: 0;
+      padding: 8px 10px;
+      background: #f7f1e7;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .letter-compose-modal .message-box {
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+    }
+    .letter-compose-modal .message-box textarea {
+      min-height: 180px;
+    }
+    .letter-modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .letter-modal-footer button {
+      width: auto;
+      min-width: 130px;
+      margin: 0;
+    }
+    .letter-detail-meta {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 6px 12px;
+      margin: 0 0 16px;
+      font-size: 13px;
+    }
+    .letter-detail-meta dt {
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .letter-detail-meta dd { margin: 0; }
+    .letter-detail-content {
+      min-height: 150px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 14px;
+      line-height: 1.55;
+    }
     .map-panel {
       position: relative;
       min-height: 74vh;
@@ -584,6 +673,7 @@
       color: var(--ink);
       line-height: 1.35;
     }
+    .alerts-item.unread { border-left: 4px solid #d7891f; cursor: pointer; }
     .alerts-heading {
       margin: 0 0 4px;
       color: var(--muted);
@@ -685,6 +775,85 @@
       font-size: 12px;
       line-height: 1.5;
       color: var(--ink);
+    }
+    .commander-modal-overlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 22px;
+      background: rgba(27, 26, 24, 0.48);
+      z-index: 30;
+    }
+    .commander-modal-overlay.open { display: flex; }
+    .commander-modal {
+      width: min(560px, 100%);
+      max-height: calc(100vh - 44px);
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.24);
+      padding: 16px;
+    }
+    .commander-modal-header {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .commander-modal-heading {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      min-width: 0;
+    }
+    .commander-modal-portrait {
+      width: 72px;
+      height: 72px;
+      flex: 0 0 72px;
+      border-radius: 10px;
+      object-fit: cover;
+      background: #ece4d7;
+    }
+    .commander-modal-portrait[hidden] { display: none; }
+    .commander-modal-title {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.15;
+    }
+    .commander-modal-faction {
+      margin-top: 4px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .commander-modal-close {
+      width: auto;
+      margin: 0;
+      padding: 8px 10px;
+      background: #f7f1e7;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .commander-modal-overview {
+      white-space: pre-line;
+      font-size: 13px;
+      line-height: 1.55;
+      color: var(--ink);
+    }
+    .commander-modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 18px;
+      padding-top: 14px;
+      border-top: 1px solid var(--line);
+    }
+    .commander-modal-footer button {
+      width: auto;
+      min-width: 150px;
+      margin: 0;
     }
     .legend-row {
       display: flex;
@@ -946,7 +1115,7 @@
       <div id="claimPanel" class="claim-panel">
         <div id="claimGrid" class="claim-grid"></div>
       </div>
-      <div id="assignedCommander" class="assigned-commander" hidden>
+      <div id="assignedCommander" class="assigned-commander" role="button" tabindex="0" aria-haspopup="dialog" hidden>
         <img id="assignedCommanderPortrait" alt="" />
         <div>
           <div id="assignedCommanderName" class="assigned-commander-name">-</div>
@@ -1035,16 +1204,8 @@
 
       <div class="message-tools">
         <button id="composeToggleBtn" type="button">Send Letter</button>
-        <div class="message-box" id="composeBox" hidden>
-          <div class="label" style="margin-bottom:6px;">Recipient</div>
-          <select id="recipientSelect"></select>
-          <textarea id="letterInput" placeholder="Write your letter..."></textarea>
-          <button id="sendLetterBtn" type="button">Send</button>
-        </div>
-
-        <div class="label" style="margin-top:10px;">Received Letters</div>
+        <div class="label" style="margin-top:10px;">Letters</div>
         <ul id="inboxList" class="inbox-list"></ul>
-        <div id="messageRead" class="message-read">Select a letter to read.</div>
       </div>
     </section>
 
@@ -1071,6 +1232,7 @@
       <aside class="alerts-pane" id="alertPane">
         <div class="alerts-title">Reports</div>
         <ul class="alerts-list" id="alertList"></ul>
+        <button id="olderAlertsBtn" type="button" hidden>Older reports</button>
       </aside>
       <div class="hover-card" id="hoverCard">
         <div class="hover-title" id="hoverTitle">Cell Actions</div>
@@ -1085,6 +1247,62 @@
   <div id="commanderOverviewPopover" class="commander-overview-popover" role="tooltip">
     <div id="commanderOverviewTitle" class="commander-overview-title"></div>
     <div id="commanderOverviewText" class="commander-overview-text"></div>
+  </div>
+
+  <div id="commanderModalOverlay" class="commander-modal-overlay" aria-hidden="true">
+    <section class="commander-modal" role="dialog" aria-modal="true" aria-labelledby="commanderModalTitle">
+      <header class="commander-modal-header">
+        <div class="commander-modal-heading">
+          <img id="commanderModalPortrait" class="commander-modal-portrait" alt="" />
+          <div>
+            <h2 id="commanderModalTitle" class="commander-modal-title">Commander</h2>
+            <div id="commanderModalFaction" class="commander-modal-faction"></div>
+          </div>
+        </div>
+        <button id="commanderModalCloseBtn" class="commander-modal-close" type="button">Close</button>
+      </header>
+      <div id="commanderModalOverview" class="commander-modal-overview"></div>
+      <footer class="commander-modal-footer">
+        <button id="logoutBtn" type="button">Release</button>
+      </footer>
+    </section>
+  </div>
+
+  <div id="composeModalOverlay" class="letter-modal-overlay" aria-hidden="true">
+    <section class="letter-modal letter-compose-modal" role="dialog" aria-modal="true" aria-labelledby="composeModalTitle">
+      <header class="letter-modal-header">
+        <h2 id="composeModalTitle" class="letter-modal-title">Send Letter</h2>
+        <button id="composeModalCloseBtn" class="letter-modal-close" type="button">Close</button>
+      </header>
+      <div class="message-box" id="composeBox">
+        <div class="label" style="margin-bottom:6px;">Recipient</div>
+        <select id="recipientSelect"></select>
+        <textarea id="letterInput" maxlength="4000" placeholder="Write your letter..."></textarea>
+      </div>
+      <div id="composeModalError" class="status error" role="alert"></div>
+      <footer class="letter-modal-footer">
+        <button id="composeModalCancelBtn" class="secondary-btn" type="button">Cancel</button>
+        <button id="sendLetterBtn" type="button">Send</button>
+      </footer>
+    </section>
+  </div>
+
+  <div id="letterDetailModalOverlay" class="letter-modal-overlay" aria-hidden="true">
+    <section class="letter-modal" role="dialog" aria-modal="true" aria-labelledby="letterDetailModalTitle">
+      <header class="letter-modal-header">
+        <h2 id="letterDetailModalTitle" class="letter-modal-title">Letter</h2>
+        <button id="letterDetailModalCloseBtn" class="letter-modal-close" type="button">Close</button>
+      </header>
+      <dl class="letter-detail-meta">
+        <dt id="letterDetailCounterpartyLabel">From</dt>
+        <dd id="letterDetailCounterparty"></dd>
+        <dt>Sent</dt>
+        <dd id="letterDetailSent"></dd>
+        <dt id="letterDetailDeliveredLabel">Delivered</dt>
+        <dd id="letterDetailDelivered"></dd>
+      </dl>
+      <div id="letterDetailContent" class="letter-detail-content"></div>
+    </section>
   </div>
 
   <script src="https://cdn.jsdelivr.net/npm/h3-js@4.1.0/dist/h3-js.umd.js"></script>
@@ -1135,6 +1353,7 @@
       validAttackTargets: new Map(),
       validBesiegeTargets: new Map(),
       alerts: [],
+      alertsHasMore: false,
       followRoadEnabled: false,
       forcedMarchEnabled: false,
       armyPanelExpanded: false,
@@ -1158,6 +1377,7 @@
 
     let armyManagementSuggestionRequestId = 0;
     let alertsRequestId = 0;
+    let letterDetailTrigger = null;
 
     const TERRAIN_COLORS = {
       "open ground": "var(--open-ground)",
@@ -1236,6 +1456,13 @@
       assignedCommanderPortrait: document.getElementById("assignedCommanderPortrait"),
       assignedCommanderName: document.getElementById("assignedCommanderName"),
       assignedCommanderFaction: document.getElementById("assignedCommanderFaction"),
+      logoutBtn: document.getElementById("logoutBtn"),
+      commanderModalOverlay: document.getElementById("commanderModalOverlay"),
+      commanderModalPortrait: document.getElementById("commanderModalPortrait"),
+      commanderModalTitle: document.getElementById("commanderModalTitle"),
+      commanderModalFaction: document.getElementById("commanderModalFaction"),
+      commanderModalOverview: document.getElementById("commanderModalOverview"),
+      commanderModalCloseBtn: document.getElementById("commanderModalCloseBtn"),
       commanderOverviewPopover: document.getElementById("commanderOverviewPopover"),
       commanderOverviewTitle: document.getElementById("commanderOverviewTitle"),
       commanderOverviewText: document.getElementById("commanderOverviewText"),
@@ -1270,12 +1497,24 @@
       submitOrdersBtn: document.getElementById("submitOrdersBtn"),
       stagedPathList: document.getElementById("stagedPathList"),
       composeToggleBtn: document.getElementById("composeToggleBtn"),
+      composeModalOverlay: document.getElementById("composeModalOverlay"),
+      composeModalCloseBtn: document.getElementById("composeModalCloseBtn"),
+      composeModalCancelBtn: document.getElementById("composeModalCancelBtn"),
+      composeModalError: document.getElementById("composeModalError"),
       composeBox: document.getElementById("composeBox"),
       recipientSelect: document.getElementById("recipientSelect"),
       letterInput: document.getElementById("letterInput"),
       sendLetterBtn: document.getElementById("sendLetterBtn"),
       inboxList: document.getElementById("inboxList"),
-      messageRead: document.getElementById("messageRead"),
+      letterDetailModalOverlay: document.getElementById("letterDetailModalOverlay"),
+      letterDetailModalTitle: document.getElementById("letterDetailModalTitle"),
+      letterDetailModalCloseBtn: document.getElementById("letterDetailModalCloseBtn"),
+      letterDetailCounterpartyLabel: document.getElementById("letterDetailCounterpartyLabel"),
+      letterDetailCounterparty: document.getElementById("letterDetailCounterparty"),
+      letterDetailSent: document.getElementById("letterDetailSent"),
+      letterDetailDeliveredLabel: document.getElementById("letterDetailDeliveredLabel"),
+      letterDetailDelivered: document.getElementById("letterDetailDelivered"),
+      letterDetailContent: document.getElementById("letterDetailContent"),
       mapCanvas: document.getElementById("mapCanvas"),
       mapViewport: document.getElementById("mapViewport"),
       mapPanel: document.getElementById("mapPanel"),
@@ -1290,6 +1529,7 @@
       diegeticMapMessage: document.getElementById("diegeticMapMessage"),
       alertPane: document.getElementById("alertPane"),
       alertList: document.getElementById("alertList"),
+      olderAlertsBtn: document.getElementById("olderAlertsBtn"),
       hoverCard: document.getElementById("hoverCard"),
       hoverTitle: document.getElementById("hoverTitle"),
       queueMoveBtn: document.getElementById("queueMoveBtn"),
@@ -1387,15 +1627,35 @@
         const message = typeof item === "string" ? item : String(item?.message || "");
         const heading = typeof item === "string" ? "" : String(item?.heading || "");
         const importance = String(item?.importance || "").toLowerCase();
-        const cls = importance === "high"
+        const baseCls = importance === "high"
           ? "alerts-item high"
           : importance === "moderate"
             ? "alerts-item moderate"
             : "alerts-item";
-        const headingHtml = heading ? `<div class="alerts-heading">${heading}</div>` : "";
-        return `<li class="${cls}">${headingHtml}<div class="alerts-message">${message}</div></li>`;
+        const cls = `${baseCls}${item?.id && !item?.is_read ? " unread" : ""}`;
+        const headingHtml = heading ? `<div class="alerts-heading">${escapeHtml(heading)}</div>` : "";
+        const idAttribute = item?.id ? ` data-alert-id="${escapeHtml(item.id)}" tabindex="0"` : "";
+        return `<li class="${cls}"${idAttribute}>${headingHtml}<div class="alerts-message">${escapeHtml(message)}</div></li>`;
       });
       els.alertList.innerHTML = rows.join("");
+      els.alertList.querySelectorAll("[data-alert-id]").forEach((row) => {
+        const openAlert = async () => {
+          const alertId = row.dataset.alertId;
+          const item = state.alerts.find((candidate) => candidate?.id === alertId);
+          if (!item || item.is_read) return;
+          try {
+            await api(`/v1/me/alerts/${encodeURIComponent(alertId)}/read`, { method: "POST" }, true);
+            item.is_read = true;
+            row.classList.remove("unread");
+          } catch (err) {
+            setStatus(`Alert read failed: ${readableErrorMessage(err)}`, true);
+          }
+        };
+        row.addEventListener("click", openAlert);
+        row.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") openAlert();
+        });
+      });
     }
 
     function escapeHtml(value) {
@@ -1698,8 +1958,8 @@
         const unitType = String(det?.type || (det?.is_cavalry ? "cavalry" : "infantry"));
         rows.push(
           `<tr>` +
-            `<td class="army-col-name">${String(det?.name || "Detachment")}</td>` +
-            `<td class="army-col-type">${warriors} ${unitType}</td>` +
+            `<td class="army-col-name">${escapeHtml(String(det?.name || "Detachment"))}</td>` +
+            `<td class="army-col-type">${warriors} ${escapeHtml(unitType)}</td>` +
             `<td class="army-col-wagons">${wagonCount} wagons</td>` +
           `</tr>`
         );
@@ -2622,6 +2882,13 @@
       return String(step || "").trim();
     }
 
+    function stagedPathQueryValue() {
+      return state.stagedPath
+        .map(stagedStepH3)
+        .filter(Boolean)
+        .join(",");
+    }
+
     function stagedStepWatchesNeeded(step) {
       if (step && typeof step === "object") {
         return Math.max(1, Number(step.watchesNeeded || 1));
@@ -2684,8 +2951,8 @@
             const label = String(target.label || target.faction || "Enemy army").trim();
             return (
               `<li class="staged-item">` +
-              `<span>${label}</span>` +
-              `<button class="staged-remove" data-attack-target="${h3Label}" type="button">Stage</button>` +
+              `<span>${escapeHtml(label)}</span>` +
+              `<button class="staged-remove" data-attack-target="${escapeHtml(h3Label)}" type="button">Stage</button>` +
               `</li>`
             );
           });
@@ -2701,7 +2968,7 @@
         }
         const label = String(state.stagedAttack.label || state.stagedAttack.target_h3 || "Target");
         els.stagedPathList.innerHTML =
-          `<li class="staged-item"><span>Target: ${label}</span>` +
+          `<li class="staged-item"><span>Target: ${escapeHtml(label)}</span>` +
           `<button class="staged-remove" data-clear-attack=\"1\" type="button">Clear</button></li>`;
         const clearBtn = els.stagedPathList.querySelector("button[data-clear-attack]");
         if (clearBtn) {
@@ -2723,8 +2990,8 @@
           }
           const rows = targets.map((target) => (
             `<li class="staged-item">` +
-            `<span>${String(target.stronghold_name || "Stronghold")}</span>` +
-            `<button class="staged-remove" data-besiege-target="${String(target.target_h3 || "").trim()}" type="button">Stage</button>` +
+            `<span>${escapeHtml(String(target.stronghold_name || "Stronghold"))}</span>` +
+            `<button class="staged-remove" data-besiege-target="${escapeHtml(String(target.target_h3 || "").trim())}" type="button">Stage</button>` +
             `</li>`
           ));
           els.stagedPathList.innerHTML = rows.join("");
@@ -2739,7 +3006,7 @@
         }
         const label = String(state.stagedSiege.stronghold_name || state.stagedSiege.target_h3 || "Stronghold");
         els.stagedPathList.innerHTML =
-          `<li class="staged-item"><span>Target: ${label}</span>` +
+          `<li class="staged-item"><span>Target: ${escapeHtml(label)}</span>` +
           `<button class="staged-remove" data-clear-besiege="1" type="button">Clear</button></li>`;
         const clearBtn = els.stagedPathList.querySelector("button[data-clear-besiege]");
         if (clearBtn) {
@@ -2769,7 +3036,7 @@
             : `<span></span>`;
           return (
         `<li class="staged-item">` +
-        `<span>${watchLabel}: ${title}</span>` +
+        `<span>${escapeHtml(watchLabel)}: ${escapeHtml(title)}</span>` +
         `${removeControl}` +
         `</li>`
           );
@@ -2860,7 +3127,8 @@
         updateHoveredMoveOutline(state.hoverH3);
         return;
       }
-      const payload = await api(`/v1/me/actions/valid-next?origin_h3=${encodeURIComponent(origin)}`, {}, true);
+      const prefix = encodeURIComponent(stagedPathQueryValue());
+      const payload = await api(`/v1/me/actions/valid-next?staged_path=${prefix}`, {}, true);
       const valid = Array.isArray(payload.valid_destinations) ? payload.valid_destinations : [];
       state.validNextMoves = new Set(valid.map((value) => String(value)));
       const destinations = Array.isArray(payload.destinations) ? payload.destinations : [];
@@ -2896,7 +3164,8 @@
         updateHoveredMoveOutline(state.hoverH3);
         return;
       }
-      const payload = await api(`/v1/me/actions/valid-attack?origin_h3=${encodeURIComponent(origin)}`, {}, true);
+      const prefix = encodeURIComponent(stagedPathQueryValue());
+      const payload = await api(`/v1/me/actions/valid-attack?staged_path=${prefix}`, {}, true);
       const targets = Array.isArray(payload.targets) ? payload.targets : [];
       for (const row of targets) {
         const key = String(row?.target_h3 || "").trim();
@@ -2932,7 +3201,8 @@
         updateHoveredMoveOutline(state.hoverH3);
         return;
       }
-      const payload = await api(`/v1/me/actions/valid-besiege?origin_h3=${encodeURIComponent(origin)}`, {}, true);
+      const prefix = encodeURIComponent(stagedPathQueryValue());
+      const payload = await api(`/v1/me/actions/valid-besiege?staged_path=${prefix}`, {}, true);
       const targets = Array.isArray(payload.targets) ? payload.targets : [];
       for (const row of targets) {
         const key = String(row?.target_h3 || "").trim();
@@ -3180,41 +3450,52 @@
       });
     }
 
-    function cellBoundary(h3Index) {
-      if (window.h3.cellToBoundary) {
-        return parseBoundary(window.h3.cellToBoundary(h3Index));
+    function h3Api() {
+      if (!window.h3) {
+        throw new Error("H3 map library failed to load. Check the browser console or network connection and reload.");
       }
-      if (window.h3.h3ToGeoBoundary) {
-        return parseBoundary(window.h3.h3ToGeoBoundary(h3Index, true));
+      return window.h3;
+    }
+
+    function cellBoundary(h3Index) {
+      const h3 = h3Api();
+      if (typeof h3.cellToBoundary === "function") {
+        return parseBoundary(h3.cellToBoundary(h3Index));
+      }
+      if (typeof h3.h3ToGeoBoundary === "function") {
+        return parseBoundary(h3.h3ToGeoBoundary(h3Index, true));
       }
       throw new Error("h3 boundary function unavailable");
     }
 
     function cellCenter(h3Index) {
-      if (window.h3.cellToLatLng) {
-        const [lat, lng] = window.h3.cellToLatLng(h3Index);
+      const h3 = h3Api();
+      if (typeof h3.cellToLatLng === "function") {
+        const [lat, lng] = h3.cellToLatLng(h3Index);
         return { lat, lng };
       }
-      if (window.h3.h3ToGeo) {
-        const [lat, lng] = window.h3.h3ToGeo(h3Index);
+      if (typeof h3.h3ToGeo === "function") {
+        const [lat, lng] = h3.h3ToGeo(h3Index);
         return { lat, lng };
       }
       throw new Error("h3 center function unavailable");
     }
 
     function areNeighborCells(a, b) {
-      if (window.h3.areNeighborCells) {
-        return window.h3.areNeighborCells(a, b);
+      const h3 = h3Api();
+      if (typeof h3.areNeighborCells === "function") {
+        return h3.areNeighborCells(a, b);
       }
-      if (window.h3.h3IndexesAreNeighbors) {
-        return window.h3.h3IndexesAreNeighbors(a, b);
+      if (typeof h3.h3IndexesAreNeighbors === "function") {
+        return h3.h3IndexesAreNeighbors(a, b);
       }
       return false;
     }
 
     function neighborCells(h3Index) {
-      if (window.h3.gridDisk) {
-        const disk = window.h3.gridDisk(h3Index, 1);
+      const h3 = h3Api();
+      if (typeof h3.gridDisk === "function") {
+        const disk = h3.gridDisk(h3Index, 1);
         return disk.filter((value) => value !== h3Index);
       }
       return [];
@@ -3222,10 +3503,14 @@
 
     async function api(path, options = {}, useAuth = false) {
       const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-      if (useAuth && state.token) {
+      if (useAuth && state.token && state.token !== "cookie-session") {
         headers["Authorization"] = `Bearer ${state.token}`;
       }
-      const response = await fetch(path, { ...options, headers });
+      const method = String(options.method || "GET").toUpperCase();
+      if (!["GET", "HEAD", "OPTIONS"].includes(method) && !headers["Idempotency-Key"]) {
+        headers["Idempotency-Key"] = window.crypto.randomUUID();
+      }
+      const response = await fetch(path, { ...options, headers, credentials: "same-origin" });
       const contentType = response.headers.get("content-type") || "";
       const data = contentType.includes("application/json") ? await response.json() : await response.text();
       if (!response.ok) {
@@ -3249,6 +3534,9 @@
     }
 
     function resetPlayerSession({ clearStoredClaim = false } = {}) {
+      closeCommanderModal({ restoreFocus: false });
+      closeComposeModal({ restoreFocus: false });
+      closeLetterDetailModal({ restoreFocus: false });
       state.sessionVersion += 1;
       state.token = null;
       state.selectedCommanderId = "";
@@ -3259,6 +3547,7 @@
       state.selectedCommanderPortrait = "";
       state.view = null;
       state.alerts = [];
+      state.alertsHasMore = false;
       state.correspondents = [];
       state.inbox = [];
       state.openMessageId = null;
@@ -3303,10 +3592,7 @@
       renderAlerts();
       renderCorrespondents();
       renderInbox();
-      els.composeBox.setAttribute("hidden", "");
-      els.composeToggleBtn.textContent = "Send Letter";
       els.letterInput.value = "";
-      els.messageRead.textContent = "Select a letter to read.";
       renderArmyManagementModal();
     }
 
@@ -3314,7 +3600,6 @@
       window.localStorage.setItem(
         CLAIM_STORAGE_KEY,
         JSON.stringify({
-          token: payload.token,
           commander: payload.commander,
         })
       );
@@ -3386,11 +3671,100 @@
       els.commanderOverviewPopover.style.display = "none";
     }
 
+    function openCommanderModal() {
+      if (!state.token || !state.selectedCommanderId) {
+        return;
+      }
+      hideCommanderOverview();
+      const record = commanderOverviewRecord(state.selectedCommanderId);
+      els.commanderModalTitle.textContent = record.title;
+      els.commanderModalFaction.textContent = state.selectedCommanderFaction || "Faction unknown";
+      els.commanderModalOverview.textContent = record.text || "No overview has been written yet.";
+      if (state.selectedCommanderPortrait) {
+        els.commanderModalPortrait.src = state.selectedCommanderPortrait;
+        els.commanderModalPortrait.alt = record.title;
+        els.commanderModalPortrait.hidden = false;
+      } else {
+        els.commanderModalPortrait.removeAttribute("src");
+        els.commanderModalPortrait.alt = "";
+        els.commanderModalPortrait.hidden = true;
+      }
+      els.commanderModalOverlay.classList.add("open");
+      els.commanderModalOverlay.setAttribute("aria-hidden", "false");
+      els.commanderModalCloseBtn.focus();
+    }
+
+    function closeCommanderModal({ restoreFocus = true } = {}) {
+      const wasOpen = els.commanderModalOverlay.classList.contains("open");
+      els.commanderModalOverlay.classList.remove("open");
+      els.commanderModalOverlay.setAttribute("aria-hidden", "true");
+      if (wasOpen && restoreFocus && !els.assignedCommander.hidden) {
+        els.assignedCommander.focus();
+      }
+    }
+
+    function formatLetterWatch(stamp) {
+      if (!stamp) {
+        return "Unknown";
+      }
+      return `${formatScenarioDate(stamp.day)}, ${watchDisplayName(stamp.watch)}`;
+    }
+
+    function openComposeModal() {
+      if (!state.token) {
+        setStatus("Select a commander first.", true);
+        return;
+      }
+      closeLetterDetailModal({ restoreFocus: false });
+      els.composeModalError.textContent = "";
+      els.composeModalOverlay.classList.add("open");
+      els.composeModalOverlay.setAttribute("aria-hidden", "false");
+      els.recipientSelect.focus();
+    }
+
+    function closeComposeModal({ restoreFocus = true } = {}) {
+      const wasOpen = els.composeModalOverlay.classList.contains("open");
+      els.composeModalOverlay.classList.remove("open");
+      els.composeModalOverlay.setAttribute("aria-hidden", "true");
+      if (wasOpen && restoreFocus) {
+        els.composeToggleBtn.focus();
+      }
+    }
+
+    function openLetterDetailModal(message, trigger = null) {
+      const isSent = message?.direction === "sent";
+      letterDetailTrigger = trigger;
+      closeComposeModal({ restoreFocus: false });
+      els.letterDetailModalTitle.textContent = isSent ? "Sent Letter" : "Received Letter";
+      els.letterDetailCounterpartyLabel.textContent = isSent ? "To" : "From";
+      els.letterDetailCounterparty.textContent = isSent
+        ? String(message?.to?.name || "Unknown recipient")
+        : String(message?.from?.name || "Unknown sender");
+      els.letterDetailSent.textContent = formatLetterWatch(message?.sent_watch);
+      els.letterDetailDeliveredLabel.hidden = isSent;
+      els.letterDetailDelivered.hidden = isSent;
+      els.letterDetailDelivered.textContent = isSent ? "" : formatLetterWatch(message?.delivered_watch);
+      els.letterDetailContent.textContent = String(message?.content || "");
+      els.letterDetailModalOverlay.classList.add("open");
+      els.letterDetailModalOverlay.setAttribute("aria-hidden", "false");
+      els.letterDetailModalCloseBtn.focus();
+    }
+
+    function closeLetterDetailModal({ restoreFocus = true } = {}) {
+      const wasOpen = els.letterDetailModalOverlay.classList.contains("open");
+      els.letterDetailModalOverlay.classList.remove("open");
+      els.letterDetailModalOverlay.setAttribute("aria-hidden", "true");
+      if (wasOpen && restoreFocus && letterDetailTrigger?.isConnected) {
+        letterDetailTrigger.focus();
+      }
+      letterDetailTrigger = null;
+    }
+
     function applyClaim(payload, { persist = true } = {}) {
       const commander = payload.commander || {};
       const claimOption = state.claimOptions.find((option) => option.id === commander.id) || {};
       const hydratedCommander = { ...claimOption, ...commander };
-      state.token = payload.token;
+      state.token = payload.token || "cookie-session";
       state.selectedCommanderId = hydratedCommander.id || "";
       state.selectedCommander = hydratedCommander.name || "";
       state.selectedCommanderDisplay = hydratedCommander.display_name || hydratedCommander.name || "";
@@ -3407,7 +3781,7 @@
     function storedClaim() {
       try {
         const parsed = JSON.parse(window.localStorage.getItem(CLAIM_STORAGE_KEY) || "null");
-        if (parsed && parsed.token) {
+        if (parsed && parsed.commander) {
           return parsed;
         }
       } catch (_) {}
@@ -3415,7 +3789,7 @@
     }
 
     async function loadClaimOptions() {
-      state.claimOptions = await api("/v1/commanders/claims");
+      state.claimOptions = await api("/v1/auth/commanders");
       renderClaimPanel();
     }
 
@@ -3461,8 +3835,13 @@
     }
 
     async function claimCommander(commanderId) {
-      const payload = await api(`/v1/commanders/${encodeURIComponent(commanderId)}/claim`, {
+      const gamePassword = window.prompt("Enter the shared game password:");
+      if (!gamePassword) {
+        throw new Error("Game password is required.");
+      }
+      const payload = await api("/v1/auth/claim", {
         method: "POST",
+        body: JSON.stringify({ commander_id: commanderId, game_password: gamePassword, client_kind: "browser" }),
       });
       applyClaim(payload);
     }
@@ -3494,7 +3873,7 @@
         }
         grouped.get(factionName).push(correspondent);
       }
-      const renderOption = (c) => `<option value="${c.id}">${c.display_name || c.name}</option>`;
+      const renderOption = (c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.display_name || c.name)}</option>`;
       const factionNames = Array.from(grouped.keys()).sort((a, b) => {
         const aIsActive = activeFaction && a.toLowerCase() === activeFaction;
         const bIsActive = activeFaction && b.toLowerCase() === activeFaction;
@@ -3532,44 +3911,52 @@
       renderCorrespondents();
     }
 
+    function letterListLabel(message) {
+      const isSent = message?.direction === "sent";
+      const unreadMarker = !isSent && !message?.is_read ? "[UNREAD] " : "";
+      const directionLabel = isSent ? "TO: " : "FROM: ";
+      const counterparty = isSent
+        ? String(message?.to?.name || "Unknown recipient")
+        : String(message?.from?.name || "Unknown sender");
+      const sentDay = Number(message?.sent_watch?.day);
+      const dayText = Number.isFinite(sentDay) ? `, ${formatScenarioDate(sentDay)}` : "";
+      return `${unreadMarker}${directionLabel}${counterparty}${dayText}`;
+    }
+
     function renderInbox() {
       if (!state.inbox.length) {
-        els.inboxList.innerHTML = "<li class=\"inbox-item\"><div class=\"inbox-btn\">No received letters yet.</div></li>";
+        els.inboxList.innerHTML = "<li class=\"inbox-item\"><div class=\"inbox-btn\">No letters yet.</div></li>";
         return;
       }
       const rows = state.inbox.map((msg) => {
-        const unreadClass = msg.is_read ? "" : " unread";
-        const marker = msg.is_read ? "" : "[UNREAD] ";
-        const sentDay = Number(msg?.sent_watch?.day);
-        const dayText = Number.isFinite(sentDay) ? `, ${formatScenarioDate(sentDay)}` : "";
+        const unreadClass = msg.direction !== "sent" && !msg.is_read ? " unread" : "";
         return (
           `<li class="inbox-item">` +
-          `<button class="inbox-btn${unreadClass}" data-msg-id="${msg.id}" type="button">` +
-          `${marker}${msg.from.name}${dayText}` +
+          `<button class="inbox-btn${unreadClass}" data-msg-id="${escapeHtml(msg.id)}" type="button">` +
+          `${escapeHtml(letterListLabel(msg))}` +
           `</button>` +
           `</li>`
         );
       });
       els.inboxList.innerHTML = rows.join("");
-        els.inboxList.querySelectorAll(".inbox-btn[data-msg-id]").forEach((btn) => {
+      els.inboxList.querySelectorAll(".inbox-btn[data-msg-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const messageId = btn.dataset.msgId;
           try {
             const message = await api(`/v1/me/messages/${messageId}`, {}, true);
             state.openMessageId = message.id;
-            const sentWatchName = watchDisplayName(message?.sent_watch?.watch);
-            const deliveredWatchName = watchDisplayName(message?.delivered_watch?.watch);
-            const sentDateText = formatScenarioDate(message?.sent_watch?.day);
-            const deliveredDateText = formatScenarioDate(message?.delivered_watch?.day);
-            els.messageRead.textContent =
-              `From: ${message.from.name}\n` +
-              `Sent: ${sentDateText}, ${sentWatchName}\n` +
-              `Delivered: ${deliveredDateText}, ${deliveredWatchName}\n\n` +
-              `${message.content}`;
-            await refreshInbox();
-            await refreshAlerts();
+            openLetterDetailModal(message, btn);
+            if (message.direction !== "sent") {
+              const listMessage = state.inbox.find((candidate) => candidate.id === message.id);
+              if (listMessage) {
+                listMessage.is_read = true;
+                btn.classList.remove("unread");
+                btn.textContent = letterListLabel(listMessage);
+              }
+              await refreshAlerts();
+            }
           } catch (err) {
-            setStatus(`Read failed: ${err.message}`, true);
+            setStatus(`Read failed: ${readableErrorMessage(err)}`, true);
           }
         });
       });
@@ -3579,7 +3966,7 @@
       if (!state.token) {
         state.inbox = [];
         state.openMessageId = null;
-        els.messageRead.textContent = "Select a letter to read.";
+        closeLetterDetailModal({ restoreFocus: false });
         renderInbox();
         return;
       }
@@ -3600,7 +3987,8 @@
       }
       const requestId = ++alertsRequestId;
       const sessionSnapshot = snapshotSession();
-      const rows = await api("/v1/me/alerts?limit=25", {}, true);
+      const response = await api("/v1/me/alerts?limit=50", {}, true);
+      const rows = Array.isArray(response) ? response : (response.items || []);
       if (!isCurrentSession(sessionSnapshot) || requestId !== alertsRequestId) {
         return;
       }
@@ -3613,6 +4001,14 @@
       const unreadInboxCount = state.inbox.reduce((count, message) => (
         message && message.is_read === false ? count + 1 : count
       ), 0);
+      for (const signal of (state.view?.status_signals || [])) {
+        stateCurrent.push({
+          message: String(signal?.message || ""),
+          heading: "",
+          importance: String(signal?.importance || "normal"),
+          signal_kind: "state",
+        });
+      }
       for (const item of rows) {
         const rawMessage = String(item?.message || "").trim();
         if (!rawMessage) {
@@ -3651,10 +4047,12 @@
           ? `${formatScenarioDateNoYear(deliveredDay)}, ${formatWatchLabelLower(deliveredWatch)}`
           : "";
         events.push({
+          id: item.id,
           message: normalizeAlertMessage(rawMessage),
           heading: eventHeading,
           importance,
           signal_kind: "event",
+          is_read: !!item.is_read,
         });
       }
 
@@ -3666,17 +4064,46 @@
           signal_kind: "state",
         });
       }
-      if (state.forcedMarchEnabled) {
-        stateCurrent.unshift({
-          message: "Standing order: forced march.",
-          heading: "",
-          importance: "moderate",
-          signal_kind: "state",
-        });
-      }
-
       state.alerts = [...stateCurrent, ...events];
+      state.alertsHasMore = !!response?.has_more;
+      els.olderAlertsBtn.hidden = !state.alertsHasMore;
       renderAlerts();
+      const deliveredIds = rows.map((item) => item?.id).filter(Boolean);
+      if (deliveredIds.length) {
+        await api("/v1/me/alerts/ack-delivered", {
+          method: "POST",
+          body: JSON.stringify({ alert_ids: deliveredIds }),
+        }, true);
+      }
+    }
+
+    async function loadOlderAlerts() {
+      const eventRows = state.alerts.filter((item) => item?.id);
+      const beforeId = eventRows.length ? eventRows[eventRows.length - 1].id : "";
+      if (!beforeId) return;
+      const response = await api(`/v1/me/alerts?limit=50&before_id=${encodeURIComponent(beforeId)}`, {}, true);
+      const known = new Set(eventRows.map((item) => item.id));
+      const appended = (response.items || []).filter((item) => !known.has(item.id)).map((item) => {
+        const stamp = item?.delivered_watch || {};
+        return {
+          id: item.id,
+          message: normalizeAlertMessage(item.message),
+          heading: `${formatScenarioDateNoYear(Number(stamp.day))}, ${formatWatchLabelLower(Number(stamp.watch))}`,
+          importance: String(item.importance || "normal"),
+          signal_kind: "event",
+          is_read: !!item.is_read,
+        };
+      });
+      state.alerts.push(...appended);
+      state.alertsHasMore = !!response.has_more;
+      els.olderAlertsBtn.hidden = !state.alertsHasMore;
+      renderAlerts();
+      if (appended.length) {
+        await api("/v1/me/alerts/ack-delivered", {
+          method: "POST",
+          body: JSON.stringify({ alert_ids: appended.map((item) => item.id) }),
+        }, true);
+      }
     }
 
     function projectCells(cells, width, height) {
@@ -4368,8 +4795,7 @@
       if (!isCurrentSession(sessionSnapshot)) {
         return;
       }
-      const cellsParam = encodeURIComponent(view.environs.cells.map((cell) => cell.h3).join(","));
-      const borderRoads = await api(`/v1/me/roads/border?cells=${cellsParam}`, {}, true);
+      const borderRoads = await api("/v1/me/roads/border", {}, true);
       if (!isCurrentSession(sessionSnapshot)) {
         return;
       }
@@ -4387,7 +4813,7 @@
       try {
         await refreshOrderTargets();
       } catch (err) {
-        setStatus(`Attack target lookup failed: ${err.message}`, true);
+        setStatus(`Order destination lookup failed: ${err.message}`, true);
       }
       renderMap();
     }
@@ -4492,7 +4918,7 @@
         }
         button.disabled = true;
         state.openMessageId = null;
-        els.messageRead.textContent = "Select a letter to read.";
+        closeLetterDetailModal({ restoreFocus: false });
         state.alerts = [];
         renderAlerts();
         state.ordersPanelExpanded = false;
@@ -4551,22 +4977,54 @@
       }
       hideCommanderOverview();
     });
-    els.assignedCommander.addEventListener("mouseover", (event) => {
-      if (els.assignedCommander.contains(event.relatedTarget)) {
-        return;
-      }
-      showCommanderOverview(els.assignedCommander.dataset.overviewCommander || "", event.clientX, event.clientY);
+    els.assignedCommander.addEventListener("click", () => {
+      openCommanderModal();
     });
-    els.assignedCommander.addEventListener("mousemove", (event) => {
-      if (els.commanderOverviewPopover.style.display === "block") {
-        positionCommanderOverviewPopover(event.clientX, event.clientY);
+    els.assignedCommander.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        openCommanderModal();
       }
     });
-    els.assignedCommander.addEventListener("mouseout", (event) => {
-      if (els.assignedCommander.contains(event.relatedTarget)) {
+    els.commanderModalCloseBtn.addEventListener("click", () => {
+      closeCommanderModal();
+    });
+    els.commanderModalOverlay.addEventListener("click", (event) => {
+      if (event.target === els.commanderModalOverlay) {
+        closeCommanderModal();
+      }
+    });
+    els.logoutBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (!window.confirm("Release this commander so another player may claim them?")) return;
+      try {
+        await api("/v1/auth/logout", { method: "POST" }, true);
+        resetPlayerSession({ clearStoredClaim: true });
+        await loadClaimOptions();
+      } catch (err) {
+        setStatus(`Logout failed: ${readableErrorMessage(err)}`, true);
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") {
         return;
       }
-      hideCommanderOverview();
+      if (els.letterDetailModalOverlay.classList.contains("open")) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        closeLetterDetailModal();
+      } else if (els.composeModalOverlay.classList.contains("open")) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        closeComposeModal();
+      } else if (els.commanderModalOverlay.classList.contains("open")) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        closeCommanderModal();
+      }
+    });
+    els.olderAlertsBtn.addEventListener("click", () => {
+      loadOlderAlerts().catch((err) => setStatus(`Older alerts failed: ${readableErrorMessage(err)}`, true));
     });
 
     const resizeObserver = new ResizeObserver(() => {
@@ -4873,13 +5331,25 @@
         }
       });
       els.composeToggleBtn.addEventListener("click", () => {
-        const isHidden = els.composeBox.hasAttribute("hidden");
-        if (isHidden) {
-          els.composeBox.removeAttribute("hidden");
-          els.composeToggleBtn.textContent = "Hide Composer";
-        } else {
-          els.composeBox.setAttribute("hidden", "");
-          els.composeToggleBtn.textContent = "Send Letter";
+        openComposeModal();
+      });
+      els.composeModalCloseBtn.addEventListener("click", () => {
+        closeComposeModal();
+      });
+      els.composeModalCancelBtn.addEventListener("click", () => {
+        closeComposeModal();
+      });
+      els.composeModalOverlay.addEventListener("click", (event) => {
+        if (event.target === els.composeModalOverlay) {
+          closeComposeModal();
+        }
+      });
+      els.letterDetailModalCloseBtn.addEventListener("click", () => {
+        closeLetterDetailModal();
+      });
+      els.letterDetailModalOverlay.addEventListener("click", (event) => {
+        if (event.target === els.letterDetailModalOverlay) {
+          closeLetterDetailModal();
         }
       });
       els.sendLetterBtn.addEventListener("click", async () => {
@@ -4890,14 +5360,15 @@
         const recipientId = els.recipientSelect.value;
         const content = els.letterInput.value.trim();
         if (!recipientId) {
-          setStatus("Select a recipient.", true);
+          els.composeModalError.textContent = "Select a recipient.";
           return;
         }
         if (!content) {
-          setStatus("Write a message before sending.", true);
+          els.composeModalError.textContent = "Write a message before sending.";
           return;
         }
         try {
+          els.composeModalError.textContent = "";
           await api(
             "/v1/me/messages",
             {
@@ -4907,12 +5378,11 @@
             true
           );
           els.letterInput.value = "";
-          els.composeBox.setAttribute("hidden", "");
-          els.composeToggleBtn.textContent = "Send Letter";
+          closeComposeModal();
           await refreshAlerts();
           await refreshInbox();
         } catch (err) {
-          setStatus(`Send failed: ${err.message}`, true);
+          els.composeModalError.textContent = `Send failed: ${readableErrorMessage(err)}`;
         }
       });
       els.mapCanvas.addEventListener("mouseleave", () => {
@@ -4925,16 +5395,13 @@
       initializeDiegeticMap();
       try {
         await loadClaimOptions();
-        const claim = storedClaim();
-        if (claim) {
-          applyClaim(claim, { persist: false });
-          try {
-            await refreshAllPanels();
-          } catch (err) {
-            resetPlayerSession({ clearStoredClaim: true });
-            await loadClaimOptions();
-            setStatus("Stored commander token is no longer valid; choose a commander.", true);
-          }
+        try {
+          const activeSession = await api("/v1/auth/session", {}, true);
+          applyClaim(activeSession);
+          await refreshAllPanels();
+        } catch (_) {
+          resetPlayerSession({ clearStoredClaim: true });
+          await loadClaimOptions();
         }
         renderCorrespondents();
         renderInbox();

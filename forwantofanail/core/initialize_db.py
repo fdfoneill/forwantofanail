@@ -432,7 +432,7 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
             )
 
         if session.get(GameClock, 1) is None:
-            session.add(GameClock(singleton_id=1, day=1, watch=1))
+            session.add(GameClock(singleton_id=1, day=1, watch=1, world_tick=0))
 
         session.commit()
     except Exception:

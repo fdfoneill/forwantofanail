@@ -6,11 +6,14 @@ import json
 
 import pytest
 from fastapi import HTTPException
+from fastapi import Response
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from forwantofanail.api import routes
 from forwantofanail.api.schemas import (
     ActionCreateRequest,
+    ClaimRequest,
     ArmyManagementApplyRequest,
     ArmyManagementArmySideRequest,
     ArmyManagementRightTargetRequest,
@@ -23,11 +26,14 @@ from forwantofanail.core.initialize_db import _drop_all_tables_for_reset
 from forwantofanail.core.migrate_runtime_tables import migrate_runtime_tables
 from forwantofanail.core.models import (
     Action,
+    Alert,
+    AlertRecipient,
     Army,
     AuthToken,
     Commander,
     CommanderClaim,
     Detachment,
+    GameClock,
     Location,
     Message,
     Siege,
@@ -397,10 +403,11 @@ def test_admin_claim_reset_releases_commanders(sqlite_db, monkeypatch):
         session.close()
 
 
-def test_admin_army_summary_reports_commander_armies(sqlite_db):
+def test_admin_army_summary_reports_commander_armies(sqlite_db, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "summary-secret")
     session = create_session()
     try:
-        rows = routes.admin_armies_summary(session=session, x_admin_token=None)
+        rows = routes.admin_armies_summary(session=session, x_admin_token="summary-secret")
         by_army = {row["army_name"]: row for row in rows}
         assert by_army["Alpha Host"]["commander_name"] == "Lord Alpha"
         assert by_army["Alpha Host"]["faction"] == "Alpha"
@@ -425,3 +432,232 @@ def test_sqlite_reset_drop_handles_claim_foreign_keys(sqlite_db):
             ).all()
         }
     assert remaining_tables == set()
+
+
+def test_world_tick_orders_night_after_vesper():
+    from forwantofanail.mechanics.time import Watch, from_world_tick, to_world_tick
+
+    assert to_world_tick(7, Watch.VESPER) + 1 == to_world_tick(7, Watch.NIGHT)
+    assert from_world_tick(to_world_tick(7, Watch.NIGHT) + 1) == (8, Watch.MATIN)
+
+
+def test_night_message_is_not_visible_at_vesper(sqlite_db):
+    session = create_session()
+    try:
+        clock = session.get(GameClock, 1)
+        clock.day = 1
+        clock.watch = 4
+        clock.world_tick = 3
+        session.add(
+            Message(
+                sender_name="Courier",
+                recipient_id=1,
+                content="Night report",
+                priority="normal",
+                sent_day=1,
+                sent_watch=3,
+                sent_tick=2,
+                delivery_day=1,
+                delivery_watch=0,
+                delivery_tick=4,
+                status="received",
+                is_read=False,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+        assert routes.list_messages(commander_id=1, session=session) == []
+        clock.world_tick = 4
+        clock.watch = 0
+        session.commit()
+        assert len(routes.list_messages(commander_id=1, session=session)) == 1
+    finally:
+        session.close()
+
+
+def test_sent_letters_are_immediate_and_hide_delivery_information(sqlite_db):
+    session = create_session()
+    try:
+        session.add(
+            Message(
+                sender_commander_id=1,
+                sender_name="Lord Alpha",
+                recipient_id=2,
+                content="Advance at dawn.",
+                priority="normal",
+                sent_day=1,
+                sent_watch=1,
+                sent_tick=0,
+                delivery_day=4,
+                delivery_watch=3,
+                delivery_tick=17,
+                status="in_transit",
+                is_read=False,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+
+        sent_list = routes.list_messages(unread_only=False, commander_id=1, session=session)
+        assert len(sent_list) == 1
+        assert sent_list[0]["direction"] == "sent"
+        assert sent_list[0]["to"]["name"] == "Lady Beta"
+        assert "delivered_watch" not in sent_list[0]
+        assert "status" not in sent_list[0]
+        assert routes.list_messages(unread_only=True, commander_id=1, session=session) == []
+
+        sent_detail = routes.get_message(sent_list[0]["id"], commander_id=1, session=session)
+        assert sent_detail["direction"] == "sent"
+        assert sent_detail["content"] == "Advance at dawn."
+        assert "delivered_watch" not in sent_detail
+        assert "status" not in sent_detail
+
+        assert routes.list_messages(unread_only=False, commander_id=2, session=session) == []
+    finally:
+        session.close()
+
+
+def test_alert_delivery_and_read_receipt_are_per_commander(sqlite_db):
+    session = create_session()
+    try:
+        routes._create_alert(
+            session,
+            recipient_commander_id=None,
+            alert_type="world event",
+            message="Test news",
+            created_day=1,
+            created_watch=1,
+        )
+        session.commit()
+        page = routes.list_alerts(
+            limit=50, unread_only=False, after_id=None, before_id=None, commander_id=1, session=session
+        )
+        assert len(page["items"]) == 1
+        alert_id = page["items"][0]["id"]
+        routes.acknowledge_alert_delivery(
+            routes.AlertIdsRequest(alert_ids=[alert_id]), commander_id=1, session=session
+        )
+        routes.mark_alert_read(alert_id, commander_id=1, session=session)
+        first = session.get(AlertRecipient, (1, 1))
+        second = session.get(AlertRecipient, (1, 2))
+        assert first.delivered_at is not None and first.read_at is not None
+        assert second.delivered_at is None and second.read_at is None
+    finally:
+        session.close()
+
+
+def test_hardened_claim_hashes_api_token(sqlite_db, monkeypatch):
+    monkeypatch.setenv("GAME_PASSWORD", "shared-secret")
+    session = create_session()
+    try:
+        result = routes.claim_session(
+            ClaimRequest(commander_id="cmd_1", game_password="shared-secret", client_kind="api"),
+            Response(),
+            session=session,
+            idempotency_key="claim-1",
+        )
+        repeated = routes.claim_session(
+            ClaimRequest(commander_id="cmd_1", game_password="shared-secret", client_kind="api"),
+            Response(),
+            session=session,
+            idempotency_key="claim-1",
+        )
+        assert result["token"]
+        assert repeated["token"] == result["token"]
+        assert session.get(AuthToken, result["token"]) is None
+        assert routes._get_current_commander_id(
+            authorization=f"Bearer {result['token']}", session_cookie=None, session=session
+        ) == 1
+    finally:
+        session.close()
+
+
+def test_message_send_idempotency_prevents_duplicate(sqlite_db):
+    payload = MessageCreateRequest(recipient_id="cmd_2", content="One letter")
+    first = _call_with_session(
+        lambda session: routes.send_message(
+            payload, commander_id=1, session=session, idempotency_key="letter-1"
+        )
+    )
+    second = _call_with_session(
+        lambda session: routes.send_message(
+            payload, commander_id=1, session=session, idempotency_key="letter-1"
+        )
+    )
+    assert first == second
+    assert "estimated_delivery_watch" not in first
+    session = create_session()
+    try:
+        assert session.query(Message).count() == 1
+    finally:
+        session.close()
+
+
+def test_browser_claim_uses_httponly_cookie(sqlite_db, monkeypatch):
+    monkeypatch.setenv("GAME_PASSWORD", "shared-secret")
+    monkeypatch.setenv("SESSION_SECRET", "session-secret")
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/auth/claim",
+            headers={"Idempotency-Key": "browser-claim-1"},
+            json={"commander_id": "cmd_1", "game_password": "shared-secret", "client_kind": "browser"},
+        )
+        assert response.status_code == 200
+        assert "token" not in response.json()
+        assert "HttpOnly" in response.headers["set-cookie"]
+        assert client.get("/v1/auth/session").status_code == 200
+
+
+def test_player_dashboard_csp_allows_h3_script_host(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    assert "https://cdn.jsdelivr.net" in response.headers["content-security-policy"]
+    assert "https://cdn.jsdelivr.net/npm/h3-js@4.1.0/dist/h3-js.umd.js" in response.text
+
+
+def test_player_dashboard_serializes_staged_path_h3_values(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    assert ".map(stagedStepH3)" in response.text
+    assert "state.stagedPath.join" not in response.text
+    assert "Order destination lookup failed" in response.text
+
+
+def test_player_dashboard_release_is_only_in_commander_modal(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    assert response.text.count('id="logoutBtn"') == 1
+    assert 'id="commanderModalOverlay"' in response.text
+    assert 'id="commanderModalOverview"' in response.text
+    assert response.text.index('id="commanderModalOverlay"') < response.text.index('id="logoutBtn"')
+
+
+def test_player_dashboard_letters_use_modals_and_direction_labels(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    assert ">Letters</div>" in response.text
+    assert "Received Letters" not in response.text
+    assert 'id="composeModalOverlay"' in response.text
+    assert 'id="letterDetailModalOverlay"' in response.text
+    assert 'id="messageRead"' not in response.text
+    assert 'const directionLabel = isSent ? "TO: " : "FROM: ";' in response.text
+    assert 'isSent ? "Sent Letter" : "Received Letter"' in response.text
+    assert "els.letterDetailDeliveredLabel.hidden = isSent" in response.text

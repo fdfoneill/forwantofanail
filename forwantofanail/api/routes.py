@@ -3,6 +3,8 @@ from __future__ import annotations
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
 import hashlib
+import hmac
+import base64
 import math
 import os
 import json
@@ -13,16 +15,18 @@ import threading
 from typing import Any
 
 import h3
-from fastapi import APIRouter, Depends, Header, HTTPException, Query
+from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import FileResponse
-from sqlalchemy import and_, case, or_
+from sqlalchemy import and_, case, or_, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, joinedload
 
 from forwantofanail.api.schemas import (
     ActionCreateRequest,
+    AlertIdsRequest,
     ArmyManagementApplyRequest,
     ActionPlanRequest,
+    ClaimRequest,
     LoginRequest,
     MessageCreateRequest,
     StandingFollowRoadUpdateRequest,
@@ -32,12 +36,14 @@ from forwantofanail.core.database import create_session
 from forwantofanail.core.models import (
     Action,
     Alert,
+    AlertRecipient,
     Army,
     AuthToken,
     Commander,
     CommanderClaim,
     Detachment,
     GameClock,
+    IdempotencyRecord,
     Location,
     Message,
     Movement,
@@ -58,14 +64,15 @@ from forwantofanail.mechanics.supply import (
     noncombatant_count,
     supply_stats,
 )
-from forwantofanail.mechanics.time import Watch
+from forwantofanail.mechanics.time import Watch, from_world_tick, to_world_tick
 
 router = APIRouter(prefix="/v1")
 ARMY_MANAGEMENT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "data" / "army_management_templates.json"
 COMMANDER_OVERVIEWS_PATH = Path(__file__).resolve().parents[1] / "data" / "commander_overviews.json"
 FACTION_OVERVIEWS_PATH = Path(__file__).resolve().parents[1] / "data" / "faction_overviews.json"
 COMMANDER_PORTRAIT_DIR = Path(__file__).resolve().parents[1] / "data" / "assets"
-_WORLD_MUTATION_LOCK = threading.RLock()
+SESSION_COOKIE_NAME = "fwoan_session"
+_SQLITE_MUTATION_LOCK = threading.RLock()
 
 WATCH_LABELS = {
     Watch.NIGHT: "night",
@@ -198,9 +205,15 @@ def _commander_display_name(commander: Commander) -> str:
 
 
 def _message_sender_display_name(message: Message) -> str:
-    if message.sender_commander is not None:
-        return _commander_display_name(message.sender_commander)
+    # sender_name is an immutable snapshot; historical correspondence must not
+    # change when a commander is renamed later.
     return message.sender_name
+
+
+def _message_recipient_display_name(message: Message) -> str:
+    if message.recipient is None:
+        return "Unknown recipient"
+    return _commander_display_name(message.recipient)
 
 
 def _commander_portrait_filename(commander: Commander) -> str | None:
@@ -300,6 +313,14 @@ def _alert_ref(alert_id: int) -> str:
     return f"alt_{alert_id}"
 
 
+def _parse_alert_ref(value: str) -> int:
+    normalized = str(value or "").removeprefix("alt_")
+    try:
+        return int(normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="alert_id must be an integer or alt_<id>") from exc
+
+
 def _cell_army_display_name(army_info: dict[str, Any]) -> str:
     # Use the best available identifier from serialized /view intel.
     name = str(army_info.get("name") or "").strip()
@@ -367,7 +388,7 @@ def _is_database_busy_error(exc: BaseException) -> bool:
 
 
 def _run_world_mutation(session: Session, operation):
-    with _WORLD_MUTATION_LOCK:
+    def execute():
         try:
             result = operation()
             session.flush()
@@ -383,28 +404,103 @@ def _run_world_mutation(session: Session, operation):
             raise HTTPException(status_code=409, detail="Game state changed; refresh and try again.") from exc
         except OperationalError as exc:
             session.rollback()
-            if _is_database_busy_error(exc):
+            if _is_database_busy_error(exc) or "deadlock" in str(exc).lower() or "serialization" in str(exc).lower():
                 raise HTTPException(status_code=503, detail="Database is busy; retry the request.") from exc
             raise
         except Exception:
             session.rollback()
             raise
 
+    if session.bind is not None and session.bind.dialect.name == "sqlite":
+        with _SQLITE_MUTATION_LOCK:
+            return execute()
+    return execute()
 
-def _get_or_create_clock(session: Session, *, for_update: bool = False) -> GameClock:
-    clock = session.get(GameClock, 1)
+
+def _payload_dict(payload: Any) -> Any:
+    if hasattr(payload, "model_dump"):
+        return payload.model_dump(mode="json")
+    if hasattr(payload, "dict"):
+        return payload.dict()
+    return payload
+
+
+def _run_idempotent_mutation(
+    session: Session,
+    *,
+    actor_scope: str,
+    route: str,
+    idempotency_key: str | None,
+    payload: Any,
+    operation,
+):
+    if idempotency_key is not None and idempotency_key.__class__.__name__ == "Header":
+        idempotency_key = f"direct-{secrets.token_hex(16)}"
+    if not isinstance(idempotency_key, str) or not idempotency_key.strip():
+        raise HTTPException(status_code=400, detail="Idempotency-Key header is required")
+    key = idempotency_key.strip()
+    if len(key) > 128:
+        raise HTTPException(status_code=400, detail="Idempotency-Key is too long")
+    encoded = json.dumps(_payload_dict(payload), sort_keys=True, separators=(",", ":"), default=str)
+    request_hash = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def idempotent_operation():
+        if session.bind is not None and session.bind.dialect.name == "postgresql":
+            lock_name = f"{actor_scope}:{route}:{key}"
+            session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_name))"), {"lock_name": lock_name})
+        existing = (
+            session.query(IdempotencyRecord)
+            .filter(
+                IdempotencyRecord.actor_scope == actor_scope,
+                IdempotencyRecord.route == route,
+                IdempotencyRecord.idempotency_key == key,
+            )
+            .one_or_none()
+        )
+        if existing is not None:
+            if existing.request_hash != request_hash:
+                raise HTTPException(status_code=409, detail="Idempotency-Key was already used with a different request")
+            return json.loads(existing.response_json)
+        result = operation()
+        session.flush()
+        session.add(
+            IdempotencyRecord(
+                actor_scope=actor_scope,
+                route=route,
+                idempotency_key=key,
+                request_hash=request_hash,
+                response_json=json.dumps(result, sort_keys=True, default=str),
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        return result
+
+    return _run_world_mutation(session, idempotent_operation)
+
+
+def _get_or_create_clock(session: Session, *, for_update: bool | str = False) -> GameClock:
+    query = session.query(GameClock).filter(GameClock.singleton_id == 1)
+    if for_update and session.bind is not None and session.bind.dialect.name == "postgresql":
+        query = query.with_for_update(read=for_update != "exclusive")
+    clock = query.one_or_none()
     if clock is None:
-        clock = GameClock(singleton_id=1, day=1, watch=int(Watch.MATIN))
+        clock = GameClock(singleton_id=1, day=1, watch=int(Watch.MATIN), world_tick=0)
         if for_update:
             session.add(clock)
+    elif getattr(clock, "world_tick", None) is None or (
+        int(clock.world_tick or 0) == 0 and (int(clock.day) != 1 or int(clock.watch) != int(Watch.MATIN))
+    ):
+        clock.world_tick = to_world_tick(int(clock.day), int(clock.watch))
     return clock
 
 
 def _clock_payload(clock: GameClock) -> dict[str, int | str]:
-    watch_enum = Watch(int(clock.watch))
+    day, watch_enum = from_world_tick(int(clock.world_tick))
+    clock.day = day
+    clock.watch = int(watch_enum)
     return {
-        "day": clock.day,
-        "calendar_date": _scenario_date_for_day(clock.day).isoformat(),
+        "day": day,
+        "calendar_date": _scenario_date_for_day(day).isoformat(),
         "watch": int(clock.watch),
         "watch_label": WATCH_LABELS[watch_enum],
     }
@@ -415,10 +511,7 @@ def _to_watch_stamp(day: int, watch: int) -> dict[str, int]:
 
 
 def _is_delivered_filter(day: int, watch: int):
-    return or_(
-        Message.delivery_day < day,
-        and_(Message.delivery_day == day, Message.delivery_watch <= watch),
-    )
+    return Message.delivery_tick <= to_world_tick(day, watch)
 
 
 def _grid_distance(origin_h3: str, destination_h3: str) -> int:
@@ -459,7 +552,10 @@ def _create_message(
     sent_watch: int,
 ) -> Message:
     travel_watches = _message_travel_watches(origin_h3, destination_h3)
-    delivery_day, delivery_watch = _advance_day_watch(sent_day, sent_watch, travel_watches)
+    sent_tick = to_world_tick(sent_day, sent_watch)
+    delivery_tick = sent_tick + travel_watches
+    delivery_day, delivery_watch_enum = from_world_tick(delivery_tick)
+    delivery_watch = int(delivery_watch_enum)
     message = Message(
         sender_name=sender_name,
         sender_commander_id=sender_commander_id,
@@ -469,8 +565,10 @@ def _create_message(
         priority=priority,
         sent_day=sent_day,
         sent_watch=sent_watch,
+        sent_tick=sent_tick,
         delivery_day=delivery_day,
         delivery_watch=delivery_watch,
+        delivery_tick=delivery_tick,
         status="in_transit",
         is_read=False,
         created_at=datetime.now(timezone.utc),
@@ -493,6 +591,7 @@ def _create_alert(
     category: str = "general",
     importance: str = "normal",
     payload: dict[str, Any] | None = None,
+    event_key: str | None = None,
 ) -> Alert:
     normalized_type = alert_type.strip().lower()
     if normalized_type not in ALERT_TYPES:
@@ -503,6 +602,10 @@ def _create_alert(
     normalized_signal_kind = signal_kind.strip().lower()
     if normalized_signal_kind not in {"event", "state"}:
         normalized_signal_kind = "event"
+    created_tick = to_world_tick(created_day, created_watch)
+    available_day = delivered_day if delivered_day is not None else created_day
+    available_watch = delivered_watch if delivered_watch is not None else created_watch
+    available_tick = to_world_tick(available_day, available_watch)
     alert = Alert(
         recipient_commander_id=recipient_commander_id,
         alert_type=normalized_type,
@@ -513,16 +616,32 @@ def _create_alert(
         payload_json=json.dumps(payload or {}),
         created_day=created_day,
         created_watch=created_watch,
-        delivered_day=delivered_day if delivered_day is not None else created_day,
-        delivered_watch=delivered_watch if delivered_watch is not None else created_watch,
+        created_tick=created_tick,
+        delivered_day=available_day,
+        delivered_watch=available_watch,
+        available_tick=available_tick,
         is_read=False,
+        event_key=event_key,
         created_at=datetime.now(timezone.utc),
     )
     session.add(alert)
+    session.flush()
+    if recipient_commander_id is None:
+        recipient_ids = [row[0] for row in session.query(Commander.commander_id).all()]
+    else:
+        recipient_ids = [recipient_commander_id]
+    for commander_id in recipient_ids:
+        session.add(
+            AlertRecipient(
+                alert_id=alert.alert_id,
+                commander_id=int(commander_id),
+                available_tick=available_tick,
+            )
+        )
     return alert
 
 
-def _serialize_alert(alert: Alert) -> dict[str, Any]:
+def _serialize_alert(alert: Alert, receipt: AlertRecipient | None = None) -> dict[str, Any]:
     try:
         payload = json.loads(alert.payload_json or "{}")
     except json.JSONDecodeError:
@@ -536,7 +655,9 @@ def _serialize_alert(alert: Alert) -> dict[str, Any]:
         "message": alert.message,
         "created_watch": _to_watch_stamp(alert.created_day, alert.created_watch),
         "delivered_watch": _to_watch_stamp(alert.delivered_day, alert.delivered_watch),
-        "is_read": alert.is_read,
+        "is_read": bool(receipt.read_at) if receipt is not None else alert.is_read,
+        "delivered_at": receipt.delivered_at.isoformat() if receipt is not None and receipt.delivered_at else None,
+        "read_at": receipt.read_at.isoformat() if receipt is not None and receipt.read_at else None,
         "payload": payload,
     }
 
@@ -1489,14 +1610,8 @@ def _process_messages_tick(session: Session, clock: GameClock) -> dict[str, int]
 
 
 def _advance_day_watch(day: int, watch: int, steps: int = 1) -> tuple[int, int]:
-    current_day = day
-    current_watch = watch
-    for _ in range(steps):
-        next_watch = (current_watch + 1) % 5
-        if current_watch == int(Watch.NIGHT) and next_watch == int(Watch.MATIN):
-            current_day += 1
-        current_watch = next_watch
-    return current_day, current_watch
+    next_day, next_watch = from_world_tick(to_world_tick(day, watch) + int(steps))
+    return next_day, int(next_watch)
 
 
 def _advance_active_watches(day: int, watch: int, steps: int) -> tuple[int, int]:
@@ -4037,19 +4152,26 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
 
 def _get_current_commander_id(
     authorization: str = Header(default=""),
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
     session: Session = Depends(_get_session),
 ) -> int:
-    if not authorization:
+    raw_token = ""
+    if authorization:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() == "bearer":
+            raw_token = token.strip().strip("\"")
+    if not raw_token and isinstance(session_cookie, str) and session_cookie:
+        raw_token = session_cookie.strip()
+    if not raw_token:
         raise HTTPException(status_code=401, detail="Missing bearer token")
-    scheme, _, token = authorization.partition(" ")
-    if scheme.lower() != "bearer":
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-    token = token.strip().strip("\"")
-    if not token:
-        raise HTTPException(status_code=401, detail="Missing bearer token")
-    auth_token = session.get(AuthToken, token)
-    if auth_token is None:
+    auth_token = session.get(AuthToken, _token_hash(raw_token))
+    if auth_token is None or auth_token.revoked_at is not None:
         raise HTTPException(status_code=401, detail="Invalid token")
+    now = datetime.now(timezone.utc)
+    last_used = auth_token.last_used_at
+    if last_used is None or (now.replace(tzinfo=None) - last_used.replace(tzinfo=None)).total_seconds() >= 300:
+        auth_token.last_used_at = now
+        session.commit()
     return auth_token.commander_id
 
 
@@ -4058,6 +4180,17 @@ def _find_commander_army(session: Session, commander_id: int) -> Army:
     if army is None:
         raise HTTPException(status_code=404, detail="No army found for commander")
     return army
+
+
+def _lock_commander_scope(session: Session, commander_id: int) -> None:
+    if session.bind is None or session.bind.dialect.name != "postgresql":
+        return
+    session.query(Commander.commander_id).filter(Commander.commander_id == commander_id).with_for_update().one()
+    session.query(Army.army_id).filter(Army.commander_id == commander_id).order_by(Army.army_id).with_for_update().all()
+    session.query(Action.action_id).filter(
+        Action.commander_id == commander_id,
+        Action.state.in_(ACTIVE_ACTION_STATES),
+    ).order_by(Action.action_id).with_for_update().all()
 
 
 def _clamp_morale(value: int | None, default: int = 9) -> int:
@@ -4486,6 +4619,25 @@ def _serialize_message_summary(messages: list[Message]) -> dict[str, Any]:
     return {"unread_count": unread_count, "latest": latest}
 
 
+def _status_signals_for_army(session: Session, army: Army, current_action: Action | None, standing: StandingOrder | None) -> list[dict[str, str]]:
+    signals: list[dict[str, str]] = []
+    stats = supply_stats(army)
+    if int(army.army_supply or 0) <= 0 and int(stats.daily_consumption or 0) > 0:
+        signals.append({"category": "supply", "importance": "high", "message": "The army has no supply."})
+    if current_action is not None and current_action.kind == "rout" and current_action.state in ACTIVE_ACTION_STATES:
+        signals.append({"category": "rout", "importance": "high", "message": "The army is routing."})
+    if standing is not None and standing.forced_march_enabled:
+        signals.append({"category": "standing-order", "importance": "moderate", "message": "Standing order: forced march."})
+    enemies = session.query(Army).filter(
+        Army.army_id != army.army_id,
+        Army.army_faction != army.army_faction,
+    ).all()
+    nearby = [enemy for enemy in enemies if _grid_distance(army.location_id, enemy.location_id) <= _environs_radius_for_army(army)]
+    if nearby:
+        signals.append({"category": "enemy-proximity", "importance": "high", "message": "Enemy forces are nearby."})
+    return signals
+
+
 def _serialize_action(session: Session, action: Action, commander_id: int | None = None) -> dict[str, Any]:
     payload = {
         "action_id": _action_ref(action.action_id),
@@ -4651,22 +4803,23 @@ def _copy_world_event_alerts(
         .all()
     )
     for alert in source_alerts:
-        session.add(
-            Alert(
-                recipient_commander_id=target_commander_id,
-                alert_type=alert.alert_type,
-                signal_kind=alert.signal_kind,
-                category=alert.category,
-                importance=alert.importance,
-                message=alert.message,
-                payload_json=alert.payload_json,
-                created_day=alert.created_day,
-                created_watch=alert.created_watch,
-                delivered_day=alert.delivered_day,
-                delivered_watch=alert.delivered_watch,
-                is_read=alert.is_read,
-                created_at=datetime.now(timezone.utc),
-            )
+        try:
+            payload = json.loads(alert.payload_json or "{}")
+        except json.JSONDecodeError:
+            payload = {}
+        _create_alert(
+            session,
+            recipient_commander_id=target_commander_id,
+            alert_type=alert.alert_type,
+            signal_kind=alert.signal_kind,
+            category=alert.category,
+            importance=alert.importance,
+            message=alert.message,
+            payload=payload,
+            created_day=alert.created_day,
+            created_watch=alert.created_watch,
+            delivered_day=alert.delivered_day,
+            delivered_watch=alert.delivered_watch,
         )
 
 
@@ -5016,18 +5169,167 @@ def _claimable_commanders(session: Session) -> list[Commander]:
 
 
 def _validate_admin_token(x_admin_token: str | None) -> None:
-    configured_admin_token = os.getenv("DEV_ADMIN_TOKEN")
-    if configured_admin_token and x_admin_token != configured_admin_token:
+    configured_admin_token = os.getenv("ADMIN_TOKEN") or os.getenv("DEV_ADMIN_TOKEN")
+    if not configured_admin_token:
+        raise HTTPException(status_code=503, detail="Administrative access is not configured")
+    if not x_admin_token or not secrets.compare_digest(x_admin_token, configured_admin_token):
         raise HTTPException(status_code=401, detail="Invalid admin token")
 
 
-@router.post("/auth/login")
+def _token_hash(raw_token: str) -> str:
+    return hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+
+def _issue_session(session: Session, commander_id: int, client_kind: str, raw_token: str | None = None) -> tuple[str, AuthToken]:
+    raw_token = raw_token or secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+    auth_token = AuthToken(
+        token=_token_hash(raw_token),
+        commander_id=commander_id,
+        created_at=now,
+        last_used_at=now,
+        revoked_at=None,
+        client_kind=client_kind,
+    )
+    session.add(auth_token)
+    return raw_token, auth_token
+
+
+def _validate_game_password(candidate: str) -> None:
+    configured = os.getenv("GAME_PASSWORD")
+    if not configured:
+        raise HTTPException(status_code=503, detail="Player claiming is not configured")
+    if not secrets.compare_digest(candidate, configured):
+        raise HTTPException(status_code=401, detail="Invalid game password")
+
+
+def _claim_token(commander_id: int, client_kind: str, idempotency_key: str) -> str:
+    secret = os.getenv("SESSION_SECRET") or os.getenv("ADMIN_TOKEN") or os.getenv("GAME_PASSWORD")
+    if not secret:
+        raise HTTPException(status_code=503, detail="Session signing is not configured")
+    digest = hmac.new(
+        secret.encode("utf-8"),
+        f"claim:{commander_id}:{client_kind}:{idempotency_key}".encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+@router.get("/auth/commanders")
+def auth_commanders(session: Session = Depends(_get_session)):
+    return list_commander_claims(session=session)
+
+
+@router.post("/auth/claim")
+def claim_session(
+    payload: ClaimRequest,
+    response: Response,
+    session: Session = Depends(_get_session),
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
+):
+    _validate_game_password(payload.game_password)
+    if not idempotency_key:
+        raise HTTPException(status_code=400, detail="Idempotency-Key header is required")
+
+    def operation():
+        commander_pk = _parse_commander_ref(payload.commander_id)
+        commander = session.get(Commander, commander_pk)
+        if commander is None:
+            raise HTTPException(status_code=404, detail="Commander not found")
+        claimable_ids = {row.commander_id for row in _claimable_commanders(session)}
+        if commander_pk not in claimable_ids:
+            raise HTTPException(status_code=400, detail="Commander is not available for player claiming")
+        request_data = {"commander_id": payload.commander_id, "client_kind": payload.client_kind, "game_password": payload.game_password}
+        request_hash = hashlib.sha256(json.dumps(request_data, sort_keys=True).encode("utf-8")).hexdigest()
+        if session.bind is not None and session.bind.dialect.name == "postgresql":
+            session.execute(text("SELECT pg_advisory_xact_lock(hashtext(:lock_name))"), {"lock_name": f"claim:{commander_pk}:{idempotency_key}"})
+        existing_record = session.query(IdempotencyRecord).filter(
+            IdempotencyRecord.actor_scope == f"claim:{commander_pk}",
+            IdempotencyRecord.route == "claim",
+            IdempotencyRecord.idempotency_key == idempotency_key,
+        ).one_or_none()
+        raw_token = _claim_token(commander_pk, payload.client_kind, idempotency_key)
+        if existing_record is not None:
+            if existing_record.request_hash != request_hash:
+                raise HTTPException(status_code=409, detail="Idempotency-Key was already used with a different request")
+            claim = session.get(CommanderClaim, commander_pk)
+            auth_token = session.get(AuthToken, _token_hash(raw_token))
+            if claim is None or auth_token is None or auth_token.revoked_at is not None:
+                raise HTTPException(status_code=409, detail="The original claim is no longer active")
+            result = {"commander": _serialize_claim_commander(session, commander, claim), "client_kind": payload.client_kind}
+            if payload.client_kind == "api":
+                result["token"] = raw_token
+            else:
+                response.set_cookie(SESSION_COOKIE_NAME, raw_token, max_age=60 * 60 * 24 * 365, httponly=True,
+                                    secure=os.getenv("APP_ENV", "development").lower() == "production", samesite="strict", path="/")
+            return result
+        if session.get(CommanderClaim, commander_pk) is not None:
+            raise HTTPException(status_code=409, detail="Commander has already been claimed")
+        raw_token, auth_token = _issue_session(session, commander_pk, payload.client_kind, raw_token=raw_token)
+        claim = CommanderClaim(
+            commander_id=commander_pk,
+            token=auth_token.token,
+            claimed_at=datetime.now(timezone.utc),
+        )
+        session.add(claim)
+        session.add(IdempotencyRecord(
+            actor_scope=f"claim:{commander_pk}", route="claim", idempotency_key=idempotency_key,
+            request_hash=request_hash, response_json="{}", created_at=datetime.now(timezone.utc)
+        ))
+        result = {"commander": _serialize_claim_commander(session, commander, claim), "client_kind": payload.client_kind}
+        if payload.client_kind == "api":
+            result["token"] = raw_token
+        else:
+            response.set_cookie(
+                SESSION_COOKIE_NAME,
+                raw_token,
+                max_age=60 * 60 * 24 * 365,
+                httponly=True,
+                secure=os.getenv("APP_ENV", "development").lower() == "production",
+                samesite="strict",
+                path="/",
+            )
+        return result
+
+    return _run_world_mutation(session, operation)
+
+
+@router.get("/auth/session")
+def current_session(
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    commander = session.get(Commander, commander_id)
+    if commander is None:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    return {"commander": _serialize_claim_commander(session, commander, session.get(CommanderClaim, commander_id))}
+
+
+@router.post("/auth/logout")
+def logout_session(
+    response: Response,
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    def operation():
+        claim = session.get(CommanderClaim, commander_id)
+        if claim is not None:
+            auth_token = session.get(AuthToken, claim.token)
+            if auth_token is not None:
+                auth_token.revoked_at = datetime.now(timezone.utc)
+            session.delete(claim)
+        response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+        return {"released": True}
+
+    return _run_world_mutation(session, operation)
+
+
 def login(
     payload: LoginRequest,
     session: Session = Depends(_get_session),
     x_admin_token: str | None = Header(default=None),
 ):
-    configured_admin_token = os.getenv("DEV_ADMIN_TOKEN")
+    configured_admin_token = os.getenv("ADMIN_TOKEN") or os.getenv("DEV_ADMIN_TOKEN")
     is_admin_login = bool(configured_admin_token and x_admin_token == configured_admin_token)
 
     def operation():
@@ -5039,22 +5341,15 @@ def login(
         if commander is None:
             raise HTTPException(status_code=404, detail="Commander not found")
 
-        token = secrets.token_urlsafe(24)
+        token, auth_token = _issue_session(session, commander.commander_id, "api")
         now = datetime.now(timezone.utc)
-        session.add(
-            AuthToken(
-                token=token,
-                commander_id=commander.commander_id,
-                created_at=now,
-            )
-        )
         if not is_admin_login:
             claimable_ids = {row.commander_id for row in _claimable_commanders(session)}
             if commander.commander_id not in claimable_ids:
                 raise HTTPException(status_code=400, detail="Commander is not available for player claiming")
             if session.get(CommanderClaim, commander.commander_id) is not None:
                 raise HTTPException(status_code=409, detail="Commander has already been claimed")
-            session.add(CommanderClaim(commander_id=commander.commander_id, token=token, claimed_at=now))
+            session.add(CommanderClaim(commander_id=commander.commander_id, token=auth_token.token, claimed_at=now))
         return {
             "token": token,
             "commander": {
@@ -5074,7 +5369,6 @@ def commander_portrait(filename: str):
     return FileResponse(COMMANDER_PORTRAIT_DIR / filename)
 
 
-@router.get("/commanders")
 def list_commanders(session: Session = Depends(_get_session)):
     commanders = session.query(Commander).order_by(Commander.commander_name.asc()).all()
     return [
@@ -5088,7 +5382,6 @@ def list_commanders(session: Session = Depends(_get_session)):
     ]
 
 
-@router.get("/commanders/claims")
 def list_commander_claims(session: Session = Depends(_get_session)):
     claims = {claim.commander_id: claim for claim in session.query(CommanderClaim).all()}
     return [
@@ -5097,7 +5390,6 @@ def list_commander_claims(session: Session = Depends(_get_session)):
     ]
 
 
-@router.post("/commanders/{commander_id}/claim")
 def claim_commander(commander_id: str, session: Session = Depends(_get_session)):
     def operation():
         commander_pk = _parse_commander_ref(commander_id)
@@ -5110,10 +5402,9 @@ def claim_commander(commander_id: str, session: Session = Depends(_get_session))
         if session.get(CommanderClaim, commander.commander_id) is not None:
             raise HTTPException(status_code=409, detail="Commander has already been claimed")
 
-        token = secrets.token_urlsafe(24)
+        token, auth_token = _issue_session(session, commander.commander_id, "api")
         now = datetime.now(timezone.utc)
-        session.add(AuthToken(token=token, commander_id=commander.commander_id, created_at=now))
-        claim = CommanderClaim(commander_id=commander.commander_id, token=token, claimed_at=now)
+        claim = CommanderClaim(commander_id=commander.commander_id, token=auth_token.token, claimed_at=now)
         session.add(claim)
         return {
             "token": token,
@@ -5139,6 +5430,28 @@ def reset_commander_claims(
             session.flush()
             session.query(AuthToken).filter(AuthToken.token.in_(tokens)).delete(synchronize_session=False)
         return {"reset_claims": len(claims)}
+
+    return _run_world_mutation(session, operation)
+
+
+@router.post("/admin/claims/{commander_id}/release")
+def release_commander_claim(
+    commander_id: str,
+    session: Session = Depends(_get_session),
+    x_admin_token: str | None = Header(default=None),
+):
+    _validate_admin_token(x_admin_token)
+
+    def operation():
+        commander_pk = _parse_commander_ref(commander_id)
+        claim = session.get(CommanderClaim, commander_pk)
+        if claim is None:
+            raise HTTPException(status_code=404, detail="Commander claim not found")
+        auth_token = session.get(AuthToken, claim.token)
+        if auth_token is not None:
+            auth_token.revoked_at = datetime.now(timezone.utc)
+        session.delete(claim)
+        return {"released_commander_id": _commander_ref(commander_pk)}
 
     return _run_world_mutation(session, operation)
 
@@ -5191,6 +5504,7 @@ def advance_time_for_development(
     payload: TimeAdvanceRequest,
     session: Session = Depends(_get_session),
     x_admin_token: str | None = Header(default=None),
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
 ):
     if payload.steps < 1:
         raise HTTPException(status_code=400, detail="steps must be >= 1")
@@ -5198,7 +5512,9 @@ def advance_time_for_development(
     _validate_admin_token(x_admin_token)
 
     def operation():
-        clock = _get_or_create_clock(session, for_update=True)
+        clock = _get_or_create_clock(session, for_update="exclusive")
+        if session.bind is not None and session.bind.dialect.name == "postgresql":
+            session.execute(text("SELECT pg_advisory_xact_lock(1180298062)"))
         start = _clock_payload(clock)
         timeline = []
         actions_started = 0
@@ -5207,7 +5523,9 @@ def advance_time_for_development(
 
         for _ in range(payload.steps):
             siege_state_at_watch_start = _stronghold_ids_sieged_at_watch_start(session, clock.day, clock.watch)
-            clock.day, clock.watch = _advance_day_watch(clock.day, clock.watch, 1)
+            clock.world_tick += 1
+            clock.day, watch_enum = from_world_tick(clock.world_tick)
+            clock.watch = int(watch_enum)
             _auto_disable_forced_march_at_night(session, clock)
             message_result = _process_messages_tick(session, clock)
             tick_result = {"started": 0, "completed": 0, "failed": 0}
@@ -5228,9 +5546,8 @@ def advance_time_for_development(
                 # Night supply checks run after action resolution so completed forage can replenish first.
                 supply_result = consume_supply_for_all_armies(session)
                 _emit_supply_alerts_after_consumption(session, clock)
-            _emit_no_supply_state_alerts(session, clock)
-            _emit_enemy_proximity_alerts(session, clock)
-            _emit_rout_state_alerts(session, clock)
+            # Transient conditions are derived in /me/view.status_signals rather
+            # than appended to the durable event stream every watch.
             timeline.append(
                 {
                     "time": _clock_payload(clock),
@@ -5257,7 +5574,14 @@ def advance_time_for_development(
             },
         }
 
-    return _run_world_mutation(session, operation)
+    return _run_idempotent_mutation(
+        session,
+        actor_scope="admin",
+        route="advance-time",
+        idempotency_key=idempotency_key,
+        payload=payload,
+        operation=operation,
+    )
 
 
 @router.get("/me/view")
@@ -5302,6 +5626,7 @@ def get_my_view(
         "current_action": _serialize_action(session, current_action, commander_id) if current_action else None,
         "itinerary": _serialize_remaining_itinerary(session, commander_id),
         "standing_orders": _serialize_standing_orders(standing_order),
+        "status_signals": _status_signals_for_army(session, army, current_action, standing_order),
     }
 
 
@@ -5362,8 +5687,10 @@ def apply_army_management(
     payload: ArmyManagementApplyRequest,
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
 ):
     def operation():
+        _lock_commander_scope(session, commander_id)
         clock = _get_or_create_clock(session, for_update=True)
         return _validate_and_apply_management_transaction(
             session,
@@ -5372,20 +5699,23 @@ def apply_army_management(
             payload=payload,
         )
 
-    return _run_world_mutation(session, operation)
+    return _run_idempotent_mutation(
+        session,
+        actor_scope=f"commander:{commander_id}",
+        route="army-management",
+        idempotency_key=idempotency_key,
+        payload=payload,
+        operation=operation,
+    )
 
 
 @router.get("/me/roads/border")
 def get_border_road_neighbors(
-    cells: str = Query(..., description="Comma-separated H3 cells currently visible"),
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
-    _ = commander_id  # endpoint is still commander-scoped via auth
-    requested = [value.strip() for value in cells.split(",") if value.strip()]
-    visible_set = set(requested)
-    if not visible_set:
-        return {"roads": []}
+    army = _find_commander_army(session, commander_id)
+    visible_set = set(h3.grid_disk(army.location_id, _environs_radius_for_army(army)))
 
     h3_module = h3
     neighbor_candidates: set[str] = set()
@@ -5407,14 +5737,34 @@ def get_border_road_neighbors(
     return {"roads": [row[0] for row in road_neighbors]}
 
 
+def _validated_staged_origin(session: Session, army: Army, staged_path: str | None) -> tuple[str, list[str]]:
+    path = [value.strip() for value in str(staged_path or "").split(",") if value.strip()]
+    if len(path) > 25:
+        raise HTTPException(status_code=400, detail="Staged path is too long")
+    origin = army.location_id
+    for destination in path:
+        valid = list_valid_destinations_from_origin(session, army.army_id, origin)
+        if destination not in valid or _is_enemy_occupied(session, destination_h3=destination, moving_army=army):
+            raise HTTPException(status_code=400, detail="Staged path is not reachable from the army's current location")
+        origin = destination
+    clock = _get_or_create_clock(session)
+    total_cost = _path_watches_for_army(session, army, army.location_id, path)
+    budget = _remaining_march_watch_budget_for_watch(
+        int(clock.watch), army, _forced_march_enabled_for_army(session, army)
+    )
+    if total_cost > budget:
+        raise HTTPException(status_code=400, detail="Staged path exceeds the army's remaining watch budget")
+    return origin, path
+
+
 @router.get("/me/actions/valid-next")
 def get_valid_next_destinations(
-    origin_h3: str | None = Query(default=None, description="Origin H3 to validate next movement from"),
+    staged_path: str | None = Query(default=None, description="Comma-separated staged path from the current army location"),
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
     army = _find_commander_army(session, commander_id)
-    origin = (origin_h3 or army.location_id or "").strip()
+    origin, path = _validated_staged_origin(session, army, staged_path)
     if not origin:
         raise HTTPException(status_code=400, detail="No origin location available")
 
@@ -5432,7 +5782,15 @@ def get_valid_next_destinations(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    filtered = [h3_index for h3_index in valid if not _is_enemy_occupied(session, destination_h3=h3_index, moving_army=army)]
+    clock = _get_or_create_clock(session)
+    budget = _remaining_march_watch_budget_for_watch(
+        int(clock.watch), army, _forced_march_enabled_for_army(session, army)
+    )
+    filtered = [
+        h3_index for h3_index in valid
+        if not _is_enemy_occupied(session, destination_h3=h3_index, moving_army=army)
+        and _path_watches_for_army(session, army, army.location_id, path + [h3_index]) <= budget
+    ]
     destinations: list[dict[str, Any]] = []
     for destination_h3 in sorted(filtered):
         watches_needed = calculate_move_watches_from_origin(session, army.army_id, origin, destination_h3)
@@ -5447,7 +5805,7 @@ def get_valid_next_destinations(
 
 @router.get("/me/actions/valid-attack")
 def get_valid_attack_targets(
-    origin_h3: str | None = Query(default=None, description="Origin H3 to validate attacks from"),
+    staged_path: str | None = Query(default=None, description="Comma-separated staged path from the current army location"),
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
@@ -5486,7 +5844,7 @@ def get_valid_attack_targets(
                     }
                 )
             return {"origin_h3": army.location_id, "targets": targets}
-    origin = (origin_h3 or army.location_id or "").strip()
+    origin, _ = _validated_staged_origin(session, army, staged_path)
     if not origin:
         raise HTTPException(status_code=400, detail="No origin location available")
     if session.get(Location, origin) is None:
@@ -5530,14 +5888,14 @@ def get_valid_attack_targets(
 
 @router.get("/me/actions/valid-besiege")
 def get_valid_besiege_targets(
-    origin_h3: str | None = Query(default=None, description="Origin H3 to validate sieges from"),
+    staged_path: str | None = Query(default=None, description="Comma-separated staged path from the current army location"),
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
     army = _find_commander_army(session, commander_id)
     if _army_is_in_stronghold(session, army):
         return {"origin_h3": army.location_id, "targets": []}
-    origin = (origin_h3 or army.location_id or "").strip()
+    origin, _ = _validated_staged_origin(session, army, staged_path)
     if not origin:
         raise HTTPException(status_code=400, detail="No origin location available")
     if session.get(Location, origin) is None:
@@ -5579,8 +5937,10 @@ def create_action(
     payload: ActionCreateRequest,
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
 ):
     def operation():
+        _lock_commander_scope(session, commander_id)
         army = _find_commander_army(session, commander_id)
         clock = _get_or_create_clock(session, for_update=True)
         current_action = _get_current_action_row(session, commander_id)
@@ -5815,7 +6175,14 @@ def create_action(
             "accepted_at": action.accepted_at.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         }
 
-    return _run_world_mutation(session, operation)
+    return _run_idempotent_mutation(
+        session,
+        actor_scope=f"commander:{commander_id}",
+        route="create-action",
+        idempotency_key=idempotency_key,
+        payload=payload,
+        operation=operation,
+    )
 
 
 @router.post("/me/actions/plan")
@@ -5823,8 +6190,10 @@ def plan_actions(
     payload: ActionPlanRequest,
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
 ):
     def operation():
+        _lock_commander_scope(session, commander_id)
         army = _find_commander_army(session, commander_id)
         clock = _get_or_create_clock(session, for_update=True)
         current_action = _get_current_action_row(session, commander_id)
@@ -5890,7 +6259,14 @@ def plan_actions(
             ],
         }
 
-    return _run_world_mutation(session, operation)
+    return _run_idempotent_mutation(
+        session,
+        actor_scope=f"commander:{commander_id}",
+        route="plan-actions",
+        idempotency_key=idempotency_key,
+        payload=payload,
+        operation=operation,
+    )
 
 
 @router.get("/me/orders/standing")
@@ -5909,6 +6285,7 @@ def set_follow_road_standing_order(
     session: Session = Depends(_get_session),
 ):
     def operation():
+        _lock_commander_scope(session, commander_id)
         standing = _get_or_create_standing_order(session, commander_id)
         clock = _get_or_create_clock(session, for_update=True)
         standing.follow_road_enabled = bool(payload.enabled)
@@ -5955,6 +6332,7 @@ def set_forced_march_standing_order(
     session: Session = Depends(_get_session),
 ):
     def operation():
+        _lock_commander_scope(session, commander_id)
         army = _find_commander_army(session, commander_id)
         clock = _get_or_create_clock(session, for_update=True)
         current_action = _get_current_action_row(session, commander_id)
@@ -6032,18 +6410,21 @@ def get_current_action(
 
 @router.get("/me/alerts")
 def list_alerts(
-    limit: int = Query(default=25, ge=1, le=200),
+    limit: int = Query(default=50, ge=1, le=200),
     unread_only: bool = Query(default=False),
+    after_id: str | None = Query(default=None),
+    before_id: str | None = Query(default=None),
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
 ):
+    if after_id and before_id:
+        raise HTTPException(status_code=400, detail="after_id and before_id are mutually exclusive")
     clock = _get_or_create_clock(session)
-    query = session.query(Alert).filter(
-        or_(Alert.recipient_commander_id == commander_id, Alert.recipient_commander_id.is_(None)),
-        or_(
-            Alert.delivered_day < clock.day,
-            and_(Alert.delivered_day == clock.day, Alert.delivered_watch <= clock.watch),
-        ),
+    query = session.query(Alert, AlertRecipient).join(
+        AlertRecipient, AlertRecipient.alert_id == Alert.alert_id
+    ).filter(
+        AlertRecipient.commander_id == commander_id,
+        AlertRecipient.available_tick <= clock.world_tick,
         or_(
             Alert.signal_kind != "state",
             and_(
@@ -6054,17 +6435,67 @@ def list_alerts(
         ),
     )
     if unread_only:
-        query = query.filter(Alert.is_read.is_(False))
-    alerts = (
-        query.order_by(
-            Alert.delivered_day.desc(),
-            _watch_chronological_order_sql(Alert.delivered_watch).desc(),
-            Alert.alert_id.desc(),
-        )
-        .limit(limit)
-        .all()
-    )
-    return [_serialize_alert(alert) for alert in alerts]
+        query = query.filter(AlertRecipient.read_at.is_(None))
+    if after_id:
+        query = query.filter(Alert.alert_id > _parse_alert_ref(after_id))
+        rows = query.order_by(Alert.alert_id.asc()).limit(limit + 1).all()
+    else:
+        if before_id:
+            query = query.filter(Alert.alert_id < _parse_alert_ref(before_id))
+        rows = query.order_by(Alert.alert_id.desc()).limit(limit + 1).all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    return {
+        "items": [_serialize_alert(alert, receipt) for alert, receipt in rows],
+        "has_more": has_more,
+        "next_after_id": _alert_ref(rows[-1][0].alert_id) if after_id and rows else None,
+        "next_before_id": _alert_ref(rows[-1][0].alert_id) if not after_id and rows else None,
+    }
+
+
+@router.post("/me/alerts/ack-delivered")
+def acknowledge_alert_delivery(
+    payload: AlertIdsRequest,
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    alert_ids = [_parse_alert_ref(value) for value in payload.alert_ids]
+
+    def operation():
+        now = datetime.now(timezone.utc)
+        receipts = session.query(AlertRecipient).filter(
+            AlertRecipient.commander_id == commander_id,
+            AlertRecipient.alert_id.in_(alert_ids),
+        ).all()
+        for receipt in receipts:
+            if receipt.delivered_at is None:
+                receipt.delivered_at = now
+        return {"acknowledged": len(receipts)}
+
+    return _run_world_mutation(session, operation)
+
+
+@router.post("/me/alerts/{alert_id}/read")
+def mark_alert_read(
+    alert_id: str,
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    alert_pk = _parse_alert_ref(alert_id)
+
+    def operation():
+        receipt = session.get(AlertRecipient, (alert_pk, commander_id))
+        if receipt is None:
+            raise HTTPException(status_code=404, detail="Alert not found")
+        clock = _get_or_create_clock(session, for_update=True)
+        if receipt.available_tick > clock.world_tick:
+            raise HTTPException(status_code=404, detail="Alert not delivered yet")
+        now = datetime.now(timezone.utc)
+        receipt.delivered_at = receipt.delivered_at or now
+        receipt.read_at = receipt.read_at or now
+        return {"id": _alert_ref(alert_pk), "is_read": True, "read_at": receipt.read_at.isoformat()}
+
+    return _run_world_mutation(session, operation)
 
 
 @router.post("/me/actions/{action_id}/cancel")
@@ -6072,8 +6503,10 @@ def cancel_action(
     action_id: str,
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
 ):
     def operation():
+        _lock_commander_scope(session, commander_id)
         action_pk = _parse_action_ref(action_id)
         action = session.get(Action, action_pk)
         if action is None or action.commander_id != commander_id:
@@ -6087,7 +6520,14 @@ def cancel_action(
             "state": action.state,
         }
 
-    return _run_world_mutation(session, operation)
+    return _run_idempotent_mutation(
+        session,
+        actor_scope=f"commander:{commander_id}",
+        route=f"cancel-action:{action_id}",
+        idempotency_key=idempotency_key,
+        payload={"action_id": action_id},
+        operation=operation,
+    )
 
 
 @router.post("/me/messages")
@@ -6095,8 +6535,10 @@ def send_message(
     payload: MessageCreateRequest,
     commander_id: int = Depends(_get_current_commander_id),
     session: Session = Depends(_get_session),
+    idempotency_key: str = Header(..., alias="Idempotency-Key"),
 ):
     def operation():
+        _lock_commander_scope(session, commander_id)
         sender = session.get(Commander, commander_id)
         if sender is None:
             raise HTTPException(status_code=404, detail="Sender commander not found")
@@ -6141,11 +6583,17 @@ def send_message(
         return {
             "message_id": _message_ref(message.message_id),
             "sent_watch": _to_watch_stamp(message.sent_day, message.sent_watch),
-            "estimated_delivery_watch": _to_watch_stamp(message.delivery_day, message.delivery_watch),
             "status": message.status,
         }
 
-    return _run_world_mutation(session, operation)
+    return _run_idempotent_mutation(
+        session,
+        actor_scope=f"commander:{commander_id}",
+        route="send-message",
+        idempotency_key=idempotency_key,
+        payload=payload,
+        operation=operation,
+    )
 
 
 @router.get("/me/messages")
@@ -6155,32 +6603,43 @@ def list_messages(
     session: Session = Depends(_get_session),
 ):
     clock = _get_or_create_clock(session)
-    query = session.query(Message).filter(
+    delivered_incoming = and_(
         Message.recipient_id == commander_id,
         Message.status == "received",
         _is_delivered_filter(clock.day, clock.watch),
     )
-    query = query.options(joinedload(Message.sender_commander))
+    outgoing = Message.sender_commander_id == commander_id
+    query = session.query(Message).filter(or_(delivered_incoming, outgoing))
+    query = query.options(joinedload(Message.sender_commander), joinedload(Message.recipient))
     if unread_only:
-        query = query.filter(Message.is_read.is_(False))
+        query = query.filter(delivered_incoming, Message.is_read.is_(False))
 
     messages = query.order_by(
-        Message.delivery_day.desc(),
-        _watch_chronological_order_sql(Message.delivery_watch).desc(),
+        Message.sent_tick.desc(),
         Message.message_id.desc(),
     ).all()
 
     response = []
     for message in messages:
-        response.append(
-            {
+        if message.sender_commander_id == commander_id:
+            response.append(
+                {
+                    "id": _message_ref(message.message_id),
+                    "direction": "sent",
+                    "to": {"name": _message_recipient_display_name(message)},
+                    "sent_watch": _to_watch_stamp(message.sent_day, message.sent_watch),
+                    "is_read": True,
+                }
+            )
+        else:
+            response.append({
                 "id": _message_ref(message.message_id),
+                "direction": "received",
                 "from": {"name": _message_sender_display_name(message)},
                 "sent_watch": _to_watch_stamp(message.sent_day, message.sent_watch),
                 "delivered_watch": _to_watch_stamp(message.delivery_day, message.delivery_watch),
                 "is_read": message.is_read,
-            }
-        )
+            })
     return response
 
 
@@ -6192,8 +6651,25 @@ def get_message(
 ):
     def operation():
         message_pk = _parse_message_ref(message_id)
-        message = session.get(Message, message_pk)
-        if message is None or message.recipient_id != commander_id:
+        message = (
+            session.query(Message)
+            .options(joinedload(Message.recipient))
+            .filter(Message.message_id == message_pk)
+            .one_or_none()
+        )
+        if message is None:
+            raise HTTPException(status_code=404, detail="Message not found")
+        if message.sender_commander_id == commander_id:
+            return {
+                "id": _message_ref(message.message_id),
+                "direction": "sent",
+                "to": {"name": _message_recipient_display_name(message)},
+                "content": message.content,
+                "priority": message.priority,
+                "sent_watch": _to_watch_stamp(message.sent_day, message.sent_watch),
+                "is_read": True,
+            }
+        if message.recipient_id != commander_id:
             raise HTTPException(status_code=404, detail="Message not found")
         if message.status != "received":
             if message.status == "lost":
@@ -6201,9 +6677,7 @@ def get_message(
             raise HTTPException(status_code=404, detail="Message not delivered yet")
 
         clock = _get_or_create_clock(session, for_update=True)
-        if (message.delivery_day > clock.day) or (
-            message.delivery_day == clock.day and message.delivery_watch > clock.watch
-        ):
+        if message.delivery_tick > clock.world_tick:
             raise HTTPException(status_code=404, detail="Message not delivered yet")
 
         if not message.is_read:
@@ -6211,6 +6685,7 @@ def get_message(
 
         return {
             "id": _message_ref(message.message_id),
+            "direction": "received",
             "from": {"name": _message_sender_display_name(message)},
             "content": message.content,
             "priority": message.priority,
