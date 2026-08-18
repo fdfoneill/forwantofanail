@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from fractions import Fraction
 import json
 
 import pytest
@@ -9,6 +10,7 @@ from fastapi import HTTPException
 from fastapi import Response
 from fastapi.testclient import TestClient
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 
 from forwantofanail.api import routes
 from forwantofanail.api.schemas import (
@@ -439,6 +441,97 @@ def test_world_tick_orders_night_after_vesper():
 
     assert to_world_tick(7, Watch.VESPER) + 1 == to_world_tick(7, Watch.NIGHT)
     assert from_world_tick(to_world_tick(7, Watch.NIGHT) + 1) == (8, Watch.MATIN)
+
+
+@pytest.mark.parametrize(
+    ("depletion", "expected_yield"),
+    [
+        (0, Fraction(2500, 1)),
+        (1, Fraction(2500, 3)),
+        (2, Fraction(2500, 9)),
+        (3, Fraction(0, 1)),
+    ],
+)
+def test_forage_yield_scales_with_pre_forage_depletion(depletion, expected_yield):
+    location = Location(settlement=1, foraged_this_season=depletion)
+
+    assert routes._forage_yield_for_location(location) == expected_yield
+
+
+@pytest.mark.parametrize(
+    ("average_depletion", "expected_word"),
+    [
+        (0, "untouched"),
+        (0.5, "plentiful"),
+        (1, "picked-over"),
+        (1.99, "picked-over"),
+        (2, "exhausted"),
+        (3, "exhausted"),
+    ],
+)
+def test_forage_condition_word_uses_pre_forage_average(average_depletion, expected_word):
+    assert routes._forage_condition_word(average_depletion) == expected_word
+
+
+def test_completed_forage_increments_cells_and_reports_prior_condition(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes.h3, "grid_disk", lambda _location_id, _radius: ["origin_1", "origin_2", "fort_1"])
+    session = create_session()
+    try:
+        locations = {
+            location.location_id: location
+            for location in session.query(Location)
+            .filter(Location.location_id.in_(["origin_1", "origin_2", "fort_1"]))
+            .all()
+        }
+        locations["origin_1"].foraged_this_season = 0
+        locations["origin_2"].foraged_this_season = 1
+        locations["fort_1"].foraged_this_season = 2
+        army = session.get(Army, 1)
+        gain, forageable_locations, average_depletion = routes._forage_supply_gain_for_army(session, army)
+        assert gain == 3611
+        assert {location.location_id for location in forageable_locations} == {"origin_1", "origin_2", "fort_1"}
+        assert average_depletion == 1
+
+        clock = session.get(GameClock, 1)
+        session.add(
+            Action(
+                commander_id=1,
+                kind="forage",
+                state="in_progress",
+                parameters_json="{}",
+                accepted_at=datetime.now(timezone.utc),
+                started_day=clock.day,
+                started_watch=clock.watch,
+                eta_day=clock.day,
+                eta_watch=clock.watch,
+            )
+        )
+        session.flush()
+        result = routes._execute_action_tick(session, clock)
+        session.flush()
+
+        assert result["completed"] == 1
+        assert [
+            locations[location_id].foraged_this_season
+            for location_id in ("origin_1", "origin_2", "fort_1")
+        ] == [1, 2, 3]
+        alert = session.query(Alert).filter(Alert.recipient_commander_id == 1).order_by(Alert.alert_id.desc()).first()
+        assert alert is not None
+        assert "foraged from picked-over country" in alert.message
+    finally:
+        session.close()
+
+
+def test_forage_depletion_database_constraint_rejects_out_of_range_values(sqlite_db):
+    session = create_session()
+    try:
+        location = session.get(Location, "origin_1")
+        location.foraged_this_season = 4
+        with pytest.raises(IntegrityError):
+            session.commit()
+    finally:
+        session.rollback()
+        session.close()
 
 
 def test_night_message_is_not_visible_at_vesper(sqlite_db):

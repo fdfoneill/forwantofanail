@@ -125,6 +125,18 @@ def migrate_runtime_tables() -> None:
             session.execute(
                 text(
                     """
+                    UPDATE locations
+                    SET foraged_this_season = CASE
+                        WHEN CAST(foraged_this_season AS INTEGER) < 0 THEN 0
+                        WHEN CAST(foraged_this_season AS INTEGER) > 3 THEN 3
+                        ELSE CAST(foraged_this_season AS INTEGER)
+                    END
+                    """
+                )
+            )
+            session.execute(
+                text(
+                    """
                     INSERT OR IGNORE INTO alert_recipients (alert_id, commander_id, available_tick)
                     SELECT alert_id, recipient_commander_id, available_tick
                     FROM alerts WHERE recipient_commander_id IS NOT NULL

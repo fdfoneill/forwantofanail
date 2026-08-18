@@ -4542,7 +4542,8 @@
       if (cell) {
         const terrain = cell.terrain_type || "unknown";
         const settlementText = cell.settlement == null ? "0" : String(cell.settlement);
-        const foragedText = cell.foraged_this_season ? "yes" : "no";
+        const forageCount = Number(cell.foraged_this_season);
+        const foragedText = Number.isFinite(forageCount) ? String(forageCount) : "0";
         const hasStronghold = !!(cell.stronghold && cell.stronghold.name);
         const otherArmies = Array.isArray(cell.other_armies) ? cell.other_armies : [];
         const primaryArmy = otherArmies.length ? otherArmies[0] : null;
@@ -4597,7 +4598,7 @@
         }
         metaRows.push(
           `<div><span class=\"k\">Settlement:</span>${escapeHtml(settlementText)}</div>`,
-          `<div><span class=\"k\">Foraged This Season:</span>${escapeHtml(foragedText)}</div>`
+          `<div><span class=\"k\">Times Foraged This Season:</span>${escapeHtml(foragedText)}</div>`
         );
         els.hoverMeta.innerHTML = metaRows.join("");
         updateStageMoveButtonVisibility(h3Index);
