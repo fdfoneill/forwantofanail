@@ -260,7 +260,7 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
                     "region": str,
                     "terrain_id": _parse_int,
                     "settlement": _parse_int,
-                    "foraged_this_season": _parse_bool,
+                    "foraged_this_season": _parse_int,
                 },
             )
         )

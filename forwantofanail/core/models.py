@@ -35,13 +35,19 @@ class TerrainType(Base):
 
 class Location(Base):
     __tablename__ = "locations"
+    __table_args__ = (
+        CheckConstraint(
+            "foraged_this_season >= 0 AND foraged_this_season <= 3",
+            name="ck_locations_forage_depletion_range",
+        ),
+    )
 
     location_id = Column(String(15), primary_key=True)
     is_road = Column(Boolean, nullable=False, default=False)
     region = Column(String(100), nullable=True)
     terrain_id = Column(Integer, ForeignKey("terrain_types.terrain_id"), nullable=False)
     settlement = Column(Integer, nullable=False, default=0)
-    foraged_this_season = Column(Boolean, nullable=False, default=False)
+    foraged_this_season = Column(Integer, nullable=False, default=0, server_default="0")
 
     terrain_type = relationship("TerrainType", back_populates="locations")
     armies = relationship("Army", back_populates="location")

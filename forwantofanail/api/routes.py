@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from datetime import date, datetime, timedelta, timezone
+from fractions import Fraction
 import hashlib
 import hmac
 import base64
@@ -1832,12 +1833,38 @@ def _get_destination_h3(action: Action) -> str | None:
     return None
 
 
-def _forage_supply_gain_for_army(session: Session, army: Army) -> tuple[int, list[Location]]:
+def _forage_depletion_level(location: Location) -> int:
+    return max(0, min(3, int(location.foraged_this_season or 0)))
+
+
+def _forage_yield_for_location(location: Location) -> Fraction:
+    settlement_yield = max(int(location.settlement or 0), 0) * 2500
+    depletion = _forage_depletion_level(location)
+    return Fraction(settlement_yield * (3 - depletion), 3 * (depletion + 1))
+
+
+def _forage_condition_word(average_depletion: float) -> str:
+    if average_depletion <= 0:
+        return "untouched"
+    if average_depletion < 1:
+        return "plentiful"
+    if average_depletion < 2:
+        return "picked-over"
+    return "exhausted"
+
+
+def _forage_supply_gain_for_army(session: Session, army: Army) -> tuple[int, list[Location], float]:
     radius = _environs_radius_for_army(army)
     visible_h3 = list(h3.grid_disk(army.location_id, radius))
     locations = session.query(Location).filter(Location.location_id.in_(visible_h3)).all()
-    gain = sum(max(int(location.settlement or 0), 0) * 2500 for location in locations)
-    return gain, locations
+    forageable_locations = [location for location in locations if int(location.settlement or 0) > 0]
+    exact_gain = sum((_forage_yield_for_location(location) for location in forageable_locations), Fraction(0, 1))
+    average_depletion = (
+        sum(_forage_depletion_level(location) for location in forageable_locations) / len(forageable_locations)
+        if forageable_locations
+        else 3.0
+    )
+    return int(exact_gain), forageable_locations, average_depletion
 
 
 def _initialize_move_action_progress(
@@ -3900,15 +3927,15 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
             continue
 
         if action.kind == "forage":
-            gain, visible_locations = _forage_supply_gain_for_army(session, army)
+            gain, forageable_locations, average_depletion = _forage_supply_gain_for_army(session, army)
             capacity = supply_stats(army).capacity
             supply_before = int(army.army_supply or 0)
             army.army_supply = min(capacity, army.army_supply + gain)
             applied_gain = max(0, int(army.army_supply or 0) - supply_before)
-            for location in visible_locations:
-                if int(location.settlement or 0) > 0:
-                    location.foraged_this_season = True
+            for location in forageable_locations:
+                location.foraged_this_season = min(3, _forage_depletion_level(location) + 1)
             action.state = "completed"
+            forage_condition = _forage_condition_word(average_depletion)
             _create_alert(
                 session,
                 recipient_commander_id=action.commander_id,
@@ -3916,7 +3943,7 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
                 signal_kind="event",
                 category="action",
                 importance="normal",
-                message=f"{applied_gain} supply foraged",
+                message=f"{applied_gain} supply foraged from {forage_condition} country",
                 created_day=clock.day,
                 created_watch=clock.watch,
             )

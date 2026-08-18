@@ -183,7 +183,7 @@ Table: locations
 - region VARCHAR(100)
 - terrain_id INT FOREIGN KEY REFERENCES terrain_types(terrain_id)
 - settlement INT
-- foraged_this_season BOOL
+- foraged_this_season INT (0–3 seasonal depletion counter)
 
 Table: terrain_types
 - terrain_id INT PRIMARY KEY
