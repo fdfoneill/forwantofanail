@@ -4644,8 +4644,6 @@
         }
         if (hasStronghold && cell.stronghold && cell.stronghold.faction) {
           strongholdFactionText = String(cell.stronghold.faction);
-        } else if (!hasStronghold && cell.region_control) {
-          strongholdFactionText = String(cell.region_control);
         }
         if (cell.stronghold?.under_siege) {
           const matinTicksElapsed = Math.max(0, Number(cell?.stronghold?.siege?.matin_ticks_elapsed || 0));
@@ -4675,11 +4673,11 @@
             metaRows.push(`<div><span class=\"k\">Commanded By:</span>${escapeHtml(String(primaryArmy.commander))}</div>`);
           }
         }
-        metaRows.push(
-          `<div><span class=\"k\">Terrain:</span>${escapeHtml(terrain)}</div>`,
-          `<div><span class=\"k\">Stronghold Type:</span>${escapeHtml(strongholdTypeText)}</div>`,
-          `<div><span class=\"k\">Faction:</span>${escapeHtml(strongholdFactionText)}</div>`
-        );
+        metaRows.push(`<div><span class=\"k\">Terrain:</span>${escapeHtml(terrain)}</div>`);
+        if (hasStronghold) {
+          metaRows.push(`<div><span class=\"k\">Stronghold Type:</span>${escapeHtml(strongholdTypeText)}</div>`);
+          metaRows.push(`<div><span class=\"k\">Faction:</span>${escapeHtml(strongholdFactionText)}</div>`);
+        }
         if (siegeDaysText) {
           metaRows.push(`<div><span class=\"k\">Under Siege:</span>${escapeHtml(siegeDaysText)}</div>`);
           metaRows.push(`<div><span class=\"k\">Gates:</span>${escapeHtml(gatesText)}</div>`);
