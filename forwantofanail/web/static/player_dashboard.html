@@ -440,6 +440,90 @@
       min-height: 88px;
       white-space: pre-wrap;
     }
+    .letter-modal-overlay {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 22px;
+      background: rgba(27, 26, 24, 0.48);
+      z-index: 30;
+    }
+    .letter-modal-overlay.open { display: flex; }
+    .letter-modal {
+      width: min(620px, 100%);
+      max-height: calc(100vh - 44px);
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: var(--panel);
+      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.24);
+      padding: 16px;
+    }
+    .letter-modal-header {
+      display: flex;
+      align-items: start;
+      justify-content: space-between;
+      gap: 14px;
+      margin-bottom: 14px;
+    }
+    .letter-modal-title {
+      margin: 0;
+      font-size: 22px;
+      line-height: 1.15;
+    }
+    .letter-modal-close {
+      width: auto;
+      margin: 0;
+      padding: 8px 10px;
+      background: #f7f1e7;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .letter-compose-modal .message-box {
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+    }
+    .letter-compose-modal .message-box textarea {
+      min-height: 180px;
+    }
+    .letter-modal-footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 14px;
+    }
+    .letter-modal-footer button {
+      width: auto;
+      min-width: 130px;
+      margin: 0;
+    }
+    .letter-detail-meta {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 6px 12px;
+      margin: 0 0 16px;
+      font-size: 13px;
+    }
+    .letter-detail-meta dt {
+      color: var(--muted);
+      font-weight: 600;
+    }
+    .letter-detail-meta dd { margin: 0; }
+    .letter-detail-content {
+      min-height: 150px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font-size: 14px;
+      line-height: 1.55;
+    }
     .map-panel {
       position: relative;
       min-height: 74vh;
@@ -1120,16 +1204,8 @@
 
       <div class="message-tools">
         <button id="composeToggleBtn" type="button">Send Letter</button>
-        <div class="message-box" id="composeBox" hidden>
-          <div class="label" style="margin-bottom:6px;">Recipient</div>
-          <select id="recipientSelect"></select>
-          <textarea id="letterInput" placeholder="Write your letter..."></textarea>
-          <button id="sendLetterBtn" type="button">Send</button>
-        </div>
-
-        <div class="label" style="margin-top:10px;">Received Letters</div>
+        <div class="label" style="margin-top:10px;">Letters</div>
         <ul id="inboxList" class="inbox-list"></ul>
-        <div id="messageRead" class="message-read">Select a letter to read.</div>
       </div>
     </section>
 
@@ -1189,6 +1265,43 @@
       <footer class="commander-modal-footer">
         <button id="logoutBtn" type="button">Release</button>
       </footer>
+    </section>
+  </div>
+
+  <div id="composeModalOverlay" class="letter-modal-overlay" aria-hidden="true">
+    <section class="letter-modal letter-compose-modal" role="dialog" aria-modal="true" aria-labelledby="composeModalTitle">
+      <header class="letter-modal-header">
+        <h2 id="composeModalTitle" class="letter-modal-title">Send Letter</h2>
+        <button id="composeModalCloseBtn" class="letter-modal-close" type="button">Close</button>
+      </header>
+      <div class="message-box" id="composeBox">
+        <div class="label" style="margin-bottom:6px;">Recipient</div>
+        <select id="recipientSelect"></select>
+        <textarea id="letterInput" maxlength="4000" placeholder="Write your letter..."></textarea>
+      </div>
+      <div id="composeModalError" class="status error" role="alert"></div>
+      <footer class="letter-modal-footer">
+        <button id="composeModalCancelBtn" class="secondary-btn" type="button">Cancel</button>
+        <button id="sendLetterBtn" type="button">Send</button>
+      </footer>
+    </section>
+  </div>
+
+  <div id="letterDetailModalOverlay" class="letter-modal-overlay" aria-hidden="true">
+    <section class="letter-modal" role="dialog" aria-modal="true" aria-labelledby="letterDetailModalTitle">
+      <header class="letter-modal-header">
+        <h2 id="letterDetailModalTitle" class="letter-modal-title">Letter</h2>
+        <button id="letterDetailModalCloseBtn" class="letter-modal-close" type="button">Close</button>
+      </header>
+      <dl class="letter-detail-meta">
+        <dt id="letterDetailCounterpartyLabel">From</dt>
+        <dd id="letterDetailCounterparty"></dd>
+        <dt>Sent</dt>
+        <dd id="letterDetailSent"></dd>
+        <dt id="letterDetailDeliveredLabel">Delivered</dt>
+        <dd id="letterDetailDelivered"></dd>
+      </dl>
+      <div id="letterDetailContent" class="letter-detail-content"></div>
     </section>
   </div>
 
@@ -1264,6 +1377,7 @@
 
     let armyManagementSuggestionRequestId = 0;
     let alertsRequestId = 0;
+    let letterDetailTrigger = null;
 
     const TERRAIN_COLORS = {
       "open ground": "var(--open-ground)",
@@ -1383,12 +1497,24 @@
       submitOrdersBtn: document.getElementById("submitOrdersBtn"),
       stagedPathList: document.getElementById("stagedPathList"),
       composeToggleBtn: document.getElementById("composeToggleBtn"),
+      composeModalOverlay: document.getElementById("composeModalOverlay"),
+      composeModalCloseBtn: document.getElementById("composeModalCloseBtn"),
+      composeModalCancelBtn: document.getElementById("composeModalCancelBtn"),
+      composeModalError: document.getElementById("composeModalError"),
       composeBox: document.getElementById("composeBox"),
       recipientSelect: document.getElementById("recipientSelect"),
       letterInput: document.getElementById("letterInput"),
       sendLetterBtn: document.getElementById("sendLetterBtn"),
       inboxList: document.getElementById("inboxList"),
-      messageRead: document.getElementById("messageRead"),
+      letterDetailModalOverlay: document.getElementById("letterDetailModalOverlay"),
+      letterDetailModalTitle: document.getElementById("letterDetailModalTitle"),
+      letterDetailModalCloseBtn: document.getElementById("letterDetailModalCloseBtn"),
+      letterDetailCounterpartyLabel: document.getElementById("letterDetailCounterpartyLabel"),
+      letterDetailCounterparty: document.getElementById("letterDetailCounterparty"),
+      letterDetailSent: document.getElementById("letterDetailSent"),
+      letterDetailDeliveredLabel: document.getElementById("letterDetailDeliveredLabel"),
+      letterDetailDelivered: document.getElementById("letterDetailDelivered"),
+      letterDetailContent: document.getElementById("letterDetailContent"),
       mapCanvas: document.getElementById("mapCanvas"),
       mapViewport: document.getElementById("mapViewport"),
       mapPanel: document.getElementById("mapPanel"),
@@ -3409,6 +3535,8 @@
 
     function resetPlayerSession({ clearStoredClaim = false } = {}) {
       closeCommanderModal({ restoreFocus: false });
+      closeComposeModal({ restoreFocus: false });
+      closeLetterDetailModal({ restoreFocus: false });
       state.sessionVersion += 1;
       state.token = null;
       state.selectedCommanderId = "";
@@ -3464,10 +3592,7 @@
       renderAlerts();
       renderCorrespondents();
       renderInbox();
-      els.composeBox.setAttribute("hidden", "");
-      els.composeToggleBtn.textContent = "Send Letter";
       els.letterInput.value = "";
-      els.messageRead.textContent = "Select a letter to read.";
       renderArmyManagementModal();
     }
 
@@ -3576,6 +3701,63 @@
       if (wasOpen && restoreFocus && !els.assignedCommander.hidden) {
         els.assignedCommander.focus();
       }
+    }
+
+    function formatLetterWatch(stamp) {
+      if (!stamp) {
+        return "Unknown";
+      }
+      return `${formatScenarioDate(stamp.day)}, ${watchDisplayName(stamp.watch)}`;
+    }
+
+    function openComposeModal() {
+      if (!state.token) {
+        setStatus("Select a commander first.", true);
+        return;
+      }
+      closeLetterDetailModal({ restoreFocus: false });
+      els.composeModalError.textContent = "";
+      els.composeModalOverlay.classList.add("open");
+      els.composeModalOverlay.setAttribute("aria-hidden", "false");
+      els.recipientSelect.focus();
+    }
+
+    function closeComposeModal({ restoreFocus = true } = {}) {
+      const wasOpen = els.composeModalOverlay.classList.contains("open");
+      els.composeModalOverlay.classList.remove("open");
+      els.composeModalOverlay.setAttribute("aria-hidden", "true");
+      if (wasOpen && restoreFocus) {
+        els.composeToggleBtn.focus();
+      }
+    }
+
+    function openLetterDetailModal(message, trigger = null) {
+      const isSent = message?.direction === "sent";
+      letterDetailTrigger = trigger;
+      closeComposeModal({ restoreFocus: false });
+      els.letterDetailModalTitle.textContent = isSent ? "Sent Letter" : "Received Letter";
+      els.letterDetailCounterpartyLabel.textContent = isSent ? "To" : "From";
+      els.letterDetailCounterparty.textContent = isSent
+        ? String(message?.to?.name || "Unknown recipient")
+        : String(message?.from?.name || "Unknown sender");
+      els.letterDetailSent.textContent = formatLetterWatch(message?.sent_watch);
+      els.letterDetailDeliveredLabel.hidden = isSent;
+      els.letterDetailDelivered.hidden = isSent;
+      els.letterDetailDelivered.textContent = isSent ? "" : formatLetterWatch(message?.delivered_watch);
+      els.letterDetailContent.textContent = String(message?.content || "");
+      els.letterDetailModalOverlay.classList.add("open");
+      els.letterDetailModalOverlay.setAttribute("aria-hidden", "false");
+      els.letterDetailModalCloseBtn.focus();
+    }
+
+    function closeLetterDetailModal({ restoreFocus = true } = {}) {
+      const wasOpen = els.letterDetailModalOverlay.classList.contains("open");
+      els.letterDetailModalOverlay.classList.remove("open");
+      els.letterDetailModalOverlay.setAttribute("aria-hidden", "true");
+      if (wasOpen && restoreFocus && letterDetailTrigger?.isConnected) {
+        letterDetailTrigger.focus();
+      }
+      letterDetailTrigger = null;
     }
 
     function applyClaim(payload, { persist = true } = {}) {
@@ -3729,44 +3911,52 @@
       renderCorrespondents();
     }
 
+    function letterListLabel(message) {
+      const isSent = message?.direction === "sent";
+      const unreadMarker = !isSent && !message?.is_read ? "[UNREAD] " : "";
+      const directionLabel = isSent ? "TO: " : "FROM: ";
+      const counterparty = isSent
+        ? String(message?.to?.name || "Unknown recipient")
+        : String(message?.from?.name || "Unknown sender");
+      const sentDay = Number(message?.sent_watch?.day);
+      const dayText = Number.isFinite(sentDay) ? `, ${formatScenarioDate(sentDay)}` : "";
+      return `${unreadMarker}${directionLabel}${counterparty}${dayText}`;
+    }
+
     function renderInbox() {
       if (!state.inbox.length) {
-        els.inboxList.innerHTML = "<li class=\"inbox-item\"><div class=\"inbox-btn\">No received letters yet.</div></li>";
+        els.inboxList.innerHTML = "<li class=\"inbox-item\"><div class=\"inbox-btn\">No letters yet.</div></li>";
         return;
       }
       const rows = state.inbox.map((msg) => {
-        const unreadClass = msg.is_read ? "" : " unread";
-        const marker = msg.is_read ? "" : "[UNREAD] ";
-        const sentDay = Number(msg?.sent_watch?.day);
-        const dayText = Number.isFinite(sentDay) ? `, ${formatScenarioDate(sentDay)}` : "";
+        const unreadClass = msg.direction !== "sent" && !msg.is_read ? " unread" : "";
         return (
           `<li class="inbox-item">` +
           `<button class="inbox-btn${unreadClass}" data-msg-id="${escapeHtml(msg.id)}" type="button">` +
-          `${escapeHtml(marker)}${escapeHtml(msg.from.name)}${escapeHtml(dayText)}` +
+          `${escapeHtml(letterListLabel(msg))}` +
           `</button>` +
           `</li>`
         );
       });
       els.inboxList.innerHTML = rows.join("");
-        els.inboxList.querySelectorAll(".inbox-btn[data-msg-id]").forEach((btn) => {
+      els.inboxList.querySelectorAll(".inbox-btn[data-msg-id]").forEach((btn) => {
         btn.addEventListener("click", async () => {
           const messageId = btn.dataset.msgId;
           try {
             const message = await api(`/v1/me/messages/${messageId}`, {}, true);
             state.openMessageId = message.id;
-            const sentWatchName = watchDisplayName(message?.sent_watch?.watch);
-            const deliveredWatchName = watchDisplayName(message?.delivered_watch?.watch);
-            const sentDateText = formatScenarioDate(message?.sent_watch?.day);
-            const deliveredDateText = formatScenarioDate(message?.delivered_watch?.day);
-            els.messageRead.textContent =
-              `From: ${message.from.name}\n` +
-              `Sent: ${sentDateText}, ${sentWatchName}\n` +
-              `Delivered: ${deliveredDateText}, ${deliveredWatchName}\n\n` +
-              `${message.content}`;
-            await refreshInbox();
-            await refreshAlerts();
+            openLetterDetailModal(message, btn);
+            if (message.direction !== "sent") {
+              const listMessage = state.inbox.find((candidate) => candidate.id === message.id);
+              if (listMessage) {
+                listMessage.is_read = true;
+                btn.classList.remove("unread");
+                btn.textContent = letterListLabel(listMessage);
+              }
+              await refreshAlerts();
+            }
           } catch (err) {
-            setStatus(`Read failed: ${err.message}`, true);
+            setStatus(`Read failed: ${readableErrorMessage(err)}`, true);
           }
         });
       });
@@ -3776,7 +3966,7 @@
       if (!state.token) {
         state.inbox = [];
         state.openMessageId = null;
-        els.messageRead.textContent = "Select a letter to read.";
+        closeLetterDetailModal({ restoreFocus: false });
         renderInbox();
         return;
       }
@@ -4728,7 +4918,7 @@
         }
         button.disabled = true;
         state.openMessageId = null;
-        els.messageRead.textContent = "Select a letter to read.";
+        closeLetterDetailModal({ restoreFocus: false });
         state.alerts = [];
         renderAlerts();
         state.ordersPanelExpanded = false;
@@ -4816,8 +5006,20 @@
       }
     });
     document.addEventListener("keydown", (event) => {
-      if (event.key === "Escape" && els.commanderModalOverlay.classList.contains("open")) {
+      if (event.key !== "Escape") {
+        return;
+      }
+      if (els.letterDetailModalOverlay.classList.contains("open")) {
         event.preventDefault();
+        event.stopImmediatePropagation();
+        closeLetterDetailModal();
+      } else if (els.composeModalOverlay.classList.contains("open")) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        closeComposeModal();
+      } else if (els.commanderModalOverlay.classList.contains("open")) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
         closeCommanderModal();
       }
     });
@@ -5129,13 +5331,25 @@
         }
       });
       els.composeToggleBtn.addEventListener("click", () => {
-        const isHidden = els.composeBox.hasAttribute("hidden");
-        if (isHidden) {
-          els.composeBox.removeAttribute("hidden");
-          els.composeToggleBtn.textContent = "Hide Composer";
-        } else {
-          els.composeBox.setAttribute("hidden", "");
-          els.composeToggleBtn.textContent = "Send Letter";
+        openComposeModal();
+      });
+      els.composeModalCloseBtn.addEventListener("click", () => {
+        closeComposeModal();
+      });
+      els.composeModalCancelBtn.addEventListener("click", () => {
+        closeComposeModal();
+      });
+      els.composeModalOverlay.addEventListener("click", (event) => {
+        if (event.target === els.composeModalOverlay) {
+          closeComposeModal();
+        }
+      });
+      els.letterDetailModalCloseBtn.addEventListener("click", () => {
+        closeLetterDetailModal();
+      });
+      els.letterDetailModalOverlay.addEventListener("click", (event) => {
+        if (event.target === els.letterDetailModalOverlay) {
+          closeLetterDetailModal();
         }
       });
       els.sendLetterBtn.addEventListener("click", async () => {
@@ -5146,14 +5360,15 @@
         const recipientId = els.recipientSelect.value;
         const content = els.letterInput.value.trim();
         if (!recipientId) {
-          setStatus("Select a recipient.", true);
+          els.composeModalError.textContent = "Select a recipient.";
           return;
         }
         if (!content) {
-          setStatus("Write a message before sending.", true);
+          els.composeModalError.textContent = "Write a message before sending.";
           return;
         }
         try {
+          els.composeModalError.textContent = "";
           await api(
             "/v1/me/messages",
             {
@@ -5163,12 +5378,11 @@
             true
           );
           els.letterInput.value = "";
-          els.composeBox.setAttribute("hidden", "");
-          els.composeToggleBtn.textContent = "Send Letter";
+          closeComposeModal();
           await refreshAlerts();
           await refreshInbox();
         } catch (err) {
-          setStatus(`Send failed: ${err.message}`, true);
+          els.composeModalError.textContent = `Send failed: ${readableErrorMessage(err)}`;
         }
       });
       els.mapCanvas.addEventListener("mouseleave", () => {

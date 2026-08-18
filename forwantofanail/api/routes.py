@@ -210,6 +210,12 @@ def _message_sender_display_name(message: Message) -> str:
     return message.sender_name
 
 
+def _message_recipient_display_name(message: Message) -> str:
+    if message.recipient is None:
+        return "Unknown recipient"
+    return _commander_display_name(message.recipient)
+
+
 def _commander_portrait_filename(commander: Commander) -> str | None:
     display_name = _commander_display_name(commander)
     normalized_display = "".join(ch for ch in display_name.lower() if ch.isalnum())
@@ -6577,7 +6583,6 @@ def send_message(
         return {
             "message_id": _message_ref(message.message_id),
             "sent_watch": _to_watch_stamp(message.sent_day, message.sent_watch),
-            "estimated_delivery_watch": _to_watch_stamp(message.delivery_day, message.delivery_watch),
             "status": message.status,
         }
 
@@ -6598,32 +6603,43 @@ def list_messages(
     session: Session = Depends(_get_session),
 ):
     clock = _get_or_create_clock(session)
-    query = session.query(Message).filter(
+    delivered_incoming = and_(
         Message.recipient_id == commander_id,
         Message.status == "received",
         _is_delivered_filter(clock.day, clock.watch),
     )
-    query = query.options(joinedload(Message.sender_commander))
+    outgoing = Message.sender_commander_id == commander_id
+    query = session.query(Message).filter(or_(delivered_incoming, outgoing))
+    query = query.options(joinedload(Message.sender_commander), joinedload(Message.recipient))
     if unread_only:
-        query = query.filter(Message.is_read.is_(False))
+        query = query.filter(delivered_incoming, Message.is_read.is_(False))
 
     messages = query.order_by(
-        Message.delivery_day.desc(),
-        _watch_chronological_order_sql(Message.delivery_watch).desc(),
+        Message.sent_tick.desc(),
         Message.message_id.desc(),
     ).all()
 
     response = []
     for message in messages:
-        response.append(
-            {
+        if message.sender_commander_id == commander_id:
+            response.append(
+                {
+                    "id": _message_ref(message.message_id),
+                    "direction": "sent",
+                    "to": {"name": _message_recipient_display_name(message)},
+                    "sent_watch": _to_watch_stamp(message.sent_day, message.sent_watch),
+                    "is_read": True,
+                }
+            )
+        else:
+            response.append({
                 "id": _message_ref(message.message_id),
+                "direction": "received",
                 "from": {"name": _message_sender_display_name(message)},
                 "sent_watch": _to_watch_stamp(message.sent_day, message.sent_watch),
                 "delivered_watch": _to_watch_stamp(message.delivery_day, message.delivery_watch),
                 "is_read": message.is_read,
-            }
-        )
+            })
     return response
 
 
@@ -6635,8 +6651,25 @@ def get_message(
 ):
     def operation():
         message_pk = _parse_message_ref(message_id)
-        message = session.get(Message, message_pk)
-        if message is None or message.recipient_id != commander_id:
+        message = (
+            session.query(Message)
+            .options(joinedload(Message.recipient))
+            .filter(Message.message_id == message_pk)
+            .one_or_none()
+        )
+        if message is None:
+            raise HTTPException(status_code=404, detail="Message not found")
+        if message.sender_commander_id == commander_id:
+            return {
+                "id": _message_ref(message.message_id),
+                "direction": "sent",
+                "to": {"name": _message_recipient_display_name(message)},
+                "content": message.content,
+                "priority": message.priority,
+                "sent_watch": _to_watch_stamp(message.sent_day, message.sent_watch),
+                "is_read": True,
+            }
+        if message.recipient_id != commander_id:
             raise HTTPException(status_code=404, detail="Message not found")
         if message.status != "received":
             if message.status == "lost":
@@ -6652,6 +6685,7 @@ def get_message(
 
         return {
             "id": _message_ref(message.message_id),
+            "direction": "received",
             "from": {"name": _message_sender_display_name(message)},
             "content": message.content,
             "priority": message.priority,

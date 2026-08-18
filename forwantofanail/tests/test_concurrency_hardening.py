@@ -475,6 +475,48 @@ def test_night_message_is_not_visible_at_vesper(sqlite_db):
         session.close()
 
 
+def test_sent_letters_are_immediate_and_hide_delivery_information(sqlite_db):
+    session = create_session()
+    try:
+        session.add(
+            Message(
+                sender_commander_id=1,
+                sender_name="Lord Alpha",
+                recipient_id=2,
+                content="Advance at dawn.",
+                priority="normal",
+                sent_day=1,
+                sent_watch=1,
+                sent_tick=0,
+                delivery_day=4,
+                delivery_watch=3,
+                delivery_tick=17,
+                status="in_transit",
+                is_read=False,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+
+        sent_list = routes.list_messages(unread_only=False, commander_id=1, session=session)
+        assert len(sent_list) == 1
+        assert sent_list[0]["direction"] == "sent"
+        assert sent_list[0]["to"]["name"] == "Lady Beta"
+        assert "delivered_watch" not in sent_list[0]
+        assert "status" not in sent_list[0]
+        assert routes.list_messages(unread_only=True, commander_id=1, session=session) == []
+
+        sent_detail = routes.get_message(sent_list[0]["id"], commander_id=1, session=session)
+        assert sent_detail["direction"] == "sent"
+        assert sent_detail["content"] == "Advance at dawn."
+        assert "delivered_watch" not in sent_detail
+        assert "status" not in sent_detail
+
+        assert routes.list_messages(unread_only=False, commander_id=2, session=session) == []
+    finally:
+        session.close()
+
+
 def test_alert_delivery_and_read_receipt_are_per_commander(sqlite_db):
     session = create_session()
     try:
@@ -543,6 +585,7 @@ def test_message_send_idempotency_prevents_duplicate(sqlite_db):
         )
     )
     assert first == second
+    assert "estimated_delivery_watch" not in first
     session = create_session()
     try:
         assert session.query(Message).count() == 1
@@ -601,3 +644,20 @@ def test_player_dashboard_release_is_only_in_commander_modal(sqlite_db):
     assert 'id="commanderModalOverlay"' in response.text
     assert 'id="commanderModalOverview"' in response.text
     assert response.text.index('id="commanderModalOverlay"') < response.text.index('id="logoutBtn"')
+
+
+def test_player_dashboard_letters_use_modals_and_direction_labels(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    assert ">Letters</div>" in response.text
+    assert "Received Letters" not in response.text
+    assert 'id="composeModalOverlay"' in response.text
+    assert 'id="letterDetailModalOverlay"' in response.text
+    assert 'id="messageRead"' not in response.text
+    assert 'const directionLabel = isSent ? "TO: " : "FROM: ";' in response.text
+    assert 'isSent ? "Sent Letter" : "Received Letter"' in response.text
+    assert "els.letterDetailDeliveredLabel.hidden = isSent" in response.text
