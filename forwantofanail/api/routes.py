@@ -315,6 +315,7 @@ def _serialize_claim_commander(session: Session, commander: Commander, claim: Co
         "title": commander.commander_title,
         "display_name": _commander_display_name(commander),
         "faction": faction,
+        "is_original": commander.created_by_commander_id is None,
         "overview": _commander_overview_payload(session, commander, faction),
         "portrait_url": _commander_portrait_url(commander, faction),
         "claimed": claim is not None,

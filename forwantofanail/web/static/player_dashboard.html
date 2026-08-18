@@ -1313,6 +1313,7 @@
       selectedCommander: null,
       selectedCommanderDisplay: "",
       selectedCommanderFaction: "",
+      selectedCommanderIsOriginal: true,
       selectedCommanderOverview: "",
       selectedCommanderPortrait: "",
       claimOptions: [],
@@ -3543,6 +3544,7 @@
       state.selectedCommander = null;
       state.selectedCommanderDisplay = "";
       state.selectedCommanderFaction = "";
+      state.selectedCommanderIsOriginal = true;
       state.selectedCommanderOverview = "";
       state.selectedCommanderPortrait = "";
       state.view = null;
@@ -3678,7 +3680,7 @@
       hideCommanderOverview();
       const record = commanderOverviewRecord(state.selectedCommanderId);
       els.commanderModalTitle.textContent = record.title;
-      els.commanderModalFaction.textContent = state.selectedCommanderFaction || "Faction unknown";
+      els.commanderModalFaction.textContent = selectedCommanderFactionLine();
       els.commanderModalOverview.textContent = record.text || "No overview has been written yet.";
       if (state.selectedCommanderPortrait) {
         els.commanderModalPortrait.src = state.selectedCommanderPortrait;
@@ -3769,6 +3771,7 @@
       state.selectedCommander = hydratedCommander.name || "";
       state.selectedCommanderDisplay = hydratedCommander.display_name || hydratedCommander.name || "";
       state.selectedCommanderFaction = hydratedCommander.faction || "";
+      state.selectedCommanderIsOriginal = hydratedCommander.is_original !== false;
       state.selectedCommanderOverview = commanderOverviewText(hydratedCommander);
       state.selectedCommanderPortrait = hydratedCommander.portrait_url || "";
       state.sessionVersion += 1;
@@ -3793,13 +3796,18 @@
       renderClaimPanel();
     }
 
+    function selectedCommanderFactionLine() {
+      const role = state.selectedCommanderIsOriginal ? "High Commander" : "Subcommander";
+      return state.selectedCommanderFaction ? `${state.selectedCommanderFaction} ${role}` : role;
+    }
+
     function renderClaimPanel() {
       if (state.token) {
         els.claimPanel.hidden = true;
         els.assignedCommander.hidden = false;
         els.assignedCommander.dataset.overviewCommander = state.selectedCommanderId || "";
         els.assignedCommanderName.textContent = state.selectedCommanderDisplay || state.selectedCommander || "-";
-        els.assignedCommanderFaction.textContent = state.selectedCommanderFaction || "Faction unknown";
+        els.assignedCommanderFaction.textContent = selectedCommanderFactionLine();
         if (state.selectedCommanderPortrait) {
           els.assignedCommanderPortrait.src = state.selectedCommanderPortrait;
           els.assignedCommanderPortrait.hidden = false;
