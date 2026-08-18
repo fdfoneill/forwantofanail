@@ -8,11 +8,13 @@ from sqlalchemy import (
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     PrimaryKeyConstraint,
     String,
     Text,
     UniqueConstraint,
+    func,
 )
 from sqlalchemy.orm import relationship
 
@@ -113,6 +115,7 @@ class Army(Base):
             name="ck_armies_resting_morale_range",
         ),
         CheckConstraint("noncombattant_percent >= 0", name="ck_armies_noncombattant_percent_nonnegative"),
+        CheckConstraint("army_supply >= 0", name="ck_armies_supply_nonnegative"),
     )
 
     army_id = Column(Integer, primary_key=True)
@@ -244,18 +247,28 @@ class Movement(Base):
 
 class GameClock(Base):
     __tablename__ = "game_clock"
+    __table_args__ = (
+        CheckConstraint("day >= 1", name="ck_game_clock_day"),
+        CheckConstraint("watch >= 0 AND watch <= 4", name="ck_game_clock_watch"),
+        CheckConstraint("world_tick >= 0", name="ck_game_clock_tick"),
+    )
 
     singleton_id = Column(Integer, primary_key=True, default=1)
     day = Column(Integer, nullable=False, default=1)
     watch = Column(Integer, nullable=False, default=1)
+    world_tick = Column(Integer, nullable=False, default=0)
 
 
 class AuthToken(Base):
     __tablename__ = "auth_tokens"
+    __table_args__ = (CheckConstraint("client_kind IN ('browser', 'api')", name="ck_auth_tokens_client_kind"),)
 
     token = Column(String(128), primary_key=True)
     commander_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=False, index=True)
     created_at = Column(DateTime, nullable=False)
+    last_used_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+    client_kind = Column(String(20), nullable=False, default="api")
 
     commander = relationship("Commander", back_populates="auth_tokens")
     claim = relationship("CommanderClaim", back_populates="auth_token", uselist=False)
@@ -277,6 +290,10 @@ class CommanderClaim(Base):
 
 class Action(Base):
     __tablename__ = "actions"
+    __table_args__ = (
+        CheckConstraint("kind IN ('move', 'forage', 'attack', 'besiege', 'rout')", name="ck_actions_kind"),
+        CheckConstraint("state IN ('queued', 'in_progress', 'completed', 'cancelled', 'failed')", name="ck_actions_state"),
+    )
 
     action_id = Column(Integer, primary_key=True, autoincrement=True)
     commander_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=False, index=True)
@@ -308,6 +325,10 @@ class StandingOrder(Base):
 
 class Message(Base):
     __tablename__ = "messages"
+    __table_args__ = (
+        CheckConstraint("status IN ('in_transit', 'received', 'lost')", name="ck_messages_status"),
+        Index("ix_messages_recipient_status_delivery", "recipient_id", "status", "delivery_tick"),
+    )
 
     message_id = Column(Integer, primary_key=True, autoincrement=True)
     sender_commander_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=True, index=True)
@@ -318,8 +339,10 @@ class Message(Base):
     priority = Column(String(20), nullable=False, default="normal")
     sent_day = Column(Integer, nullable=False)
     sent_watch = Column(Integer, nullable=False)
+    sent_tick = Column(Integer, nullable=False, default=0)
     delivery_day = Column(Integer, nullable=False)
     delivery_watch = Column(Integer, nullable=False)
+    delivery_tick = Column(Integer, nullable=False, default=0)
     status = Column(String(20), nullable=False, default="in_transit", index=True)
     is_read = Column(Boolean, nullable=False, default=False, index=True)
     created_at = Column(DateTime, nullable=False)
@@ -339,6 +362,12 @@ class Message(Base):
 
 class Alert(Base):
     __tablename__ = "alerts"
+    __table_args__ = (
+        CheckConstraint("alert_type IN ('world event', 'action', 'report', 'violence', 'morale')", name="ck_alerts_type"),
+        CheckConstraint("signal_kind IN ('event', 'state')", name="ck_alerts_signal_kind"),
+        CheckConstraint("importance IN ('low', 'normal', 'moderate', 'high')", name="ck_alerts_importance"),
+        CheckConstraint("created_tick >= 0 AND available_tick >= 0", name="ck_alerts_ticks"),
+    )
 
     alert_id = Column(Integer, primary_key=True, autoincrement=True)
     recipient_commander_id = Column(
@@ -355,9 +384,12 @@ class Alert(Base):
     payload_json = Column(Text, nullable=False, default="{}")
     created_day = Column(Integer, nullable=False, index=True)
     created_watch = Column(Integer, nullable=False, index=True)
+    created_tick = Column(Integer, nullable=False, default=0, index=True)
     delivered_day = Column(Integer, nullable=False, index=True)
     delivered_watch = Column(Integer, nullable=False, index=True)
+    available_tick = Column(Integer, nullable=False, default=0, index=True)
     is_read = Column(Boolean, nullable=False, default=False, index=True)
+    event_key = Column(String(160), nullable=True, unique=True)
     created_at = Column(DateTime, nullable=False, index=True)
 
     recipient = relationship(
@@ -365,3 +397,71 @@ class Alert(Base):
         back_populates="alerts",
         foreign_keys=[recipient_commander_id],
     )
+    recipients = relationship("AlertRecipient", back_populates="alert", cascade="all, delete-orphan")
+
+
+class AlertRecipient(Base):
+    __tablename__ = "alert_recipients"
+    __table_args__ = (
+        PrimaryKeyConstraint("alert_id", "commander_id"),
+        Index("ix_alert_recipients_feed", "commander_id", "available_tick", "alert_id"),
+        Index("ix_alert_recipients_unread", "commander_id", "read_at"),
+    )
+
+    alert_id = Column(Integer, ForeignKey("alerts.alert_id", ondelete="CASCADE"), nullable=False)
+    commander_id = Column(Integer, ForeignKey("commanders.commander_id", ondelete="CASCADE"), nullable=False)
+    available_tick = Column(Integer, nullable=False)
+    delivered_at = Column(DateTime, nullable=True)
+    read_at = Column(DateTime, nullable=True)
+
+    alert = relationship("Alert", back_populates="recipients")
+    commander = relationship("Commander")
+
+
+class IdempotencyRecord(Base):
+    __tablename__ = "idempotency_records"
+    __table_args__ = (
+        UniqueConstraint("actor_scope", "route", "idempotency_key", name="uq_idempotency_scope_route_key"),
+    )
+
+    record_id = Column(Integer, primary_key=True, autoincrement=True)
+    actor_scope = Column(String(160), nullable=False, index=True)
+    route = Column(String(160), nullable=False)
+    idempotency_key = Column(String(128), nullable=False)
+    request_hash = Column(String(64), nullable=False)
+    response_json = Column(Text, nullable=False)
+    created_at = Column(DateTime, nullable=False, index=True)
+
+
+# Cross-process invariants. Partial unique indexes are supported by both
+# PostgreSQL (production) and SQLite (development/tests).
+Index(
+    "uq_actions_one_in_progress_per_commander",
+    Action.commander_id,
+    unique=True,
+    postgresql_where=Action.state == "in_progress",
+    sqlite_where=Action.state == "in_progress",
+)
+Index(
+    "uq_sieges_one_active_per_stronghold",
+    Siege.stronghold_id,
+    unique=True,
+    postgresql_where=Siege.state == "active",
+    sqlite_where=Siege.state == "active",
+)
+Index(
+    "uq_siege_participants_one_active_per_army",
+    SiegeParticipant.besieger_army_id,
+    unique=True,
+    postgresql_where=SiegeParticipant.state == "active",
+    sqlite_where=SiegeParticipant.state == "active",
+)
+Index(
+    "uq_armies_one_per_commander",
+    Army.commander_id,
+    unique=True,
+    postgresql_where=Army.commander_id.is_not(None),
+    sqlite_where=Army.commander_id.is_not(None),
+)
+Index("uq_commanders_name_lower", func.lower(Commander.commander_name), unique=True)
+Index("uq_armies_name_lower", func.lower(Army.army_name), unique=True)

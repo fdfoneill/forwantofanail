@@ -54,7 +54,13 @@ conda env create -f environment.yml
 conda activate forwantofanail
 ```
 
-## 2) Initialize/reset database (fresh scenario)
+## 2) Apply schema and initialize/reset database
+
+Application startup never applies DDL. Apply the Alembic schema first:
+
+```bash
+alembic upgrade head
+```
 
 Run this when starting a new game state from CSVs or after schema changes:
 
@@ -103,23 +109,29 @@ uvicorn forwantofanail.api.app:app --reload
 * Dev dashboard: `http://127.0.0.1:8000/dev/dashboard`
 * Player dashboard: `http://127.0.0.1:8000/player/dashboard`
 
-## 5) Optional admin token for time controls
+## 5) Configure authentication
 
-`POST /v1/admin/time/advance` supports optional header `X-Admin-Token`.
+Administrative endpoints require `X-Admin-Token` matching `ADMIN_TOKEN`. Player claims require `GAME_PASSWORD`; session tokens are stored hashed and browser sessions use an HttpOnly cookie.
 
-If `DEV_ADMIN_TOKEN` is set in your shell, this endpoint requires that exact header value.
-The dev dashboard includes an Admin Token field for this.
+```bash
+export ADMIN_TOKEN="replace-with-a-long-random-secret"
+export GAME_PASSWORD="shared-player-password"
+export SESSION_SECRET="replace-with-an-independent-random-secret"
+```
+
+Production additionally requires PostgreSQL, `APP_ENV=production`, and the canonical `PUBLIC_ORIGIN` (for example `https://game.example.com`). The server refuses to start production with SQLite, missing secrets, or interactive API documentation enabled.
 
 ## API notes (current implementation)
 
-* `GET /v1/commanders` returns commander names for dashboard login selection.
-* `GET /v1/me/roads/border?cells=...` returns adjacent off-environs road cells for player-map border road stubs.
-* `GET /v1/me/actions/valid-next` returns valid march destinations from an origin cell for client-side staging validation.
+* `GET /v1/auth/commanders` returns claimable commander summaries; `POST /v1/auth/claim` requires the shared game password.
+* `GET /v1/me/roads/border` derives adjacent off-environs road cells from the authenticated army's visibility.
+* Staging validation accepts a contiguous `staged_path` rooted at the authenticated army; arbitrary remote origins are rejected.
 * `POST /v1/me/actions/plan` replaces active queue with either forage, a staged march path, or halt (empty march path).
 * `GET /v1/me/orders/standing` and `POST /v1/me/orders/standing/follow-road` manage standing-order state.
 * `GET /v1/me/army-management` returns the active army plus same-cell same-faction armies/garrison for the army-management modal.
 * `POST /v1/me/army-management/apply` atomically applies same-hex army reorganization, including detachment transfers, supply transfers, renames, commander swaps, and new-army creation.
-* `GET /v1/me/alerts` returns delivered alerts for the active commander, including global alerts.
+* `GET /v1/me/alerts` provides cursor pagination over durable per-commander alert receipts. Delivery is acknowledged after rendering and alerts are marked read when opened.
+* Mutating order, message, management, claim, and time-control calls require `Idempotency-Key`.
 * `follow-road` standing order cannot be enabled while the army is holding (no active action).
 * Actions support queueing: multiple `queued` actions per commander, one `in_progress`.
 * Movement does not start during watch `0` (Night), but in-progress movement can complete at Night.

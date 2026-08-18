@@ -6,11 +6,14 @@ import json
 
 import pytest
 from fastapi import HTTPException
+from fastapi import Response
+from fastapi.testclient import TestClient
 from sqlalchemy import text
 
 from forwantofanail.api import routes
 from forwantofanail.api.schemas import (
     ActionCreateRequest,
+    ClaimRequest,
     ArmyManagementApplyRequest,
     ArmyManagementArmySideRequest,
     ArmyManagementRightTargetRequest,
@@ -23,11 +26,14 @@ from forwantofanail.core.initialize_db import _drop_all_tables_for_reset
 from forwantofanail.core.migrate_runtime_tables import migrate_runtime_tables
 from forwantofanail.core.models import (
     Action,
+    Alert,
+    AlertRecipient,
     Army,
     AuthToken,
     Commander,
     CommanderClaim,
     Detachment,
+    GameClock,
     Location,
     Message,
     Siege,
@@ -397,10 +403,11 @@ def test_admin_claim_reset_releases_commanders(sqlite_db, monkeypatch):
         session.close()
 
 
-def test_admin_army_summary_reports_commander_armies(sqlite_db):
+def test_admin_army_summary_reports_commander_armies(sqlite_db, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "summary-secret")
     session = create_session()
     try:
-        rows = routes.admin_armies_summary(session=session, x_admin_token=None)
+        rows = routes.admin_armies_summary(session=session, x_admin_token="summary-secret")
         by_army = {row["army_name"]: row for row in rows}
         assert by_army["Alpha Host"]["commander_name"] == "Lord Alpha"
         assert by_army["Alpha Host"]["faction"] == "Alpha"
@@ -425,3 +432,136 @@ def test_sqlite_reset_drop_handles_claim_foreign_keys(sqlite_db):
             ).all()
         }
     assert remaining_tables == set()
+
+
+def test_world_tick_orders_night_after_vesper():
+    from forwantofanail.mechanics.time import Watch, from_world_tick, to_world_tick
+
+    assert to_world_tick(7, Watch.VESPER) + 1 == to_world_tick(7, Watch.NIGHT)
+    assert from_world_tick(to_world_tick(7, Watch.NIGHT) + 1) == (8, Watch.MATIN)
+
+
+def test_night_message_is_not_visible_at_vesper(sqlite_db):
+    session = create_session()
+    try:
+        clock = session.get(GameClock, 1)
+        clock.day = 1
+        clock.watch = 4
+        clock.world_tick = 3
+        session.add(
+            Message(
+                sender_name="Courier",
+                recipient_id=1,
+                content="Night report",
+                priority="normal",
+                sent_day=1,
+                sent_watch=3,
+                sent_tick=2,
+                delivery_day=1,
+                delivery_watch=0,
+                delivery_tick=4,
+                status="received",
+                is_read=False,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        session.commit()
+        assert routes.list_messages(commander_id=1, session=session) == []
+        clock.world_tick = 4
+        clock.watch = 0
+        session.commit()
+        assert len(routes.list_messages(commander_id=1, session=session)) == 1
+    finally:
+        session.close()
+
+
+def test_alert_delivery_and_read_receipt_are_per_commander(sqlite_db):
+    session = create_session()
+    try:
+        routes._create_alert(
+            session,
+            recipient_commander_id=None,
+            alert_type="world event",
+            message="Test news",
+            created_day=1,
+            created_watch=1,
+        )
+        session.commit()
+        page = routes.list_alerts(
+            limit=50, unread_only=False, after_id=None, before_id=None, commander_id=1, session=session
+        )
+        assert len(page["items"]) == 1
+        alert_id = page["items"][0]["id"]
+        routes.acknowledge_alert_delivery(
+            routes.AlertIdsRequest(alert_ids=[alert_id]), commander_id=1, session=session
+        )
+        routes.mark_alert_read(alert_id, commander_id=1, session=session)
+        first = session.get(AlertRecipient, (1, 1))
+        second = session.get(AlertRecipient, (1, 2))
+        assert first.delivered_at is not None and first.read_at is not None
+        assert second.delivered_at is None and second.read_at is None
+    finally:
+        session.close()
+
+
+def test_hardened_claim_hashes_api_token(sqlite_db, monkeypatch):
+    monkeypatch.setenv("GAME_PASSWORD", "shared-secret")
+    session = create_session()
+    try:
+        result = routes.claim_session(
+            ClaimRequest(commander_id="cmd_1", game_password="shared-secret", client_kind="api"),
+            Response(),
+            session=session,
+            idempotency_key="claim-1",
+        )
+        repeated = routes.claim_session(
+            ClaimRequest(commander_id="cmd_1", game_password="shared-secret", client_kind="api"),
+            Response(),
+            session=session,
+            idempotency_key="claim-1",
+        )
+        assert result["token"]
+        assert repeated["token"] == result["token"]
+        assert session.get(AuthToken, result["token"]) is None
+        assert routes._get_current_commander_id(
+            authorization=f"Bearer {result['token']}", session_cookie=None, session=session
+        ) == 1
+    finally:
+        session.close()
+
+
+def test_message_send_idempotency_prevents_duplicate(sqlite_db):
+    payload = MessageCreateRequest(recipient_id="cmd_2", content="One letter")
+    first = _call_with_session(
+        lambda session: routes.send_message(
+            payload, commander_id=1, session=session, idempotency_key="letter-1"
+        )
+    )
+    second = _call_with_session(
+        lambda session: routes.send_message(
+            payload, commander_id=1, session=session, idempotency_key="letter-1"
+        )
+    )
+    assert first == second
+    session = create_session()
+    try:
+        assert session.query(Message).count() == 1
+    finally:
+        session.close()
+
+
+def test_browser_claim_uses_httponly_cookie(sqlite_db, monkeypatch):
+    monkeypatch.setenv("GAME_PASSWORD", "shared-secret")
+    monkeypatch.setenv("SESSION_SECRET", "session-secret")
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/auth/claim",
+            headers={"Idempotency-Key": "browser-claim-1"},
+            json={"commander_id": "cmd_1", "game_password": "shared-secret", "client_kind": "browser"},
+        )
+        assert response.status_code == 200
+        assert "token" not in response.json()
+        assert "HttpOnly" in response.headers["set-cookie"]
+        assert client.get("/v1/auth/session").status_code == 200

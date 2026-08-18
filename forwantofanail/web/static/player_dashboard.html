@@ -584,6 +584,7 @@
       color: var(--ink);
       line-height: 1.35;
     }
+    .alerts-item.unread { border-left: 4px solid #d7891f; cursor: pointer; }
     .alerts-heading {
       margin: 0 0 4px;
       color: var(--muted);
@@ -952,6 +953,7 @@
           <div id="assignedCommanderName" class="assigned-commander-name">-</div>
           <div id="assignedCommanderFaction" class="assigned-commander-note">-</div>
         </div>
+        <button id="logoutBtn" type="button">Release</button>
       </div>
       <div class="meta">
         <div><strong>Time:</strong> <span id="timeText">-</span></div>
@@ -1071,6 +1073,7 @@
       <aside class="alerts-pane" id="alertPane">
         <div class="alerts-title">Reports</div>
         <ul class="alerts-list" id="alertList"></ul>
+        <button id="olderAlertsBtn" type="button" hidden>Older reports</button>
       </aside>
       <div class="hover-card" id="hoverCard">
         <div class="hover-title" id="hoverTitle">Cell Actions</div>
@@ -1135,6 +1138,7 @@
       validAttackTargets: new Map(),
       validBesiegeTargets: new Map(),
       alerts: [],
+      alertsHasMore: false,
       followRoadEnabled: false,
       forcedMarchEnabled: false,
       armyPanelExpanded: false,
@@ -1236,6 +1240,7 @@
       assignedCommanderPortrait: document.getElementById("assignedCommanderPortrait"),
       assignedCommanderName: document.getElementById("assignedCommanderName"),
       assignedCommanderFaction: document.getElementById("assignedCommanderFaction"),
+      logoutBtn: document.getElementById("logoutBtn"),
       commanderOverviewPopover: document.getElementById("commanderOverviewPopover"),
       commanderOverviewTitle: document.getElementById("commanderOverviewTitle"),
       commanderOverviewText: document.getElementById("commanderOverviewText"),
@@ -1290,6 +1295,7 @@
       diegeticMapMessage: document.getElementById("diegeticMapMessage"),
       alertPane: document.getElementById("alertPane"),
       alertList: document.getElementById("alertList"),
+      olderAlertsBtn: document.getElementById("olderAlertsBtn"),
       hoverCard: document.getElementById("hoverCard"),
       hoverTitle: document.getElementById("hoverTitle"),
       queueMoveBtn: document.getElementById("queueMoveBtn"),
@@ -1387,15 +1393,35 @@
         const message = typeof item === "string" ? item : String(item?.message || "");
         const heading = typeof item === "string" ? "" : String(item?.heading || "");
         const importance = String(item?.importance || "").toLowerCase();
-        const cls = importance === "high"
+        const baseCls = importance === "high"
           ? "alerts-item high"
           : importance === "moderate"
             ? "alerts-item moderate"
             : "alerts-item";
-        const headingHtml = heading ? `<div class="alerts-heading">${heading}</div>` : "";
-        return `<li class="${cls}">${headingHtml}<div class="alerts-message">${message}</div></li>`;
+        const cls = `${baseCls}${item?.id && !item?.is_read ? " unread" : ""}`;
+        const headingHtml = heading ? `<div class="alerts-heading">${escapeHtml(heading)}</div>` : "";
+        const idAttribute = item?.id ? ` data-alert-id="${escapeHtml(item.id)}" tabindex="0"` : "";
+        return `<li class="${cls}"${idAttribute}>${headingHtml}<div class="alerts-message">${escapeHtml(message)}</div></li>`;
       });
       els.alertList.innerHTML = rows.join("");
+      els.alertList.querySelectorAll("[data-alert-id]").forEach((row) => {
+        const openAlert = async () => {
+          const alertId = row.dataset.alertId;
+          const item = state.alerts.find((candidate) => candidate?.id === alertId);
+          if (!item || item.is_read) return;
+          try {
+            await api(`/v1/me/alerts/${encodeURIComponent(alertId)}/read`, { method: "POST" }, true);
+            item.is_read = true;
+            row.classList.remove("unread");
+          } catch (err) {
+            setStatus(`Alert read failed: ${readableErrorMessage(err)}`, true);
+          }
+        };
+        row.addEventListener("click", openAlert);
+        row.addEventListener("keydown", (event) => {
+          if (event.key === "Enter" || event.key === " ") openAlert();
+        });
+      });
     }
 
     function escapeHtml(value) {
@@ -1698,8 +1724,8 @@
         const unitType = String(det?.type || (det?.is_cavalry ? "cavalry" : "infantry"));
         rows.push(
           `<tr>` +
-            `<td class="army-col-name">${String(det?.name || "Detachment")}</td>` +
-            `<td class="army-col-type">${warriors} ${unitType}</td>` +
+            `<td class="army-col-name">${escapeHtml(String(det?.name || "Detachment"))}</td>` +
+            `<td class="army-col-type">${warriors} ${escapeHtml(unitType)}</td>` +
             `<td class="army-col-wagons">${wagonCount} wagons</td>` +
           `</tr>`
         );
@@ -2684,8 +2710,8 @@
             const label = String(target.label || target.faction || "Enemy army").trim();
             return (
               `<li class="staged-item">` +
-              `<span>${label}</span>` +
-              `<button class="staged-remove" data-attack-target="${h3Label}" type="button">Stage</button>` +
+              `<span>${escapeHtml(label)}</span>` +
+              `<button class="staged-remove" data-attack-target="${escapeHtml(h3Label)}" type="button">Stage</button>` +
               `</li>`
             );
           });
@@ -2701,7 +2727,7 @@
         }
         const label = String(state.stagedAttack.label || state.stagedAttack.target_h3 || "Target");
         els.stagedPathList.innerHTML =
-          `<li class="staged-item"><span>Target: ${label}</span>` +
+          `<li class="staged-item"><span>Target: ${escapeHtml(label)}</span>` +
           `<button class="staged-remove" data-clear-attack=\"1\" type="button">Clear</button></li>`;
         const clearBtn = els.stagedPathList.querySelector("button[data-clear-attack]");
         if (clearBtn) {
@@ -2723,8 +2749,8 @@
           }
           const rows = targets.map((target) => (
             `<li class="staged-item">` +
-            `<span>${String(target.stronghold_name || "Stronghold")}</span>` +
-            `<button class="staged-remove" data-besiege-target="${String(target.target_h3 || "").trim()}" type="button">Stage</button>` +
+            `<span>${escapeHtml(String(target.stronghold_name || "Stronghold"))}</span>` +
+            `<button class="staged-remove" data-besiege-target="${escapeHtml(String(target.target_h3 || "").trim())}" type="button">Stage</button>` +
             `</li>`
           ));
           els.stagedPathList.innerHTML = rows.join("");
@@ -2739,7 +2765,7 @@
         }
         const label = String(state.stagedSiege.stronghold_name || state.stagedSiege.target_h3 || "Stronghold");
         els.stagedPathList.innerHTML =
-          `<li class="staged-item"><span>Target: ${label}</span>` +
+          `<li class="staged-item"><span>Target: ${escapeHtml(label)}</span>` +
           `<button class="staged-remove" data-clear-besiege="1" type="button">Clear</button></li>`;
         const clearBtn = els.stagedPathList.querySelector("button[data-clear-besiege]");
         if (clearBtn) {
@@ -2769,7 +2795,7 @@
             : `<span></span>`;
           return (
         `<li class="staged-item">` +
-        `<span>${watchLabel}: ${title}</span>` +
+        `<span>${escapeHtml(watchLabel)}: ${escapeHtml(title)}</span>` +
         `${removeControl}` +
         `</li>`
           );
@@ -2860,7 +2886,8 @@
         updateHoveredMoveOutline(state.hoverH3);
         return;
       }
-      const payload = await api(`/v1/me/actions/valid-next?origin_h3=${encodeURIComponent(origin)}`, {}, true);
+      const prefix = encodeURIComponent(state.stagedPath.join(","));
+      const payload = await api(`/v1/me/actions/valid-next?staged_path=${prefix}`, {}, true);
       const valid = Array.isArray(payload.valid_destinations) ? payload.valid_destinations : [];
       state.validNextMoves = new Set(valid.map((value) => String(value)));
       const destinations = Array.isArray(payload.destinations) ? payload.destinations : [];
@@ -2896,7 +2923,8 @@
         updateHoveredMoveOutline(state.hoverH3);
         return;
       }
-      const payload = await api(`/v1/me/actions/valid-attack?origin_h3=${encodeURIComponent(origin)}`, {}, true);
+      const prefix = encodeURIComponent(state.stagedPath.join(","));
+      const payload = await api(`/v1/me/actions/valid-attack?staged_path=${prefix}`, {}, true);
       const targets = Array.isArray(payload.targets) ? payload.targets : [];
       for (const row of targets) {
         const key = String(row?.target_h3 || "").trim();
@@ -2932,7 +2960,8 @@
         updateHoveredMoveOutline(state.hoverH3);
         return;
       }
-      const payload = await api(`/v1/me/actions/valid-besiege?origin_h3=${encodeURIComponent(origin)}`, {}, true);
+      const prefix = encodeURIComponent(state.stagedPath.join(","));
+      const payload = await api(`/v1/me/actions/valid-besiege?staged_path=${prefix}`, {}, true);
       const targets = Array.isArray(payload.targets) ? payload.targets : [];
       for (const row of targets) {
         const key = String(row?.target_h3 || "").trim();
@@ -3222,10 +3251,14 @@
 
     async function api(path, options = {}, useAuth = false) {
       const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
-      if (useAuth && state.token) {
+      if (useAuth && state.token && state.token !== "cookie-session") {
         headers["Authorization"] = `Bearer ${state.token}`;
       }
-      const response = await fetch(path, { ...options, headers });
+      const method = String(options.method || "GET").toUpperCase();
+      if (!["GET", "HEAD", "OPTIONS"].includes(method) && !headers["Idempotency-Key"]) {
+        headers["Idempotency-Key"] = window.crypto.randomUUID();
+      }
+      const response = await fetch(path, { ...options, headers, credentials: "same-origin" });
       const contentType = response.headers.get("content-type") || "";
       const data = contentType.includes("application/json") ? await response.json() : await response.text();
       if (!response.ok) {
@@ -3259,6 +3292,7 @@
       state.selectedCommanderPortrait = "";
       state.view = null;
       state.alerts = [];
+      state.alertsHasMore = false;
       state.correspondents = [];
       state.inbox = [];
       state.openMessageId = null;
@@ -3314,7 +3348,6 @@
       window.localStorage.setItem(
         CLAIM_STORAGE_KEY,
         JSON.stringify({
-          token: payload.token,
           commander: payload.commander,
         })
       );
@@ -3390,7 +3423,7 @@
       const commander = payload.commander || {};
       const claimOption = state.claimOptions.find((option) => option.id === commander.id) || {};
       const hydratedCommander = { ...claimOption, ...commander };
-      state.token = payload.token;
+      state.token = payload.token || "cookie-session";
       state.selectedCommanderId = hydratedCommander.id || "";
       state.selectedCommander = hydratedCommander.name || "";
       state.selectedCommanderDisplay = hydratedCommander.display_name || hydratedCommander.name || "";
@@ -3407,7 +3440,7 @@
     function storedClaim() {
       try {
         const parsed = JSON.parse(window.localStorage.getItem(CLAIM_STORAGE_KEY) || "null");
-        if (parsed && parsed.token) {
+        if (parsed && parsed.commander) {
           return parsed;
         }
       } catch (_) {}
@@ -3415,7 +3448,7 @@
     }
 
     async function loadClaimOptions() {
-      state.claimOptions = await api("/v1/commanders/claims");
+      state.claimOptions = await api("/v1/auth/commanders");
       renderClaimPanel();
     }
 
@@ -3461,8 +3494,13 @@
     }
 
     async function claimCommander(commanderId) {
-      const payload = await api(`/v1/commanders/${encodeURIComponent(commanderId)}/claim`, {
+      const gamePassword = window.prompt("Enter the shared game password:");
+      if (!gamePassword) {
+        throw new Error("Game password is required.");
+      }
+      const payload = await api("/v1/auth/claim", {
         method: "POST",
+        body: JSON.stringify({ commander_id: commanderId, game_password: gamePassword, client_kind: "browser" }),
       });
       applyClaim(payload);
     }
@@ -3494,7 +3532,7 @@
         }
         grouped.get(factionName).push(correspondent);
       }
-      const renderOption = (c) => `<option value="${c.id}">${c.display_name || c.name}</option>`;
+      const renderOption = (c) => `<option value="${escapeHtml(c.id)}">${escapeHtml(c.display_name || c.name)}</option>`;
       const factionNames = Array.from(grouped.keys()).sort((a, b) => {
         const aIsActive = activeFaction && a.toLowerCase() === activeFaction;
         const bIsActive = activeFaction && b.toLowerCase() === activeFaction;
@@ -3544,8 +3582,8 @@
         const dayText = Number.isFinite(sentDay) ? `, ${formatScenarioDate(sentDay)}` : "";
         return (
           `<li class="inbox-item">` +
-          `<button class="inbox-btn${unreadClass}" data-msg-id="${msg.id}" type="button">` +
-          `${marker}${msg.from.name}${dayText}` +
+          `<button class="inbox-btn${unreadClass}" data-msg-id="${escapeHtml(msg.id)}" type="button">` +
+          `${escapeHtml(marker)}${escapeHtml(msg.from.name)}${escapeHtml(dayText)}` +
           `</button>` +
           `</li>`
         );
@@ -3600,7 +3638,8 @@
       }
       const requestId = ++alertsRequestId;
       const sessionSnapshot = snapshotSession();
-      const rows = await api("/v1/me/alerts?limit=25", {}, true);
+      const response = await api("/v1/me/alerts?limit=50", {}, true);
+      const rows = Array.isArray(response) ? response : (response.items || []);
       if (!isCurrentSession(sessionSnapshot) || requestId !== alertsRequestId) {
         return;
       }
@@ -3613,6 +3652,14 @@
       const unreadInboxCount = state.inbox.reduce((count, message) => (
         message && message.is_read === false ? count + 1 : count
       ), 0);
+      for (const signal of (state.view?.status_signals || [])) {
+        stateCurrent.push({
+          message: String(signal?.message || ""),
+          heading: "",
+          importance: String(signal?.importance || "normal"),
+          signal_kind: "state",
+        });
+      }
       for (const item of rows) {
         const rawMessage = String(item?.message || "").trim();
         if (!rawMessage) {
@@ -3651,10 +3698,12 @@
           ? `${formatScenarioDateNoYear(deliveredDay)}, ${formatWatchLabelLower(deliveredWatch)}`
           : "";
         events.push({
+          id: item.id,
           message: normalizeAlertMessage(rawMessage),
           heading: eventHeading,
           importance,
           signal_kind: "event",
+          is_read: !!item.is_read,
         });
       }
 
@@ -3666,17 +3715,46 @@
           signal_kind: "state",
         });
       }
-      if (state.forcedMarchEnabled) {
-        stateCurrent.unshift({
-          message: "Standing order: forced march.",
-          heading: "",
-          importance: "moderate",
-          signal_kind: "state",
-        });
-      }
-
       state.alerts = [...stateCurrent, ...events];
+      state.alertsHasMore = !!response?.has_more;
+      els.olderAlertsBtn.hidden = !state.alertsHasMore;
       renderAlerts();
+      const deliveredIds = rows.map((item) => item?.id).filter(Boolean);
+      if (deliveredIds.length) {
+        await api("/v1/me/alerts/ack-delivered", {
+          method: "POST",
+          body: JSON.stringify({ alert_ids: deliveredIds }),
+        }, true);
+      }
+    }
+
+    async function loadOlderAlerts() {
+      const eventRows = state.alerts.filter((item) => item?.id);
+      const beforeId = eventRows.length ? eventRows[eventRows.length - 1].id : "";
+      if (!beforeId) return;
+      const response = await api(`/v1/me/alerts?limit=50&before_id=${encodeURIComponent(beforeId)}`, {}, true);
+      const known = new Set(eventRows.map((item) => item.id));
+      const appended = (response.items || []).filter((item) => !known.has(item.id)).map((item) => {
+        const stamp = item?.delivered_watch || {};
+        return {
+          id: item.id,
+          message: normalizeAlertMessage(item.message),
+          heading: `${formatScenarioDateNoYear(Number(stamp.day))}, ${formatWatchLabelLower(Number(stamp.watch))}`,
+          importance: String(item.importance || "normal"),
+          signal_kind: "event",
+          is_read: !!item.is_read,
+        };
+      });
+      state.alerts.push(...appended);
+      state.alertsHasMore = !!response.has_more;
+      els.olderAlertsBtn.hidden = !state.alertsHasMore;
+      renderAlerts();
+      if (appended.length) {
+        await api("/v1/me/alerts/ack-delivered", {
+          method: "POST",
+          body: JSON.stringify({ alert_ids: appended.map((item) => item.id) }),
+        }, true);
+      }
     }
 
     function projectCells(cells, width, height) {
@@ -4368,8 +4446,7 @@
       if (!isCurrentSession(sessionSnapshot)) {
         return;
       }
-      const cellsParam = encodeURIComponent(view.environs.cells.map((cell) => cell.h3).join(","));
-      const borderRoads = await api(`/v1/me/roads/border?cells=${cellsParam}`, {}, true);
+      const borderRoads = await api("/v1/me/roads/border", {}, true);
       if (!isCurrentSession(sessionSnapshot)) {
         return;
       }
@@ -4567,6 +4644,20 @@
         return;
       }
       hideCommanderOverview();
+    });
+    els.logoutBtn.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      if (!window.confirm("Release this commander so another player may claim them?")) return;
+      try {
+        await api("/v1/auth/logout", { method: "POST" }, true);
+        resetPlayerSession({ clearStoredClaim: true });
+        await loadClaimOptions();
+      } catch (err) {
+        setStatus(`Logout failed: ${readableErrorMessage(err)}`, true);
+      }
+    });
+    els.olderAlertsBtn.addEventListener("click", () => {
+      loadOlderAlerts().catch((err) => setStatus(`Older alerts failed: ${readableErrorMessage(err)}`, true));
     });
 
     const resizeObserver = new ResizeObserver(() => {
@@ -4925,16 +5016,13 @@
       initializeDiegeticMap();
       try {
         await loadClaimOptions();
-        const claim = storedClaim();
-        if (claim) {
-          applyClaim(claim, { persist: false });
-          try {
-            await refreshAllPanels();
-          } catch (err) {
-            resetPlayerSession({ clearStoredClaim: true });
-            await loadClaimOptions();
-            setStatus("Stored commander token is no longer valid; choose a commander.", true);
-          }
+        try {
+          const activeSession = await api("/v1/auth/session", {}, true);
+          applyClaim(activeSession);
+          await refreshAllPanels();
+        } catch (_) {
+          resetPlayerSession({ clearStoredClaim: true });
+          await loadClaimOptions();
         }
         renderCorrespondents();
         renderInbox();
