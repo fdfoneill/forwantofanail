@@ -2648,6 +2648,13 @@
       return String(step || "").trim();
     }
 
+    function stagedPathQueryValue() {
+      return state.stagedPath
+        .map(stagedStepH3)
+        .filter(Boolean)
+        .join(",");
+    }
+
     function stagedStepWatchesNeeded(step) {
       if (step && typeof step === "object") {
         return Math.max(1, Number(step.watchesNeeded || 1));
@@ -2886,7 +2893,7 @@
         updateHoveredMoveOutline(state.hoverH3);
         return;
       }
-      const prefix = encodeURIComponent(state.stagedPath.join(","));
+      const prefix = encodeURIComponent(stagedPathQueryValue());
       const payload = await api(`/v1/me/actions/valid-next?staged_path=${prefix}`, {}, true);
       const valid = Array.isArray(payload.valid_destinations) ? payload.valid_destinations : [];
       state.validNextMoves = new Set(valid.map((value) => String(value)));
@@ -2923,7 +2930,7 @@
         updateHoveredMoveOutline(state.hoverH3);
         return;
       }
-      const prefix = encodeURIComponent(state.stagedPath.join(","));
+      const prefix = encodeURIComponent(stagedPathQueryValue());
       const payload = await api(`/v1/me/actions/valid-attack?staged_path=${prefix}`, {}, true);
       const targets = Array.isArray(payload.targets) ? payload.targets : [];
       for (const row of targets) {
@@ -2960,7 +2967,7 @@
         updateHoveredMoveOutline(state.hoverH3);
         return;
       }
-      const prefix = encodeURIComponent(state.stagedPath.join(","));
+      const prefix = encodeURIComponent(stagedPathQueryValue());
       const payload = await api(`/v1/me/actions/valid-besiege?staged_path=${prefix}`, {}, true);
       const targets = Array.isArray(payload.targets) ? payload.targets : [];
       for (const row of targets) {
@@ -4475,7 +4482,7 @@
       try {
         await refreshOrderTargets();
       } catch (err) {
-        setStatus(`Attack target lookup failed: ${err.message}`, true);
+        setStatus(`Order destination lookup failed: ${err.message}`, true);
       }
       renderMap();
     }

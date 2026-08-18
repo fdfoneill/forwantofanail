@@ -576,3 +576,15 @@ def test_player_dashboard_csp_allows_h3_script_host(sqlite_db):
     assert response.status_code == 200
     assert "https://cdn.jsdelivr.net" in response.headers["content-security-policy"]
     assert "https://cdn.jsdelivr.net/npm/h3-js@4.1.0/dist/h3-js.umd.js" in response.text
+
+
+def test_player_dashboard_serializes_staged_path_h3_values(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    assert ".map(stagedStepH3)" in response.text
+    assert "state.stagedPath.join" not in response.text
+    assert "Order destination lookup failed" in response.text
