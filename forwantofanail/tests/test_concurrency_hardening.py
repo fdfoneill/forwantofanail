@@ -879,3 +879,14 @@ def test_player_dashboard_uses_forage_condition_descriptions_in_hover_cards(sqli
     assert settlement_row in forageable_block
     assert forage_row in forageable_block
     assert "Times Foraged This Season:" not in response.text
+
+
+def test_player_dashboard_auto_refreshes_every_five_seconds(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    assert "const AUTO_REFRESH_INTERVAL_MS = 5000;" in response.text
+    assert "}, AUTO_REFRESH_INTERVAL_MS);" in response.text
