@@ -565,3 +565,14 @@ def test_browser_claim_uses_httponly_cookie(sqlite_db, monkeypatch):
         assert "token" not in response.json()
         assert "HttpOnly" in response.headers["set-cookie"]
         assert client.get("/v1/auth/session").status_code == 200
+
+
+def test_player_dashboard_csp_allows_h3_script_host(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    assert "https://cdn.jsdelivr.net" in response.headers["content-security-policy"]
+    assert "https://cdn.jsdelivr.net/npm/h3-js@4.1.0/dist/h3-js.umd.js" in response.text

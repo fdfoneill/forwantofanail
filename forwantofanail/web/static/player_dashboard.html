@@ -3209,41 +3209,52 @@
       });
     }
 
-    function cellBoundary(h3Index) {
-      if (window.h3.cellToBoundary) {
-        return parseBoundary(window.h3.cellToBoundary(h3Index));
+    function h3Api() {
+      if (!window.h3) {
+        throw new Error("H3 map library failed to load. Check the browser console or network connection and reload.");
       }
-      if (window.h3.h3ToGeoBoundary) {
-        return parseBoundary(window.h3.h3ToGeoBoundary(h3Index, true));
+      return window.h3;
+    }
+
+    function cellBoundary(h3Index) {
+      const h3 = h3Api();
+      if (typeof h3.cellToBoundary === "function") {
+        return parseBoundary(h3.cellToBoundary(h3Index));
+      }
+      if (typeof h3.h3ToGeoBoundary === "function") {
+        return parseBoundary(h3.h3ToGeoBoundary(h3Index, true));
       }
       throw new Error("h3 boundary function unavailable");
     }
 
     function cellCenter(h3Index) {
-      if (window.h3.cellToLatLng) {
-        const [lat, lng] = window.h3.cellToLatLng(h3Index);
+      const h3 = h3Api();
+      if (typeof h3.cellToLatLng === "function") {
+        const [lat, lng] = h3.cellToLatLng(h3Index);
         return { lat, lng };
       }
-      if (window.h3.h3ToGeo) {
-        const [lat, lng] = window.h3.h3ToGeo(h3Index);
+      if (typeof h3.h3ToGeo === "function") {
+        const [lat, lng] = h3.h3ToGeo(h3Index);
         return { lat, lng };
       }
       throw new Error("h3 center function unavailable");
     }
 
     function areNeighborCells(a, b) {
-      if (window.h3.areNeighborCells) {
-        return window.h3.areNeighborCells(a, b);
+      const h3 = h3Api();
+      if (typeof h3.areNeighborCells === "function") {
+        return h3.areNeighborCells(a, b);
       }
-      if (window.h3.h3IndexesAreNeighbors) {
-        return window.h3.h3IndexesAreNeighbors(a, b);
+      if (typeof h3.h3IndexesAreNeighbors === "function") {
+        return h3.h3IndexesAreNeighbors(a, b);
       }
       return false;
     }
 
     function neighborCells(h3Index) {
-      if (window.h3.gridDisk) {
-        const disk = window.h3.gridDisk(h3Index, 1);
+      const h3 = h3Api();
+      if (typeof h3.gridDisk === "function") {
+        const disk = h3.gridDisk(h3Index, 1);
         return disk.filter((value) => value !== h3Index);
       }
       return [];
