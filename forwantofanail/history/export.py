@@ -54,6 +54,10 @@ def _normalized_faction(value: str) -> str:
     return " ".join(str(value or "").strip().casefold().split())
 
 
+def _is_open_water_terrain(value: str) -> bool:
+    return " ".join(str(value or "").strip().casefold().split()) == "open water"
+
+
 def _stable_faction_color(name: str) -> str:
     digest = hashlib.sha256(_normalized_faction(name).encode("utf-8")).digest()
     hue = int.from_bytes(digest[:2], "big") / 65535.0
@@ -66,7 +70,7 @@ def _stable_faction_color(name: str) -> str:
 def load_export_config(path: Path) -> tuple[dict[str, Any], str]:
     raw = path.read_bytes()
     config = json.loads(raw)
-    required = {"background", "neutral", "water", "text"}
+    required = {"background", "neutral", "text"}
     colors = config.get("colors")
     if not isinstance(colors, dict) or not required.issubset(colors):
         raise ValueError(f"History export config must define colors: {', '.join(sorted(required))}")
@@ -171,7 +175,7 @@ class HistoryRenderer:
             session.query(
                 Location.location_id,
                 Location.region,
-                TerrainType.is_water,
+                TerrainType.terrain_name,
             )
             .join(TerrainType, TerrainType.terrain_id == Location.terrain_id)
             .order_by(Location.location_id.asc())
@@ -182,7 +186,7 @@ class HistoryRenderer:
         self.cells: dict[str, dict[str, Any]] = {}
         geographic_boundaries: dict[str, list[tuple[float, float]]] = {}
         geographic_centers: dict[str, tuple[float, float]] = {}
-        for location_id, region, is_water in rows:
+        for location_id, region, terrain_name in rows:
             try:
                 boundary = _cell_boundary(location_id)
                 lat, lng = h3.cell_to_latlng(location_id)
@@ -192,7 +196,7 @@ class HistoryRenderer:
             geographic_centers[location_id] = (float(lng), float(lat))
             self.cells[location_id] = {
                 "region": str(region or ""),
-                "water": bool(is_water),
+                "is_open_water": _is_open_water_terrain(terrain_name),
             }
         projected_boundaries = geographic_boundaries
         projected_centers = geographic_centers
@@ -305,11 +309,10 @@ class HistoryRenderer:
         overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
         overlay_draw = ImageDraw.Draw(overlay)
         for cell in self.cells.values():
-            if cell["water"]:
-                fill = colors["water"]
-            else:
-                controller = controller_by_region.get(_normalized_faction(cell["region"]), "")
-                fill = _faction_color(self.config, controller) if controller else colors["neutral"]
+            if cell["is_open_water"]:
+                continue
+            controller = controller_by_region.get(_normalized_faction(cell["region"]), "")
+            fill = _faction_color(self.config, controller) if controller else colors["neutral"]
             overlay_draw.polygon(cell["polygon"], fill=_rgba(fill, control_opacity))
         image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
         draw = ImageDraw.Draw(image)

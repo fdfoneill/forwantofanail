@@ -23,6 +23,7 @@ from forwantofanail.core.models import (
 )
 from forwantofanail.history.export import (
     DEFAULT_CONFIG,
+    _is_open_water_terrain,
     export_history,
     load_export_config,
     schedule_events_for_frames,
@@ -44,7 +45,7 @@ def history_db(tmp_path, monkeypatch):
         session.add_all(
             [
                 TerrainType(terrain_id=1, terrain_name="Land", speed_multiplier=1.0, scout_multiplier=1.0, is_water=False),
-                TerrainType(terrain_id=2, terrain_name="Water", speed_multiplier=1.0, scout_multiplier=1.0, is_water=True),
+                TerrainType(terrain_id=2, terrain_name="Open Water", speed_multiplier=1.0, scout_multiplier=1.0, is_water=True),
             ]
         )
         session.add_all(
@@ -200,6 +201,12 @@ def test_default_history_config_uses_half_transparent_geotiff_overlay():
     config, _ = load_export_config(DEFAULT_CONFIG)
     assert config["basemap"]["resolved_path"].endswith("data/assets/map_diegetic.tif")
     assert config["basemap"]["control_overlay_opacity"] == 0.5
+
+
+def test_only_open_water_is_omitted_from_control_overlay():
+    assert _is_open_water_terrain("Open Water") is True
+    assert _is_open_water_terrain("  OPEN   WATER ") is True
+    assert _is_open_water_terrain("River") is False
 
 
 def test_frames_only_export_has_dimensions_manifest_and_does_not_mutate_db(history_db):
