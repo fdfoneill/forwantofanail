@@ -66,6 +66,11 @@ from forwantofanail.mechanics.supply import (
     supply_stats,
 )
 from forwantofanail.mechanics.time import Watch, from_world_tick, to_world_tick
+from forwantofanail.history.snapshots import (
+    army_history_payload,
+    capture_world_snapshot,
+    record_history_event,
+)
 
 router = APIRouter(prefix="/v1")
 ARMY_MANAGEMENT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "data" / "army_management_templates.json"
@@ -1134,6 +1139,21 @@ def _set_stronghold_control(
         garrison.location_id = stronghold.location_id
         garrison.location = stronghold.location
     if clock is not None:
+        record_history_event(
+            session,
+            event_key=f"conquest:{clock.world_tick}:{stronghold.stronghold_id}:{new_faction.casefold()}",
+            world_tick=clock.world_tick,
+            event_kind="stronghold_conquest",
+            location_id=stronghold.location_id,
+            payload={
+                "stronghold_id": stronghold.stronghold_id,
+                "stronghold_name": stronghold.stronghold_name,
+                "stronghold_type": stronghold.stronghold_type,
+                "location_h3": stronghold.location_id,
+                "previous_controller": previous_faction,
+                "new_controller": new_faction,
+            },
+        )
         _emit_stronghold_conquest_alerts(
             session,
             stronghold=stronghold,
@@ -1472,6 +1492,22 @@ def _end_siege(
         participant.ended_day = clock.day
         participant.ended_watch = clock.watch
         participant.ended_reason = reason
+    stronghold = session.get(Stronghold, siege.stronghold_id)
+    record_history_event(
+        session,
+        event_key=f"siege:{siege.siege_id}:ended",
+        world_tick=clock.world_tick,
+        event_kind="siege_ended",
+        location_id=stronghold.location_id if stronghold is not None else None,
+        payload={
+            "siege_id": siege.siege_id,
+            "stronghold_id": siege.stronghold_id,
+            "stronghold_name": stronghold.stronghold_name if stronghold is not None else None,
+            "location_h3": stronghold.location_id if stronghold is not None else None,
+            "reason": reason,
+            "participant_army_ids": sorted(participant.besieger_army_id for participant in participants),
+        },
+    )
     if participant_commander_ids:
         besiege_actions = (
             session.query(Action)
@@ -1497,7 +1533,6 @@ def _start_siege(
     action: Action,
 ) -> Siege:
     siege = _active_siege_for_stronghold(session, stronghold.stronghold_id)
-    created_new_siege = False
     if siege is None:
         max_resistance = _max_resistance_for_stronghold(stronghold)
         siege = Siege(
@@ -1514,7 +1549,21 @@ def _start_siege(
         )
         session.add(siege)
         session.flush()
-        created_new_siege = True
+        record_history_event(
+            session,
+            event_key=f"siege:{siege.siege_id}:started",
+            world_tick=clock.world_tick,
+            event_kind="siege_started",
+            location_id=stronghold.location_id,
+            payload={
+                "siege_id": siege.siege_id,
+                "stronghold_id": stronghold.stronghold_id,
+                "stronghold_name": stronghold.stronghold_name,
+                "location_h3": stronghold.location_id,
+                "besieger_faction": army.army_faction,
+                "initial_army_id": army.army_id,
+            },
+        )
     existing_participant = _siege_participant_for_army(session, siege.siege_id, army.army_id)
     if existing_participant is None:
         session.add(
@@ -2503,7 +2552,7 @@ def _retreat_one_cell(
     clock: GameClock,
 ) -> bool:
     if army.is_garrison:
-        _destroy_army(session, army)
+        _destroy_army(session, army, clock=clock)
         return False
     current_h3 = army.location_id
     current_distance = _nearest_distance_to_armies(current_h3, winner_armies)
@@ -2520,12 +2569,22 @@ def _retreat_one_cell(
     return _execute_move_to_destination(session, clock, army, destination_h3)
 
 
-def _destroy_army(session: Session, army: Army) -> None:
+def _destroy_army(session: Session, army: Army, *, clock: GameClock | None = None) -> None:
+    archived_army = army_history_payload(army) if not army.is_garrison and clock is not None else None
     if army.is_garrison:
         for det in list(army.detachments):
             det.warrior_count = 0
             session.delete(det)
         return
+    if archived_army is not None and clock is not None:
+        record_history_event(
+            session,
+            event_key=f"army:{army.army_id}:destroyed:{clock.world_tick}",
+            world_tick=clock.world_tick,
+            event_kind="army_destroyed",
+            location_id=army.location_id,
+            payload={"army": archived_army, "location_h3": army.location_id},
+        )
     for det in list(army.detachments):
         det.warrior_count = 0
         session.delete(det)
@@ -2545,7 +2604,7 @@ def _retreat_one_cell_with_wagon_drop(
     clock: GameClock,
 ) -> dict[str, Any]:
     if army.is_garrison:
-        _destroy_army(session, army)
+        _destroy_army(session, army, clock=clock)
         return {"retreated": False, "dropped_wagons": False, "destroyed": True, "garrison_destroyed": True}
     retreat_ok = _retreat_one_cell(session, army=army, winner_armies=winner_armies, clock=clock)
     if retreat_ok:
@@ -2556,7 +2615,7 @@ def _retreat_one_cell_with_wagon_drop(
         retreat_ok = _retreat_one_cell(session, army=army, winner_armies=winner_armies, clock=clock)
         if retreat_ok:
             return {"retreated": True, "dropped_wagons": True, "destroyed": False}
-    _destroy_army(session, army)
+    _destroy_army(session, army, clock=clock)
     return {"retreated": False, "dropped_wagons": has_wagons, "destroyed": True}
 
 
@@ -2769,6 +2828,11 @@ def _resolve_battles_from_edges(
                     action.state = "failed"
                     failed += 1
             continue
+
+        participant_before = {
+            army.army_id: army_history_payload(army)
+            for army in sorted(participant_armies, key=lambda row: row.army_id)
+        }
 
         side_strength: dict[str, int] = {
             faction: sum(_effective_strength(army, engagement_type=engagement_type) for army in armies)
@@ -2992,6 +3056,62 @@ def _resolve_battles_from_edges(
                         _execute_move_to_destination(session, clock, acting_army, winner_destination_by_action_id[action_id])
                 action.state = "completed"
                 completed += 1
+
+        battlefield_h3s = sorted(
+            {
+                str(target_h3_by_action_id[action_id])
+                for action_id in action_ids_in_component
+                if target_h3_by_action_id.get(action_id)
+            }
+        )
+        participant_results = []
+        participant_after = {
+            army.army_id: army_history_payload(army)
+            for army in sorted(participant_armies, key=lambda row: row.army_id)
+        }
+        for army_id in sorted(participant_before):
+            before = participant_before[army_id]
+            after = participant_after[army_id]
+            casualties = int(casualties_by_army.get(army_id, 0) or 0)
+            participant_results.append(
+                {
+                    "before": before,
+                    "after": after,
+                    "strength_before": int(before["strength"]),
+                    "strength_after": int(after["strength"]),
+                    "casualties": casualties,
+                    "roll": int(army_final_roll.get(army_id, 0) or 0),
+                    "morale_delta": int(morale_delta_by_army.get(army_id, 0) or 0),
+                    "retreat": retreat_by_army.get(army_id, {}),
+                    "routed": bool(rout_by_army.get(army_id, False)),
+                }
+            )
+        battle_identity = json.dumps(
+            {
+                "tick": clock.world_tick,
+                "mode": battle_copy_mode,
+                "participants": sorted(participant_before),
+                "locations": battlefield_h3s,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        record_history_event(
+            session,
+            event_key=f"battle:{clock.world_tick}:{hashlib.sha256(battle_identity.encode('utf-8')).hexdigest()[:32]}",
+            world_tick=clock.world_tick,
+            event_kind="battle",
+            location_id=battlefield_h3s[0] if battlefield_h3s else participant_armies[0].location_id,
+            payload={
+                "battle_component_id": comp_idx,
+                "mode": battle_copy_mode,
+                "engagement_type": engagement_type,
+                "location_h3s": battlefield_h3s,
+                "participants": participant_results,
+                "factions": sorted(sides),
+                "winner_faction": winner_faction,
+            },
+        )
 
         for army in participant_armies:
             if army.commander_id is None:
@@ -5152,6 +5272,15 @@ def _validate_and_apply_management_transaction(
         _management_alert(session, commander_id=alert_commander_id, army_name=alert_army_name, clock=clock)
 
     session.flush()
+    if created_army is not None:
+        record_history_event(
+            session,
+            event_key=f"army:{created_army.army_id}:created",
+            world_tick=clock.world_tick,
+            event_kind="army_created",
+            location_id=created_army.location_id,
+            payload={"army": army_history_payload(created_army), "location_h3": created_army.location_id},
+        )
     active_commander_army = _find_commander_army(session, commander_id)
     return {
         "result": "ok",
@@ -5549,9 +5678,9 @@ def advance_time_for_development(
     _validate_admin_token(x_admin_token)
 
     def operation():
-        clock = _get_or_create_clock(session, for_update="exclusive")
         if session.bind is not None and session.bind.dialect.name == "postgresql":
             session.execute(text("SELECT pg_advisory_xact_lock(1180298062)"))
+        clock = _get_or_create_clock(session, for_update="exclusive")
         start = _clock_payload(clock)
         timeline = []
         actions_started = 0
@@ -5559,6 +5688,7 @@ def advance_time_for_development(
         actions_failed = 0
 
         for _ in range(payload.steps):
+            capture_world_snapshot(session, clock, is_final=True)
             siege_state_at_watch_start = _stronghold_ids_sieged_at_watch_start(session, clock.day, clock.watch)
             clock.world_tick += 1
             clock.day, watch_enum = from_world_tick(clock.world_tick)
@@ -5585,6 +5715,7 @@ def advance_time_for_development(
                 _emit_supply_alerts_after_consumption(session, clock)
             # Transient conditions are derived in /me/view.status_signals rather
             # than appended to the durable event stream every watch.
+            capture_world_snapshot(session, clock, is_final=False)
             timeline.append(
                 {
                     "time": _clock_payload(clock),

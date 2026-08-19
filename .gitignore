@@ -203,6 +203,9 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
+# Generated game-history frames and video
+exports/game-history/
+
 # Marimo
 marimo/_static/
 marimo/_lsp/

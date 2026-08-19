@@ -424,6 +424,45 @@ class AlertRecipient(Base):
     commander = relationship("Commander")
 
 
+class WorldSnapshot(Base):
+    __tablename__ = "world_snapshots"
+    __table_args__ = (
+        CheckConstraint("world_tick >= 0", name="ck_world_snapshots_tick"),
+        CheckConstraint("day >= 1", name="ck_world_snapshots_day"),
+        CheckConstraint("watch >= 0 AND watch <= 4", name="ck_world_snapshots_watch"),
+        CheckConstraint("schema_version >= 1", name="ck_world_snapshots_schema_version"),
+    )
+
+    world_tick = Column(Integer, primary_key=True)
+    day = Column(Integer, nullable=False)
+    watch = Column(Integer, nullable=False)
+    schema_version = Column(Integer, nullable=False, default=1)
+    state_json = Column(Text, nullable=False)
+    is_final = Column(Boolean, nullable=False, default=False, index=True)
+    captured_at = Column(DateTime, nullable=False, index=True)
+
+
+class WorldHistoryEvent(Base):
+    __tablename__ = "world_history_events"
+    __table_args__ = (
+        CheckConstraint("world_tick >= 0", name="ck_world_history_events_tick"),
+        CheckConstraint(
+            "event_kind IN ('battle', 'stronghold_conquest', 'siege_started', 'siege_ended', "
+            "'army_created', 'army_destroyed')",
+            name="ck_world_history_events_kind",
+        ),
+        Index("ix_world_history_events_tick_kind", "world_tick", "event_kind"),
+    )
+
+    event_id = Column(Integer, primary_key=True, autoincrement=True)
+    event_key = Column(String(240), nullable=False, unique=True)
+    world_tick = Column(Integer, nullable=False, index=True)
+    event_kind = Column(String(40), nullable=False, index=True)
+    location_id = Column(String(15), ForeignKey("locations.location_id"), nullable=True, index=True)
+    payload_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime, nullable=False, index=True)
+
+
 class IdempotencyRecord(Base):
     __tablename__ = "idempotency_records"
     __table_args__ = (
