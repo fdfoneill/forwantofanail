@@ -54,6 +54,7 @@ from forwantofanail.core.models import (
     Stronghold,
     TerrainType,
 )
+from forwantofanail.mechanics.location_description import describe_army_location
 from forwantofanail.mechanics.movement import (
     calculate_move_watches,
     calculate_move_watches_from_origin,
@@ -777,22 +778,6 @@ def _nearest_other_commander_army(session: Session, army: Army) -> Army | None:
     )
 
 
-def _describe_location_by_nearest_strongholds(session: Session, location_h3: str) -> str:
-    strongholds = session.query(Stronghold).all()
-    if not strongholds:
-        return "at an unknown location"
-    ranked = sorted(
-        strongholds,
-        key=lambda sh: (
-            max(0, _grid_distance(location_h3, sh.location_id)),
-            int(sh.stronghold_id),
-        ),
-    )
-    if len(ranked) == 1:
-        return f"near {ranked[0].stronghold_name}"
-    return f"between {ranked[0].stronghold_name} and {ranked[1].stronghold_name}"
-
-
 def _run_morale_test_for_army(
     session: Session,
     *,
@@ -867,7 +852,7 @@ def _run_morale_test_for_army(
             recipient_commander = session.get(Commander, recipient_army.commander_id)
             if recipient_commander is not None:
                 recipient_name = _commander_display_name(recipient_commander)
-                descriptor = _describe_location_by_nearest_strongholds(session, army.location_id)
+                descriptor = describe_army_location(session, army.location_id)
                 _create_message(
                     session,
                     sender_name=f"A sympathizer in {army.army_name}",
