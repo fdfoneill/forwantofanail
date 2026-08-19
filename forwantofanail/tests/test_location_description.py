@@ -11,7 +11,7 @@ from forwantofanail.core.database import create_session, reset_database_runtime
 from forwantofanail.core.migrate_runtime_tables import migrate_runtime_tables
 from forwantofanail.core.models import Location, Stronghold, TerrainType
 from forwantofanail.mechanics import location_description
-from forwantofanail.mechanics.location_description import describe_army_location
+from forwantofanail.mechanics.location_description import build_environs_brief, describe_army_location
 
 
 @pytest.fixture()
@@ -153,3 +153,245 @@ def test_sympathizer_letter_uses_hierarchical_location_description(monkeypatch):
     )
 
     assert message["content"] == "I write from within the ranks. The army is currently outside Highhold."
+
+
+def _cell_at_bearing(center_h3: str, distance: int, bearing: str) -> str:
+    return next(
+        cell_h3
+        for cell_h3 in sorted(h3.grid_ring(center_h3, distance))
+        if location_description._bearing_word(center_h3, cell_h3) == bearing
+    )
+
+
+def _brief_cell(
+    cell_h3: str,
+    *,
+    terrain: str = "Open Ground",
+    road: bool = False,
+    settlement: int = 1,
+    forage: int = 0,
+    stronghold=None,
+    armies=None,
+):
+    return {
+        "h3": cell_h3,
+        "terrain_type": terrain,
+        "has_road": road,
+        "settlement": settlement,
+        "foraged_this_season": forage,
+        "stronghold": stronghold,
+        "other_armies": armies or [],
+    }
+
+
+def test_environs_brief_describes_discrete_terrain_forage_and_offroad_roads():
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    north_h3 = _cell_at_bearing(center_h3, 2, "north")
+    west_h3 = _cell_at_bearing(center_h3, 2, "west")
+    southeast_h3 = _cell_at_bearing(center_h3, 2, "southeast")
+    environs = {
+        "center_h3": center_h3,
+        "radius": 2,
+        "cells": [
+            _brief_cell(center_h3, forage=0),
+            _brief_cell(north_h3, terrain="Desert", forage=0),
+            _brief_cell(west_h3, terrain="River", road=True, forage=1),
+            _brief_cell(southeast_h3, terrain="River", forage=1),
+        ],
+    }
+
+    sections = build_environs_brief(environs)
+
+    assert sections.terrain.startswith("The army is in Open Ground terrain.")
+    assert "desert to the north" in sections.terrain
+    assert "river to the west" in sections.terrain
+    assert "river to the southeast" in sections.terrain
+    assert "a road to the west" in sections.terrain
+    assert sections.forage == "The area is plentiful in terms of forage."
+    assert sections.roads == ""
+
+
+def test_environs_brief_names_visible_strongholds_adjacent_to_road_ends():
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    ring = sorted(h3.grid_ring(center_h3, 3))
+    path = None
+    for first_h3, second_h3 in combinations(ring, 2):
+        candidate = list(h3.grid_path_cells(first_h3, second_h3))
+        if center_h3 in candidate and len(candidate) >= 7:
+            path = candidate
+            break
+    assert path is not None
+    cells = [_brief_cell(cell_h3, road=True) for cell_h3 in path[1:-1]]
+    cells.extend(
+        [
+            _brief_cell(
+                path[0],
+                stronghold={
+                    "id": "sh_1",
+                    "name": "Westgate",
+                    "type": "fortress",
+                    "faction": "Allakia",
+                    "defender_strength": 100,
+                },
+            ),
+            _brief_cell(
+                path[-1],
+                stronghold={
+                    "id": "sh_2",
+                    "name": "Eastgate",
+                    "type": "town",
+                    "faction": "Dinn",
+                    "defender_strength": 50,
+                },
+            ),
+        ]
+    )
+
+    sections = build_environs_brief({"center_h3": center_h3, "radius": 3, "cells": cells})
+
+    assert sections.roads.startswith("The road leads ")
+    assert "towards Westgate" in sections.roads
+    assert "towards Eastgate" in sections.roads
+    assert "dead end" not in sections.roads
+
+
+def test_environs_road_does_not_lead_towards_center_stronghold():
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    road_h3 = sorted(h3.grid_ring(center_h3, 1))[0]
+    environs = {
+        "center_h3": center_h3,
+        "radius": 1,
+        "cells": [
+            _brief_cell(
+                center_h3,
+                road=True,
+                stronghold={
+                    "id": "sh_1",
+                    "name": "Centerhold",
+                    "type": "town",
+                    "faction": "Boonan",
+                    "defender_strength": 0,
+                },
+            ),
+            _brief_cell(road_h3, road=True),
+        ],
+    }
+
+    section = build_environs_brief(environs).roads
+
+    assert section.endswith("to a dead end.")
+    assert "towards Centerhold" not in section
+
+
+def test_environs_brief_distinguishes_visible_road_exit_and_dead_end():
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    neighbors = sorted(h3.grid_ring(center_h3, 1))
+    first_h3, second_h3 = next(
+        (first, second)
+        for first, second in combinations(neighbors, 2)
+        if h3.grid_distance(first, second) == 2
+    )
+    border_h3 = next(
+        cell_h3
+        for cell_h3 in h3.grid_ring(first_h3, 1)
+        if h3.grid_distance(center_h3, cell_h3) == 2
+    )
+    environs = {
+        "center_h3": center_h3,
+        "radius": 1,
+        "cells": [
+            _brief_cell(center_h3, road=True),
+            _brief_cell(first_h3, road=True),
+            _brief_cell(second_h3, road=True),
+        ],
+    }
+
+    section = build_environs_brief(environs, border_road_cells=[border_h3]).roads
+
+    assert "dead end" in section
+    assert "towards" not in section
+    assert section.count("The road leads") == 1
+
+
+def test_environs_brief_collapses_road_loop_without_inventing_dead_end():
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    ring = sorted(h3.grid_ring(center_h3, 1))
+    environs = {
+        "center_h3": center_h3,
+        "radius": 1,
+        "cells": [_brief_cell(center_h3, road=True)] + [_brief_cell(cell_h3, road=True) for cell_h3 in ring],
+    }
+
+    assert build_environs_brief(environs).roads == "The road loops through the area."
+
+
+def test_environs_brief_uses_only_serialized_army_intelligence():
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    close_h3 = sorted(h3.grid_ring(center_h3, 1))[0]
+    medium_h3 = sorted(h3.grid_ring(center_h3, 3))[0]
+    distant_h3 = sorted(h3.grid_ring(center_h3, 4))[0]
+    close_bearing = location_description._bearing_word(center_h3, close_h3)
+    medium_bearing = location_description._bearing_word(center_h3, medium_h3)
+    distant_bearing = location_description._bearing_word(center_h3, distant_h3)
+    stronghold = {
+        "id": "sh_1",
+        "name": "Bemm",
+        "type": "city",
+        "faction": "Boonan",
+        "defender_strength": 0,
+    }
+    environs = {
+        "center_h3": center_h3,
+        "radius": 4,
+        "cells": [
+            _brief_cell(center_h3),
+            _brief_cell(
+                close_h3,
+                stronghold=stronghold,
+                armies=[
+                    {
+                        "army_id": "army_2",
+                        "faction": "Dinn",
+                        "name": "The Invincibles",
+                        "infantry": 250,
+                        "cavalry": 50,
+                    }
+                ],
+            ),
+            _brief_cell(
+                medium_h3,
+                road=True,
+                armies=[{"army_id": "army_3", "faction": "Dinn", "strength_rounded": 3000}],
+            ),
+            _brief_cell(
+                distant_h3,
+                terrain="Desert",
+                armies=[{"army_id": "army_4", "faction": "Allakia"}],
+            ),
+        ],
+    }
+
+    sections = build_environs_brief(environs)
+
+    assert sections.strongholds == (
+        f"Nearby strongholds: city of Bemm 1 league to the {close_bearing}, "
+        "controlled by Boonan (garrison 0)."
+    )
+    assert 'Dinn army "The Invincibles" (strength 300) occupying Bemm' in sections.armies
+    occupying_phrase = sections.armies.split(";")[0]
+    assert "league" not in occupying_phrase
+    assert f"Dinn army (strength 3000) on the road 3 leagues to the {medium_bearing}" in sections.armies
+    assert f"Allakia army in desert terrain 4 leagues to the {distant_bearing}" in sections.armies
+    assert "The Invincibles" in sections.armies
+    assert "army_3" not in sections.armies and "army_4" not in sections.armies
+
+
+def test_environs_brief_without_forageable_cells_is_exhausted():
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    environs = {
+        "center_h3": center_h3,
+        "radius": 0,
+        "cells": [_brief_cell(center_h3, terrain="Open Water", settlement=0, forage=0)],
+    }
+
+    assert build_environs_brief(environs).forage == "The area is exhausted in terms of forage."

@@ -17,7 +17,7 @@ from typing import Any
 
 import h3
 from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Response
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy import and_, case, or_, text
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session, joinedload
@@ -54,7 +54,11 @@ from forwantofanail.core.models import (
     Stronghold,
     TerrainType,
 )
-from forwantofanail.mechanics.location_description import describe_army_location
+from forwantofanail.mechanics.forage import (
+    forage_condition_word as _forage_condition_word,
+    forage_depletion_level,
+)
+from forwantofanail.mechanics.location_description import build_environs_brief, describe_army_location
 from forwantofanail.mechanics.movement import (
     calculate_move_watches,
     calculate_move_watches_from_origin,
@@ -1961,23 +1965,13 @@ def _get_destination_h3(action: Action) -> str | None:
 
 
 def _forage_depletion_level(location: Location) -> int:
-    return max(0, min(3, int(location.foraged_this_season or 0)))
+    return forage_depletion_level(location.foraged_this_season)
 
 
 def _forage_yield_for_location(location: Location) -> Fraction:
     settlement_yield = max(int(location.settlement or 0), 0) * 2500
     depletion = _forage_depletion_level(location)
     return Fraction(settlement_yield * (3 - depletion), 3 * (depletion + 1))
-
-
-def _forage_condition_word(average_depletion: float) -> str:
-    if average_depletion <= 0:
-        return "untouched"
-    if average_depletion < 1:
-        return "plentiful"
-    if average_depletion < 2:
-        return "picked-over"
-    return "exhausted"
 
 
 def _forage_supply_gain_for_army(session: Session, army: Army) -> tuple[int, list[Location], float]:
@@ -5873,6 +5867,29 @@ def get_my_view(
     }
 
 
+@router.get("/me/brief", response_class=PlainTextResponse)
+def get_my_brief(
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    army = _find_commander_army(session, commander_id)
+    environs_radius = _environs_radius_for_army(army)
+    environs = _serialize_environs(
+        session,
+        army.location_id,
+        environs_radius,
+        exclude_army_id=army.army_id,
+        viewer_commander_id=commander_id,
+        viewer_army=army,
+    )
+    visible_set = {str(cell.get("h3")) for cell in environs["cells"]}
+    sections = build_environs_brief(
+        environs,
+        border_road_cells=_border_road_neighbor_ids(session, visible_set),
+    )
+    return sections.render()
+
+
 @router.get("/me/army-management")
 def get_army_management_state(
     commander_id: int = Depends(_get_current_commander_id),
@@ -5952,6 +5969,27 @@ def apply_army_management(
     )
 
 
+def _border_road_neighbor_ids(session: Session, visible_set: set[str]) -> list[str]:
+    neighbor_candidates: set[str] = set()
+    for cell in visible_set:
+        try:
+            neighbors = set(h3.grid_ring(cell, 1))
+        except Exception:
+            continue
+        neighbor_candidates.update(neighbors - visible_set)
+
+    if not neighbor_candidates:
+        return []
+
+    road_neighbors = (
+        session.query(Location.location_id)
+        .filter(Location.location_id.in_(neighbor_candidates), Location.is_road.is_(True))
+        .order_by(Location.location_id.asc())
+        .all()
+    )
+    return [str(row[0]) for row in road_neighbors]
+
+
 @router.get("/me/roads/border")
 def get_border_road_neighbors(
     commander_id: int = Depends(_get_current_commander_id),
@@ -5959,25 +5997,7 @@ def get_border_road_neighbors(
 ):
     army = _find_commander_army(session, commander_id)
     visible_set = set(h3.grid_disk(army.location_id, _environs_radius_for_army(army)))
-
-    h3_module = h3
-    neighbor_candidates: set[str] = set()
-    for cell in visible_set:
-        try:
-            neighbors = set(h3_module.grid_ring(cell, 1))
-        except Exception:
-            continue
-        neighbor_candidates.update(neighbors - visible_set)
-
-    if not neighbor_candidates:
-        return {"roads": []}
-
-    road_neighbors = (
-        session.query(Location.location_id)
-        .filter(Location.location_id.in_(neighbor_candidates), Location.is_road.is_(True))
-        .all()
-    )
-    return {"roads": [row[0] for row in road_neighbors]}
+    return {"roads": _border_road_neighbor_ids(session, visible_set)}
 
 
 def _validated_staged_origin(session: Session, army: Army, staged_path: str | None) -> tuple[str, list[str]]:

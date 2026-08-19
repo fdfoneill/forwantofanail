@@ -977,6 +977,84 @@ def test_browser_claim_uses_httponly_cookie(sqlite_db, monkeypatch):
         assert client.get("/v1/auth/session").status_code == 200
 
 
+def _brief_endpoint_environs():
+    center_h3 = "871ec9020ffffff"
+    return {
+        "center_h3": center_h3,
+        "radius": 2,
+        "cells": [
+            {
+                "h3": center_h3,
+                "terrain_type": "Open Ground",
+                "has_road": False,
+                "settlement": 1,
+                "foraged_this_season": 0,
+                "stronghold": None,
+                "other_armies": [],
+            }
+        ],
+    }
+
+
+def test_brief_endpoint_requires_auth_and_returns_plain_text_for_bearer(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes, "_serialize_environs", lambda *_args, **_kwargs: _brief_endpoint_environs())
+    monkeypatch.setattr(routes, "_border_road_neighbor_ids", lambda *_args, **_kwargs: [])
+    claim = _call_with_session(lambda session: routes.claim_commander("cmd_1", session=session))
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        assert client.get("/v1/me/brief").status_code == 401
+        response = client.get(
+            "/v1/me/brief",
+            headers={"Authorization": f"Bearer {claim['token']}"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain; charset=utf-8")
+    assert response.text == "The army is in Open Ground terrain. The area is untouched in terms of forage."
+
+
+def test_brief_endpoint_accepts_browser_cookie(sqlite_db, monkeypatch):
+    monkeypatch.setenv("GAME_PASSWORD", "shared-secret")
+    monkeypatch.setenv("SESSION_SECRET", "session-secret")
+    monkeypatch.setattr(routes, "_serialize_environs", lambda *_args, **_kwargs: _brief_endpoint_environs())
+    monkeypatch.setattr(routes, "_border_road_neighbor_ids", lambda *_args, **_kwargs: [])
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        claim = client.post(
+            "/v1/auth/claim",
+            headers={"Idempotency-Key": "brief-browser-claim"},
+            json={"commander_id": "cmd_1", "game_password": "shared-secret", "client_kind": "browser"},
+        )
+        response = client.get("/v1/me/brief")
+
+    assert claim.status_code == 200
+    assert response.status_code == 200
+    assert response.text.startswith("The army is in Open Ground terrain.")
+
+
+def test_brief_endpoint_uses_normal_and_cavalry_environs_radii(sqlite_db, monkeypatch):
+    radii = []
+
+    def serialize(_session, _center_h3, radius, **_kwargs):
+        radii.append(radius)
+        return _brief_endpoint_environs()
+
+    monkeypatch.setattr(routes, "_serialize_environs", serialize)
+    monkeypatch.setattr(routes, "_border_road_neighbor_ids", lambda *_args, **_kwargs: [])
+    session = create_session()
+    try:
+        routes.get_my_brief(commander_id=1, session=session)
+        session.get(Detachment, 1).is_cavalry = True
+        session.flush()
+        routes.get_my_brief(commander_id=1, session=session)
+    finally:
+        session.close()
+
+    assert radii == [2, 4]
+
+
 def test_player_dashboard_csp_allows_h3_script_host(sqlite_db):
     from forwantofanail.api.app import app
 
