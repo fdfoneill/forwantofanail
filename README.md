@@ -78,6 +78,9 @@ The default scenario package currently expects:
 If the diegetic map is missing from `data/assets`, reset will accept an already-existing [forwantofanail/web/static/map_diegetic.png](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/web/static/map_diegetic.png). If neither file exists, reset fails before any tables are dropped.
 
 This reset also auto-generates one garrison army for every stronghold based on its type.
+It also creates the provisional authoritative history snapshot for tick 0. The scenario manifest
+references `history_export.json`, which owns the georeferenced basemap and faction colors used by
+historical exports. The default history basemap is `data/assets/map_diegetic.tif`.
 
 Army-management suggestions live in:
 
@@ -136,6 +139,39 @@ Production additionally requires PostgreSQL, `APP_ENV=production`, and the canon
 * Actions support queueing: multiple `queued` actions per commander, one `in_progress`.
 * Movement does not start during watch `0` (Night), but in-progress movement can complete at Night.
 * Supply is consumed once daily at the transition into watch `0` (Night).
+* Siege orders start at watch execution; replacing an order does not lift an effective siege until an incompatible order actually takes effect.
+
+## Authoritative history and video export
+
+Every completed watch is archived in `world_snapshots`, while battles, conquests, siege transitions,
+and field-army creation/destruction are recorded in `world_history_events`. Snapshot and event writes
+share the gameplay transaction. History begins with the first snapshot captured after this feature is
+deployed; earlier watches are intentionally not reconstructed.
+
+For an in-progress deployment, apply the migration and capture the current watch as the baseline:
+
+```bash
+alembic upgrade head
+python -m forwantofanail.history.capture
+```
+
+When a game ends before another watch advances, finalize its last frame explicitly:
+
+```bash
+python -m forwantofanail.history.capture --finalize
+```
+
+Export finalized watches to PNG and a 2 fps H.264 MP4 (FFmpeg must be installed):
+
+```bash
+python -m forwantofanail.history.export
+```
+
+The default output is `exports/game-history`, including retained numbered PNGs, `game-history.mp4`,
+and `manifest.json`. Use `--no-video` for frames only, `--include-provisional` to include the current
+unfinished watch, and `--help` for tick-range, dimensions, frame rate, marker duration, output, and
+scenario-config overrides. The exporter only reads the database and rejects missing/non-final ticks
+instead of fabricating frames.
 
 # Data Structure
 

@@ -66,6 +66,11 @@ from forwantofanail.mechanics.supply import (
     supply_stats,
 )
 from forwantofanail.mechanics.time import Watch, from_world_tick, to_world_tick
+from forwantofanail.history.snapshots import (
+    army_history_payload,
+    capture_world_snapshot,
+    record_history_event,
+)
 
 router = APIRouter(prefix="/v1")
 ARMY_MANAGEMENT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "data" / "army_management_templates.json"
@@ -1134,6 +1139,21 @@ def _set_stronghold_control(
         garrison.location_id = stronghold.location_id
         garrison.location = stronghold.location
     if clock is not None:
+        record_history_event(
+            session,
+            event_key=f"conquest:{clock.world_tick}:{stronghold.stronghold_id}:{new_faction.casefold()}",
+            world_tick=clock.world_tick,
+            event_kind="stronghold_conquest",
+            location_id=stronghold.location_id,
+            payload={
+                "stronghold_id": stronghold.stronghold_id,
+                "stronghold_name": stronghold.stronghold_name,
+                "stronghold_type": stronghold.stronghold_type,
+                "location_h3": stronghold.location_id,
+                "previous_controller": previous_faction,
+                "new_controller": new_faction,
+            },
+        )
         _emit_stronghold_conquest_alerts(
             session,
             stronghold=stronghold,
@@ -1472,6 +1492,22 @@ def _end_siege(
         participant.ended_day = clock.day
         participant.ended_watch = clock.watch
         participant.ended_reason = reason
+    stronghold = session.get(Stronghold, siege.stronghold_id)
+    record_history_event(
+        session,
+        event_key=f"siege:{siege.siege_id}:ended",
+        world_tick=clock.world_tick,
+        event_kind="siege_ended",
+        location_id=stronghold.location_id if stronghold is not None else None,
+        payload={
+            "siege_id": siege.siege_id,
+            "stronghold_id": siege.stronghold_id,
+            "stronghold_name": stronghold.stronghold_name if stronghold is not None else None,
+            "location_h3": stronghold.location_id if stronghold is not None else None,
+            "reason": reason,
+            "participant_army_ids": sorted(participant.besieger_army_id for participant in participants),
+        },
+    )
     if participant_commander_ids:
         besiege_actions = (
             session.query(Action)
@@ -1497,7 +1533,6 @@ def _start_siege(
     action: Action,
 ) -> Siege:
     siege = _active_siege_for_stronghold(session, stronghold.stronghold_id)
-    created_new_siege = False
     if siege is None:
         max_resistance = _max_resistance_for_stronghold(stronghold)
         siege = Siege(
@@ -1514,7 +1549,21 @@ def _start_siege(
         )
         session.add(siege)
         session.flush()
-        created_new_siege = True
+        record_history_event(
+            session,
+            event_key=f"siege:{siege.siege_id}:started",
+            world_tick=clock.world_tick,
+            event_kind="siege_started",
+            location_id=stronghold.location_id,
+            payload={
+                "siege_id": siege.siege_id,
+                "stronghold_id": stronghold.stronghold_id,
+                "stronghold_name": stronghold.stronghold_name,
+                "location_h3": stronghold.location_id,
+                "besieger_faction": army.army_faction,
+                "initial_army_id": army.army_id,
+            },
+        )
     existing_participant = _siege_participant_for_army(session, siege.siege_id, army.army_id)
     if existing_participant is None:
         session.add(
@@ -1535,6 +1584,7 @@ def _start_siege(
         existing_participant.ended_day = None
         existing_participant.ended_watch = None
         existing_participant.ended_reason = None
+    session.flush()
     _sync_siege_lead_participant(session, siege)
     action.state = "in_progress"
     action.started_day = clock.day
@@ -1542,6 +1592,85 @@ def _start_siege(
     action.eta_day = None
     action.eta_watch = None
     return siege
+
+
+def _abandon_active_siege_for_army(
+    session: Session,
+    *,
+    army: Army,
+    clock: GameClock,
+    reason: str = "orders_changed",
+) -> None:
+    active_siege = _active_siege_for_besieger(session, army.army_id)
+    if active_siege is not None:
+        _remove_siege_participant(
+            session,
+            siege=active_siege,
+            army_id=army.army_id,
+            clock=clock,
+            reason=reason,
+        )
+
+
+def _activate_besiege_action_at_transition(
+    session: Session,
+    *,
+    action: Action,
+    army: Army,
+    clock: GameClock,
+) -> bool:
+    try:
+        params = json.loads(action.parameters_json or "{}")
+    except json.JSONDecodeError:
+        params = {}
+    try:
+        stronghold_id = int(params.get("target_stronghold_id"))
+    except (TypeError, ValueError):
+        action.state = "failed"
+        return False
+    stronghold = session.get(Stronghold, stronghold_id)
+    if stronghold is None or stronghold.control == army.army_faction or _army_is_in_stronghold(session, army):
+        action.state = "failed"
+        return False
+    try:
+        adjacent = set(h3.grid_ring(army.location_id, 1))
+    except Exception:
+        adjacent = set()
+    if stronghold.location_id not in adjacent:
+        action.state = "failed"
+        return False
+    if not _defender_armies_in_stronghold(session, stronghold, army.army_faction):
+        action.state = "failed"
+        return False
+
+    current_siege = _active_siege_for_besieger(session, army.army_id)
+    if current_siege is not None:
+        if int(current_siege.stronghold_id) != int(stronghold.stronghold_id):
+            action.state = "failed"
+            return False
+        # Reasserting the same order is continuity, not a new siege.
+        action.state = "in_progress"
+        action.started_day = clock.day
+        action.started_watch = clock.watch
+        action.eta_day = None
+        action.eta_watch = None
+        return True
+
+    existing_siege = _active_siege_for_stronghold(session, stronghold.stronghold_id)
+    if existing_siege is not None:
+        besieger_faction = _active_siege_faction(session, existing_siege)
+        if besieger_faction and besieger_faction != army.army_faction:
+            action.state = "failed"
+            return False
+    _start_siege(
+        session,
+        army=army,
+        commander_id=action.commander_id,
+        stronghold=stronghold,
+        clock=clock,
+        action=action,
+    )
+    return True
 
 
 def _find_active_siege_for_commander(session: Session, commander_id: int) -> Siege | None:
@@ -2088,10 +2217,6 @@ def _apply_plan(
     disable_follow_road: bool = False,
 ) -> tuple[list[Action], int]:
     _ = disable_follow_road
-    active_siege = _active_siege_for_besieger(session, army.army_id)
-    if active_siege is not None:
-        _remove_siege_participant(session, siege=active_siege, army_id=army.army_id, clock=clock, reason="cancelled")
-
     active_actions = (
         session.query(Action)
         .filter(Action.commander_id == commander_id, Action.state.in_(ACTIVE_ACTION_STATES))
@@ -2503,7 +2628,7 @@ def _retreat_one_cell(
     clock: GameClock,
 ) -> bool:
     if army.is_garrison:
-        _destroy_army(session, army)
+        _destroy_army(session, army, clock=clock)
         return False
     current_h3 = army.location_id
     current_distance = _nearest_distance_to_armies(current_h3, winner_armies)
@@ -2520,12 +2645,22 @@ def _retreat_one_cell(
     return _execute_move_to_destination(session, clock, army, destination_h3)
 
 
-def _destroy_army(session: Session, army: Army) -> None:
+def _destroy_army(session: Session, army: Army, *, clock: GameClock | None = None) -> None:
+    archived_army = army_history_payload(army) if not army.is_garrison and clock is not None else None
     if army.is_garrison:
         for det in list(army.detachments):
             det.warrior_count = 0
             session.delete(det)
         return
+    if archived_army is not None and clock is not None:
+        record_history_event(
+            session,
+            event_key=f"army:{army.army_id}:destroyed:{clock.world_tick}",
+            world_tick=clock.world_tick,
+            event_kind="army_destroyed",
+            location_id=army.location_id,
+            payload={"army": archived_army, "location_h3": army.location_id},
+        )
     for det in list(army.detachments):
         det.warrior_count = 0
         session.delete(det)
@@ -2545,7 +2680,7 @@ def _retreat_one_cell_with_wagon_drop(
     clock: GameClock,
 ) -> dict[str, Any]:
     if army.is_garrison:
-        _destroy_army(session, army)
+        _destroy_army(session, army, clock=clock)
         return {"retreated": False, "dropped_wagons": False, "destroyed": True, "garrison_destroyed": True}
     retreat_ok = _retreat_one_cell(session, army=army, winner_armies=winner_armies, clock=clock)
     if retreat_ok:
@@ -2556,7 +2691,7 @@ def _retreat_one_cell_with_wagon_drop(
         retreat_ok = _retreat_one_cell(session, army=army, winner_armies=winner_armies, clock=clock)
         if retreat_ok:
             return {"retreated": True, "dropped_wagons": True, "destroyed": False}
-    _destroy_army(session, army)
+    _destroy_army(session, army, clock=clock)
     return {"retreated": False, "dropped_wagons": has_wagons, "destroyed": True}
 
 
@@ -2769,6 +2904,11 @@ def _resolve_battles_from_edges(
                     action.state = "failed"
                     failed += 1
             continue
+
+        participant_before = {
+            army.army_id: army_history_payload(army)
+            for army in sorted(participant_armies, key=lambda row: row.army_id)
+        }
 
         side_strength: dict[str, int] = {
             faction: sum(_effective_strength(army, engagement_type=engagement_type) for army in armies)
@@ -2992,6 +3132,62 @@ def _resolve_battles_from_edges(
                         _execute_move_to_destination(session, clock, acting_army, winner_destination_by_action_id[action_id])
                 action.state = "completed"
                 completed += 1
+
+        battlefield_h3s = sorted(
+            {
+                str(target_h3_by_action_id[action_id])
+                for action_id in action_ids_in_component
+                if target_h3_by_action_id.get(action_id)
+            }
+        )
+        participant_results = []
+        participant_after = {
+            army.army_id: army_history_payload(army)
+            for army in sorted(participant_armies, key=lambda row: row.army_id)
+        }
+        for army_id in sorted(participant_before):
+            before = participant_before[army_id]
+            after = participant_after[army_id]
+            casualties = int(casualties_by_army.get(army_id, 0) or 0)
+            participant_results.append(
+                {
+                    "before": before,
+                    "after": after,
+                    "strength_before": int(before["strength"]),
+                    "strength_after": int(after["strength"]),
+                    "casualties": casualties,
+                    "roll": int(army_final_roll.get(army_id, 0) or 0),
+                    "morale_delta": int(morale_delta_by_army.get(army_id, 0) or 0),
+                    "retreat": retreat_by_army.get(army_id, {}),
+                    "routed": bool(rout_by_army.get(army_id, False)),
+                }
+            )
+        battle_identity = json.dumps(
+            {
+                "tick": clock.world_tick,
+                "mode": battle_copy_mode,
+                "participants": sorted(participant_before),
+                "locations": battlefield_h3s,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        record_history_event(
+            session,
+            event_key=f"battle:{clock.world_tick}:{hashlib.sha256(battle_identity.encode('utf-8')).hexdigest()[:32]}",
+            world_tick=clock.world_tick,
+            event_kind="battle",
+            location_id=battlefield_h3s[0] if battlefield_h3s else participant_armies[0].location_id,
+            payload={
+                "battle_component_id": comp_idx,
+                "mode": battle_copy_mode,
+                "engagement_type": engagement_type,
+                "location_h3s": battlefield_h3s,
+                "participants": participant_results,
+                "factions": sorted(sides),
+                "winner_faction": winner_faction,
+            },
+        )
 
         for army in participant_armies:
             if army.commander_id is None:
@@ -3462,36 +3658,6 @@ def _process_sieges_matin_tick(session: Session, clock: GameClock) -> None:
                     reason="besieger_destroyed",
                 )
                 continue
-            besiege_action = None
-            if participant.besieger_commander_id is not None:
-                besiege_action = (
-                    session.query(Action)
-                    .filter(
-                        Action.commander_id == participant.besieger_commander_id,
-                        Action.kind == "besiege",
-                        Action.state == "in_progress",
-                    )
-                    .first()
-                )
-            assault_action = None
-            if participant.besieger_commander_id is not None:
-                candidate_attacks = (
-                    session.query(Action)
-                    .filter(
-                        Action.commander_id == participant.besieger_commander_id,
-                        Action.kind == "attack",
-                        Action.state.in_(ACTIVE_ACTION_STATES),
-                    )
-                    .all()
-                )
-                for candidate in candidate_attacks:
-                    try:
-                        params = json.loads(candidate.parameters_json or "{}")
-                    except json.JSONDecodeError:
-                        params = {}
-                    if str(params.get("target_h3") or "").strip() == stronghold.location_id:
-                        assault_action = candidate
-                        break
             still_adjacent = False
             try:
                 still_adjacent = (
@@ -3500,15 +3666,6 @@ def _process_sieges_matin_tick(session: Session, clock: GameClock) -> None:
                 )
             except Exception:
                 still_adjacent = False
-            if besiege_action is None and assault_action is None:
-                _remove_siege_participant(
-                    session,
-                    siege=siege,
-                    army_id=participant.besieger_army_id,
-                    clock=clock,
-                    reason="cancelled",
-                )
-                continue
             if not still_adjacent:
                 _remove_siege_participant(
                     session,
@@ -3928,6 +4085,10 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
             continue
         if _long_column_completion_blocked(army, int(clock.watch)):
             continue
+        if action.kind == "forage":
+            # The order becomes effective at this transition. Submission alone
+            # never interrupts an existing siege.
+            _abandon_active_siege_for_army(session, army=army, clock=clock)
         if action.eta_day is None or action.eta_watch is None:
             action.state = "failed"
             failed += 1
@@ -4122,6 +4283,9 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
                     blocked_move_commanders.add(commander_id)
                     continue
                 _set_move_remaining_cost(move_action, remaining_cost)
+            # Consuming the first movement progress is the effective departure
+            # from siege duty, even when difficult terrain delays arrival.
+            _abandon_active_siege_for_army(session, army=army, clock=clock)
             remaining_cost -= 1
             _set_move_remaining_cost(move_action, remaining_cost)
             move_interval_capacity[commander_id] = max(0, move_interval_capacity.get(commander_id, 0) - 1)
@@ -4159,13 +4323,49 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
 
     # Then, promote queued actions when no in-progress action remains.
     commander_ids = set(in_progress_by_commander.keys()) | set(queued_by_commander.keys())
+    pending_besiege_actions = []
+    for commander_id, queued_actions in queued_by_commander.items():
+        if any(action.state == "in_progress" for action in in_progress_by_commander.get(commander_id, [])):
+            continue
+        active_queue = sorted(
+            (action for action in queued_actions if action.state == "queued"),
+            key=lambda action: (action.accepted_at, action.action_id),
+        )
+        if active_queue and active_queue[0].kind == "besiege":
+            pending_besiege_actions.append(active_queue[0])
+    pending_besiege_actions.sort(key=lambda action: (action.accepted_at, action.action_id))
+    for action in pending_besiege_actions:
+        army = session.query(Army).filter(Army.commander_id == action.commander_id).first()
+        if army is None:
+            action.state = "failed"
+            failed += 1
+            continue
+        if not _start_action_now_if_valid(session, action, army, clock):
+            if action.state != "queued":
+                failed += 1
+            continue
+        if not _activate_besiege_action_at_transition(
+            session,
+            action=action,
+            army=army,
+            clock=clock,
+        ):
+            failed += 1
+            continue
+        in_progress_by_commander[action.commander_id] = [action]
+        started += 1
+
     for commander_id in commander_ids:
         has_in_progress = any(
             action.state == "in_progress" for action in in_progress_by_commander.get(commander_id, [])
         )
         if has_in_progress:
             continue
-        queued = queued_by_commander.get(commander_id, [])
+        queued = [
+            action
+            for action in queued_by_commander.get(commander_id, [])
+            if action.state == "queued"
+        ]
         queued.sort(key=lambda a: (a.accepted_at, a.action_id))
         army = session.query(Army).filter(Army.commander_id == commander_id).first()
         if army is None:
@@ -4181,6 +4381,16 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
                     break
                 failed += 1
                 continue
+            if action.kind == "besiege" and not _activate_besiege_action_at_transition(
+                session,
+                action=action,
+                army=army,
+                clock=clock,
+            ):
+                failed += 1
+                continue
+            if action.kind == "forage":
+                _abandon_active_siege_for_army(session, army=army, clock=clock)
             if action.state == "completed":
                 completed += 1
                 continue
@@ -4739,7 +4949,7 @@ def _serialize_remaining_itinerary(session: Session, commander_id: int) -> dict[
         elif action.kind == "rout" and action.state == "in_progress":
             path = [str(h3_index).strip() for h3_index in (params.get("path") or []) if str(h3_index).strip()]
             remaining_rout.extend(path)
-        elif action.kind == "besiege" and action.state == "in_progress":
+        elif action.kind == "besiege" and action.state in ACTIVE_ACTION_STATES:
             target_h3 = str(params.get("target_h3") or "").strip()
             if target_h3:
                 siege_target_h3 = target_h3
@@ -5152,6 +5362,15 @@ def _validate_and_apply_management_transaction(
         _management_alert(session, commander_id=alert_commander_id, army_name=alert_army_name, clock=clock)
 
     session.flush()
+    if created_army is not None:
+        record_history_event(
+            session,
+            event_key=f"army:{created_army.army_id}:created",
+            world_tick=clock.world_tick,
+            event_kind="army_created",
+            location_id=created_army.location_id,
+            payload={"army": army_history_payload(created_army), "location_h3": created_army.location_id},
+        )
     active_commander_army = _find_commander_army(session, commander_id)
     return {
         "result": "ok",
@@ -5549,9 +5768,9 @@ def advance_time_for_development(
     _validate_admin_token(x_admin_token)
 
     def operation():
-        clock = _get_or_create_clock(session, for_update="exclusive")
         if session.bind is not None and session.bind.dialect.name == "postgresql":
             session.execute(text("SELECT pg_advisory_xact_lock(1180298062)"))
+        clock = _get_or_create_clock(session, for_update="exclusive")
         start = _clock_payload(clock)
         timeline = []
         actions_started = 0
@@ -5559,6 +5778,7 @@ def advance_time_for_development(
         actions_failed = 0
 
         for _ in range(payload.steps):
+            capture_world_snapshot(session, clock, is_final=True)
             siege_state_at_watch_start = _stronghold_ids_sieged_at_watch_start(session, clock.day, clock.watch)
             clock.world_tick += 1
             clock.day, watch_enum = from_world_tick(clock.world_tick)
@@ -5585,6 +5805,7 @@ def advance_time_for_development(
                 _emit_supply_alerts_after_consumption(session, clock)
             # Transient conditions are derived in /me/view.status_signals rather
             # than appended to the durable event stream every watch.
+            capture_world_snapshot(session, clock, is_final=False)
             timeline.append(
                 {
                     "time": _clock_payload(clock),
@@ -6119,8 +6340,8 @@ def create_action(
             defenders = _defender_armies_in_stronghold(session, stronghold, army.army_faction)
             if not defenders:
                 raise HTTPException(status_code=400, detail="Besiege target must contain enemy defenders")
-            if _active_siege_for_besieger(session, army.army_id) is not None:
-                raise HTTPException(status_code=409, detail="This army is already maintaining a siege")
+            if active_siege is not None and int(active_siege.stronghold_id) != int(stronghold.stronghold_id):
+                raise HTTPException(status_code=409, detail="This army is already maintaining a different siege")
             existing_siege = _active_siege_for_stronghold(session, stronghold.stronghold_id)
             if existing_siege is not None:
                 besieger_faction = _active_siege_faction(session, existing_siege)
@@ -6137,8 +6358,20 @@ def create_action(
             for existing in active_actions:
                 existing.state = "cancelled"
 
-        if active_siege is not None and not siege_to_preserve and payload.kind != "besiege":
-            _remove_siege_participant(session, siege=active_siege, army_id=army.army_id, clock=clock, reason="cancelled")
+        if active_siege is not None and payload.kind in {"move", "forage"}:
+            # Replace the action intent now, but keep effective siege state
+            # until the replacement actually takes effect at a transition.
+            active_besiege_actions = (
+                session.query(Action)
+                .filter(
+                    Action.commander_id == commander_id,
+                    Action.kind == "besiege",
+                    Action.state.in_(ACTIVE_ACTION_STATES),
+                )
+                .all()
+            )
+            for existing in active_besiege_actions:
+                existing.state = "cancelled"
 
         action = Action(
             commander_id=commander_id,
@@ -6154,11 +6387,9 @@ def create_action(
         elif payload.kind == "attack":
             _start_action_now_if_valid(session, action, army, clock)
         elif payload.kind == "besiege":
-            _start_action_now_if_valid(session, action, army, clock)
-            if action.state == "in_progress":
-                stronghold = session.get(Stronghold, int(action_params["target_stronghold_id"]))
-                if stronghold is not None:
-                    _start_siege(session, army=army, commander_id=commander_id, stronghold=stronghold, clock=clock, action=action)
+            # Siege orders become effective during watch execution. An existing
+            # matching participant remains effective while this order is pending.
+            pass
         else:
             in_progress_exists = (
                 session.query(Action)
@@ -6236,9 +6467,6 @@ def plan_actions(
         current_action = _get_current_action_row(session, commander_id)
         if current_action is not None and current_action.state == "in_progress" and current_action.kind == "rout":
             raise HTTPException(status_code=409, detail="Army is routing; new orders unavailable until regroup.")
-        active_siege = _active_siege_for_besieger(session, army.army_id)
-        if active_siege is not None:
-            _remove_siege_participant(session, siege=active_siege, army_id=army.army_id, clock=clock, reason="cancelled")
         path = [str(cell).strip() for cell in payload.path if str(cell).strip()]
         if payload.kind == "march":
             total_watch_cost = _path_watches_for_army(session, army, army.location_id, path)

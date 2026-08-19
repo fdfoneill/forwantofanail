@@ -1380,6 +1380,7 @@
     let armyManagementSuggestionRequestId = 0;
     let alertsRequestId = 0;
     let letterDetailTrigger = null;
+    const AUTO_REFRESH_INTERVAL_MS = 5000;
 
     const TERRAIN_COLORS = {
       "open ground": "var(--open-ground)",
@@ -5163,7 +5164,7 @@
       } catch (err) {
         setStatus(`Auto-refresh error: ${err.message}`, true);
       }
-    }, 10000);
+    }, AUTO_REFRESH_INTERVAL_MS);
 
     (async function init() {
       renderAlerts();

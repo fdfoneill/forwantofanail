@@ -12,6 +12,7 @@
   "optional_csv_files": {
     "movements": "movements.csv"
   },
+  "history_export_config": "history_export.json",
   "static_assets": [
     {
       "source": "assets/map_diegetic.png",

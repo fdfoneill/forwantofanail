@@ -21,6 +21,7 @@ from forwantofanail.core.models import (
     Stronghold,
     TerrainType,
 )
+from forwantofanail.history.snapshots import capture_world_snapshot
 
 
 def _drop_all_tables_for_reset(engine) -> None:
@@ -115,6 +116,7 @@ def _load_csv(model_cls, csv_path: Path, converters: dict[str, callable]):
 
 def _default_scenario_manifest() -> dict[str, object]:
     return {
+        "history_export_config": "history_export.json",
         "csv_files": {
             "terrain_types": "terrain_types.csv",
             "locations": "locations.csv",
@@ -183,6 +185,12 @@ def _manifest_csv_path(manifest: dict[str, object], data_dir: Path, key: str, *,
 
 
 def _validate_scenario_manifest(manifest: dict[str, object], data_dir: Path) -> None:
+    history_export_config = manifest.get("history_export_config")
+    if not history_export_config:
+        raise ValueError("Scenario manifest requires 'history_export_config'.")
+    history_export_path = _resolve_scenario_file(data_dir, str(history_export_config))
+    if not history_export_path.exists():
+        raise FileNotFoundError(f"Scenario history export config not found at '{history_export_path}'.")
     required_section = manifest.get("csv_files")
     if not isinstance(required_section, dict):
         raise ValueError("Scenario manifest section 'csv_files' must be an object.")
@@ -431,8 +439,12 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
                 )
             )
 
-        if session.get(GameClock, 1) is None:
-            session.add(GameClock(singleton_id=1, day=1, watch=1, world_tick=0))
+        clock = session.get(GameClock, 1)
+        if clock is None:
+            clock = GameClock(singleton_id=1, day=1, watch=1, world_tick=0)
+            session.add(clock)
+
+        capture_world_snapshot(session, clock, is_final=False)
 
         session.commit()
     except Exception:

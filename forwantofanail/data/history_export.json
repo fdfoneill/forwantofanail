@@ -1,0 +1,20 @@
+{
+  "version": 1,
+  "basemap": {
+    "path": "assets/map_diegetic.tif",
+    "opacity": 1.0,
+    "control_overlay_opacity": 0.5,
+    "resampling": "lanczos"
+  },
+  "colors": {
+    "background": "#1B1916",
+    "neutral": "#7B776D",
+    "text": "#F3E8CF"
+  },
+  "faction_colors": {
+    "Allakia": "#8F3426",
+    "Boonan": "#8A6845",
+    "Delisgar": "#C49A22",
+    "Dinn": "#0F6868"
+  }
+}

@@ -10,3 +10,6 @@ dependencies:
   - pytest
   - alembic
   - psycopg
+  - pillow
+  - rasterio
+  - ffmpeg
