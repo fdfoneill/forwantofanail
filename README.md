@@ -139,6 +139,7 @@ Production additionally requires PostgreSQL, `APP_ENV=production`, and the canon
 * Actions support queueing: multiple `queued` actions per commander, one `in_progress`.
 * Movement does not start during watch `0` (Night), but in-progress movement can complete at Night.
 * Supply is consumed once daily at the transition into watch `0` (Night).
+* Siege orders start at watch execution; replacing an order does not lift an effective siege until an incompatible order actually takes effect.
 
 ## Authoritative history and video export
 

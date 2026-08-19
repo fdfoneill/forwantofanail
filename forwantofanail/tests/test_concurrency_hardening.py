@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 from forwantofanail.api import routes
 from forwantofanail.api.schemas import (
     ActionCreateRequest,
+    ActionPlanRequest,
     ClaimRequest,
     ArmyManagementApplyRequest,
     ArmyManagementArmySideRequest,
@@ -39,9 +40,11 @@ from forwantofanail.core.models import (
     Location,
     Message,
     Siege,
+    SiegeParticipant,
     StandingOrder,
     Stronghold,
     TerrainType,
+    WorldHistoryEvent,
 )
 
 
@@ -173,7 +176,249 @@ def test_concurrent_besiege_attempts_share_one_active_siege(sqlite_db, monkeypat
 
     session = create_session()
     try:
+        assert session.query(Siege).filter(Siege.state == "active").count() == 0
+        clock = session.get(GameClock, 1)
+        clock.world_tick += 1
+        clock.day, watch = routes.from_world_tick(clock.world_tick)
+        clock.watch = int(watch)
+        routes._execute_action_tick(session, clock)
+        session.flush()
         assert session.query(Siege).filter(Siege.state == "active").count() == 1
+        assert session.query(SiegeParticipant).filter(SiegeParticipant.state == "active").count() == 2
+        assert session.query(WorldHistoryEvent).filter(WorldHistoryEvent.event_kind == "siege_started").count() == 1
+    finally:
+        session.close()
+
+
+def test_competing_faction_siege_orders_resolve_by_acceptance_order(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes.h3, "grid_ring", lambda _location_id, _distance: ["fort_1"])
+    session = create_session()
+    try:
+        session.get(Army, 3).army_faction = "Gamma"
+        session.commit()
+    finally:
+        session.close()
+    session = create_session()
+    try:
+        routes.create_action(
+            ActionCreateRequest(kind="besiege", target_stronghold_id="sh_1"),
+            commander_id=3,
+            session=session,
+            idempotency_key="gamma-siege-first",
+        )
+    finally:
+        session.close()
+    session = create_session()
+    try:
+        routes.create_action(
+            ActionCreateRequest(kind="besiege", target_stronghold_id="sh_1"),
+            commander_id=1,
+            session=session,
+            idempotency_key="alpha-siege-second",
+        )
+    finally:
+        session.close()
+
+    _advance_one_action_tick()
+    session = create_session()
+    try:
+        active_participants = session.query(SiegeParticipant).filter(SiegeParticipant.state == "active").all()
+        assert [participant.besieger_army_id for participant in active_participants] == [3]
+        alpha_action = session.query(Action).filter(Action.commander_id == 1, Action.kind == "besiege").one()
+        assert alpha_action.state == "failed"
+        assert session.query(WorldHistoryEvent).filter(WorldHistoryEvent.event_kind == "siege_started").count() == 1
+    finally:
+        session.close()
+
+
+def _seed_active_test_siege() -> int:
+    session = create_session()
+    try:
+        clock = session.get(GameClock, 1)
+        army = session.get(Army, 1)
+        stronghold = session.get(Stronghold, 1)
+        action = Action(
+            commander_id=1,
+            kind="besiege",
+            state="in_progress",
+            parameters_json=json.dumps(
+                {
+                    "target_stronghold_id": 1,
+                    "target_h3": "fort_1",
+                    "target_stronghold_name": "Testfort",
+                }
+            ),
+            accepted_at=datetime.now(timezone.utc),
+            started_day=clock.day,
+            started_watch=clock.watch,
+        )
+        session.add(action)
+        session.flush()
+        siege = routes._start_siege(
+            session,
+            army=army,
+            commander_id=1,
+            stronghold=stronghold,
+            clock=clock,
+            action=action,
+        )
+        siege.matin_ticks_elapsed = 3
+        siege.current_resistance = 7.25
+        session.commit()
+        return int(siege.siege_id)
+    finally:
+        session.close()
+
+
+def _advance_one_action_tick() -> None:
+    session = create_session()
+    try:
+        clock = session.get(GameClock, 1)
+        clock.world_tick += 1
+        clock.day, watch = routes.from_world_tick(clock.world_tick)
+        clock.watch = int(watch)
+        routes._execute_action_tick(session, clock)
+        session.commit()
+    finally:
+        session.close()
+
+
+def test_same_watch_march_then_same_siege_preserves_continuity(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes.h3, "grid_ring", lambda _location_id, _distance: ["fort_1"])
+    monkeypatch.setattr(routes, "calculate_move_watches", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(routes, "calculate_move_watches_from_origin", lambda *_args, **_kwargs: 1)
+    siege_id = _seed_active_test_siege()
+
+    session = create_session()
+    try:
+        routes.plan_actions(
+            ActionPlanRequest(kind="march", path=["origin_2"]),
+            commander_id=1,
+            session=session,
+            idempotency_key="stage-march-away",
+        )
+    finally:
+        session.close()
+    session = create_session()
+    try:
+        siege = session.get(Siege, siege_id)
+        assert siege.state == "active"
+        assert siege.matin_ticks_elapsed == 3
+        assert siege.current_resistance == 7.25
+    finally:
+        session.close()
+
+    session = create_session()
+    try:
+        result = routes.create_action(
+            ActionCreateRequest(kind="besiege", target_stronghold_id="sh_1"),
+            commander_id=1,
+            session=session,
+            idempotency_key="resume-same-siege",
+        )
+        assert result["state"] == "queued"
+    finally:
+        session.close()
+
+    _advance_one_action_tick()
+    session = create_session()
+    try:
+        siege = session.get(Siege, siege_id)
+        assert siege.state == "active"
+        assert siege.matin_ticks_elapsed == 3
+        assert siege.current_resistance == 7.25
+        assert session.query(Siege).count() == 1
+        assert session.query(WorldHistoryEvent).filter(WorldHistoryEvent.event_kind == "siege_started").count() == 1
+        assert session.query(WorldHistoryEvent).filter(WorldHistoryEvent.event_kind == "siege_ended").count() == 0
+    finally:
+        session.close()
+
+
+def test_siege_ends_when_march_progresses_at_transition(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes.h3, "grid_ring", lambda _location_id, _distance: ["fort_1"])
+    monkeypatch.setattr(routes, "calculate_move_watches", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(routes, "calculate_move_watches_from_origin", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(routes, "_movement_capacity_for_interval_start", lambda *_args, **_kwargs: 1)
+    siege_id = _seed_active_test_siege()
+
+    session = create_session()
+    try:
+        routes.plan_actions(
+            ActionPlanRequest(kind="march", path=["origin_2"]),
+            commander_id=1,
+            session=session,
+            idempotency_key="committed-march-away",
+        )
+    finally:
+        session.close()
+    session = create_session()
+    try:
+        assert session.get(Siege, siege_id).state == "active"
+    finally:
+        session.close()
+
+    _advance_one_action_tick()
+    session = create_session()
+    try:
+        assert session.get(Siege, siege_id).state == "lifted"
+        event = session.query(WorldHistoryEvent).filter(WorldHistoryEvent.event_kind == "siege_ended").one()
+        assert event.world_tick == 1
+    finally:
+        session.close()
+
+
+def test_blocked_march_does_not_lift_siege(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes.h3, "grid_ring", lambda _location_id, _distance: ["fort_1"])
+    monkeypatch.setattr(routes, "calculate_move_watches", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(routes, "calculate_move_watches_from_origin", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(routes, "_movement_capacity_for_interval_start", lambda *_args, **_kwargs: 0)
+    siege_id = _seed_active_test_siege()
+    session = create_session()
+    try:
+        routes.plan_actions(
+            ActionPlanRequest(kind="march", path=["origin_2"]),
+            commander_id=1,
+            session=session,
+            idempotency_key="blocked-march-away",
+        )
+    finally:
+        session.close()
+
+    _advance_one_action_tick()
+    session = create_session()
+    try:
+        assert session.get(Siege, siege_id).state == "active"
+        assert session.query(WorldHistoryEvent).filter(WorldHistoryEvent.event_kind == "siege_ended").count() == 0
+    finally:
+        session.close()
+
+
+def test_new_siege_is_deferred_until_watch_execution(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes.h3, "grid_ring", lambda _location_id, _distance: ["fort_1"])
+    session = create_session()
+    try:
+        result = routes.create_action(
+            ActionCreateRequest(kind="besiege", target_stronghold_id="sh_1"),
+            commander_id=1,
+            session=session,
+            idempotency_key="deferred-new-siege",
+        )
+        assert result["state"] == "queued"
+    finally:
+        session.close()
+    session = create_session()
+    try:
+        assert session.query(Siege).filter(Siege.state == "active").count() == 0
+        assert session.query(WorldHistoryEvent).filter(WorldHistoryEvent.event_kind == "siege_started").count() == 0
+    finally:
+        session.close()
+
+    _advance_one_action_tick()
+    session = create_session()
+    try:
+        assert session.query(Siege).filter(Siege.state == "active").count() == 1
+        event = session.query(WorldHistoryEvent).filter(WorldHistoryEvent.event_kind == "siege_started").one()
+        assert event.world_tick == 1
     finally:
         session.close()
 
