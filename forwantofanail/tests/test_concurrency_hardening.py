@@ -1055,6 +1055,41 @@ def test_brief_endpoint_uses_normal_and_cavalry_environs_radii(sqlite_db, monkey
     assert radii == [2, 4]
 
 
+def test_admin_commander_brief_requires_admin_token(sqlite_db, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "brief-admin")
+    monkeypatch.setattr(routes, "_serialize_environs", lambda *_args, **_kwargs: _brief_endpoint_environs())
+    monkeypatch.setattr(routes, "_border_road_neighbor_ids", lambda *_args, **_kwargs: [])
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        unauthorized = client.get("/v1/admin/commanders/cmd_2/brief")
+        response = client.get(
+            "/v1/admin/commanders/cmd_2/brief",
+            headers={"X-Admin-Token": "brief-admin"},
+        )
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain; charset=utf-8")
+    assert response.text.startswith("The army is in Open Ground terrain.")
+
+
+def test_dev_dashboard_opens_commander_briefs_in_text_safe_modal(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/dev/dashboard")
+
+    assert response.status_code == 200
+    assert 'id="briefModalOverlay"' in response.text
+    assert 'id="briefModalText"' in response.text
+    assert 'className = "summary-button"' in response.text
+    assert "/v1/admin/commanders/${encodeURIComponent(commanderId)}/brief" in response.text
+    assert 'els.briefModalText.textContent = String(brief' in response.text
+    assert "els.summaryList.replaceChildren();" in response.text
+    assert "els.summaryList.innerHTML" not in response.text
+
+
 def test_player_dashboard_csp_allows_h3_script_host(sqlite_db):
     from forwantofanail.api.app import app
 

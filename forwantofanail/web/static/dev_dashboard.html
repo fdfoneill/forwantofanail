@@ -143,9 +143,29 @@
       border: 1px solid var(--line);
       border-radius: 10px;
       background: #fff;
-      padding: 10px 12px;
       font-size: 14px;
       line-height: 1.35;
+      overflow: hidden;
+    }
+    .summary-item-message {
+      padding: 10px 12px;
+    }
+    .summary-button {
+      width: 100%;
+      margin: 0;
+      border: 0;
+      border-radius: 0;
+      padding: 10px 12px;
+      color: var(--ink);
+      background: transparent;
+      text-align: left;
+      font-weight: 400;
+    }
+    .summary-button:hover,
+    .summary-button:focus-visible {
+      background: #f2e8da;
+      outline: 2px solid var(--accent);
+      outline-offset: -2px;
     }
     .summary-item strong {
       font-weight: 800;
@@ -157,6 +177,61 @@
     }
     .summary-item.unclaimed strong {
       color: var(--muted);
+    }
+    .summary-item.unclaimed .summary-button {
+      color: var(--muted);
+    }
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 1000;
+      display: grid;
+      place-items: center;
+      padding: 20px;
+      background: rgba(30, 27, 24, 0.56);
+    }
+    .modal-overlay[hidden] {
+      display: none;
+    }
+    .modal-dialog {
+      width: min(680px, 100%);
+      max-height: min(80vh, 720px);
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 20px;
+      background: var(--panel);
+      box-shadow: 0 20px 70px rgba(0, 0, 0, 0.28);
+    }
+    .modal-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+    .modal-title {
+      margin: 0;
+      font-size: 20px;
+      line-height: 1.25;
+    }
+    .modal-close {
+      width: auto;
+      flex: 0 0 auto;
+      margin: 0;
+      padding: 7px 10px;
+      background: #685f54;
+    }
+    .brief-text {
+      margin: 0;
+      color: var(--ink);
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 17px;
+      line-height: 1.65;
+      white-space: pre-wrap;
+    }
+    body.modal-open {
+      overflow: hidden;
     }
     .muted {
       color: var(--muted);
@@ -209,9 +284,20 @@
     <section class="panel">
       <div class="title">Commander / Army Status</div>
       <ul class="summary-list" id="summaryList">
-        <li class="summary-item muted">Loading army summary...</li>
+        <li class="summary-item summary-item-message muted">Loading army summary...</li>
       </ul>
       <div class="status" id="summaryStatus"></div>
+    </section>
+  </div>
+
+  <div class="modal-overlay" id="briefModalOverlay" hidden>
+    <section class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="briefModalTitle">
+      <div class="modal-header">
+        <h2 class="modal-title" id="briefModalTitle">Army Environs Brief</h2>
+        <button class="modal-close" id="briefModalClose" type="button" aria-label="Close environs brief">Close</button>
+      </div>
+      <div class="status" id="briefModalStatus" aria-live="polite"></div>
+      <p class="brief-text" id="briefModalText"></p>
     </section>
   </div>
 
@@ -220,6 +306,8 @@
       autoTimer: null,
       autoBusy: false,
       lastAdvanceAt: null,
+      briefRequestId: 0,
+      briefTrigger: null,
     };
 
     const els = {
@@ -237,6 +325,11 @@
       advanceStatus: document.getElementById("advanceStatus"),
       summaryList: document.getElementById("summaryList"),
       summaryStatus: document.getElementById("summaryStatus"),
+      briefModalOverlay: document.getElementById("briefModalOverlay"),
+      briefModalTitle: document.getElementById("briefModalTitle"),
+      briefModalClose: document.getElementById("briefModalClose"),
+      briefModalStatus: document.getElementById("briefModalStatus"),
+      briefModalText: document.getElementById("briefModalText"),
     };
 
     function adminHeaders() {
@@ -288,35 +381,96 @@
     }
 
     function renderSummary(rows) {
+      els.summaryList.replaceChildren();
       if (!rows.length) {
-        els.summaryList.innerHTML = "<li class=\"summary-item muted\">No commander-led armies found.</li>";
+        const emptyItem = document.createElement("li");
+        emptyItem.className = "summary-item summary-item-message muted";
+        emptyItem.textContent = "No commander-led armies found.";
+        els.summaryList.append(emptyItem);
         return;
       }
-      els.summaryList.innerHTML = rows.map((row) => {
-        const army = escapeHtml(row.army_name || "Unnamed army");
-        const commander = escapeHtml(row.commander_name || "No commander");
-        const faction = escapeHtml(row.faction || "No faction");
+      for (const row of rows) {
+        const army = String(row.army_name || "Unnamed army");
+        const commander = String(row.commander_name || "No commander");
+        const faction = String(row.faction || "No faction");
         const strength = Number(row.strength || 0).toLocaleString();
-        const status = escapeHtml(row.status || "unknown");
+        const status = String(row.status || "unknown");
         const claimed = !!row.claimed;
-        const claimStatus = claimed ? "" : " <span class=\"muted\">(unclaimed)</span>";
-        return `<li class="summary-item${claimed ? "" : " unclaimed"}"><strong>${army}</strong> (${commander}, ${faction}): ${strength} strong, ${status}${claimStatus}</li>`;
-      }).join("");
-    }
-
-    function escapeHtml(value) {
-      return String(value ?? "")
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;")
-        .replaceAll("\"", "&quot;")
-        .replaceAll("'", "&#039;");
+        const item = document.createElement("li");
+        item.className = `summary-item${claimed ? "" : " unclaimed"}`;
+        const button = document.createElement("button");
+        button.className = "summary-button";
+        button.type = "button";
+        button.setAttribute("aria-label", `Open environs brief for ${commander}, commanding ${army}`);
+        const armyName = document.createElement("strong");
+        armyName.textContent = army;
+        button.append(armyName, document.createTextNode(` (${commander}, ${faction}): ${strength} strong, ${status}`));
+        if (!claimed) {
+          const claimStatus = document.createElement("span");
+          claimStatus.className = "muted";
+          claimStatus.textContent = " (unclaimed)";
+          button.append(claimStatus);
+        }
+        button.addEventListener("click", () => openBriefModal(row, button));
+        item.append(button);
+        els.summaryList.append(item);
+      }
     }
 
     async function refreshSummary() {
       const rows = await api("/v1/admin/armies/summary", { headers: adminHeaders() });
       renderSummary(rows);
       setStatus(els.summaryStatus, `Updated ${new Date().toLocaleTimeString()}`);
+    }
+
+    async function openBriefModal(row, trigger) {
+      const commanderId = String(row.commander_id || "").trim();
+      if (!commanderId) {
+        setStatus(els.summaryStatus, "Brief error: commander ID is unavailable.", "error");
+        return;
+      }
+      const requestId = state.briefRequestId + 1;
+      state.briefRequestId = requestId;
+      state.briefTrigger = trigger;
+      const commander = String(row.commander_name || "Unknown commander");
+      const army = String(row.army_name || "Unnamed army");
+      els.briefModalTitle.textContent = `${commander} — ${army}`;
+      els.briefModalText.textContent = "";
+      setStatus(els.briefModalStatus, "Loading environs brief...");
+      els.briefModalOverlay.hidden = false;
+      document.body.classList.add("modal-open");
+      els.briefModalClose.focus();
+      try {
+        const brief = await api(
+          `/v1/admin/commanders/${encodeURIComponent(commanderId)}/brief`,
+          { headers: adminHeaders() }
+        );
+        if (state.briefRequestId !== requestId) {
+          return;
+        }
+        setStatus(els.briefModalStatus, "");
+        els.briefModalText.textContent = String(brief || "No environs description is available.");
+      } catch (err) {
+        if (state.briefRequestId !== requestId) {
+          return;
+        }
+        els.briefModalText.textContent = "";
+        setStatus(els.briefModalStatus, `Brief error: ${readableErrorMessage(err)}`, "error");
+      }
+    }
+
+    function closeBriefModal() {
+      if (els.briefModalOverlay.hidden) {
+        return;
+      }
+      state.briefRequestId += 1;
+      els.briefModalOverlay.hidden = true;
+      document.body.classList.remove("modal-open");
+      const trigger = state.briefTrigger;
+      state.briefTrigger = null;
+      if (trigger && document.body.contains(trigger)) {
+        trigger.focus();
+      }
     }
 
     async function refreshDashboard() {
@@ -413,6 +567,17 @@
     });
 
     els.refreshButton.addEventListener("click", refreshDashboard);
+    els.briefModalClose.addEventListener("click", closeBriefModal);
+    els.briefModalOverlay.addEventListener("click", (event) => {
+      if (event.target === els.briefModalOverlay) {
+        closeBriefModal();
+      }
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key === "Escape" && !els.briefModalOverlay.hidden) {
+        closeBriefModal();
+      }
+    });
 
     els.autoAdvanceEnabled.addEventListener("change", () => {
       if (els.autoAdvanceEnabled.checked) {

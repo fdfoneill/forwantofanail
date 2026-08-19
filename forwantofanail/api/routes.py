@@ -5729,6 +5729,16 @@ def admin_armies_summary(
     return rows
 
 
+@router.get("/admin/commanders/{commander_id}/brief", response_class=PlainTextResponse)
+def admin_commander_brief(
+    commander_id: str,
+    session: Session = Depends(_get_session),
+    x_admin_token: str | None = Header(default=None),
+):
+    _validate_admin_token(x_admin_token)
+    return _commander_brief_text(session, _parse_commander_ref(commander_id))
+
+
 @router.get("/time")
 def get_time(session: Session = Depends(_get_session)):
     return _clock_payload(_get_or_create_clock(session))
@@ -5867,11 +5877,7 @@ def get_my_view(
     }
 
 
-@router.get("/me/brief", response_class=PlainTextResponse)
-def get_my_brief(
-    commander_id: int = Depends(_get_current_commander_id),
-    session: Session = Depends(_get_session),
-):
+def _commander_brief_text(session: Session, commander_id: int) -> str:
     army = _find_commander_army(session, commander_id)
     environs_radius = _environs_radius_for_army(army)
     environs = _serialize_environs(
@@ -5888,6 +5894,14 @@ def get_my_brief(
         border_road_cells=_border_road_neighbor_ids(session, visible_set),
     )
     return sections.render()
+
+
+@router.get("/me/brief", response_class=PlainTextResponse)
+def get_my_brief(
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    return _commander_brief_text(session, commander_id)
 
 
 @router.get("/me/army-management")
