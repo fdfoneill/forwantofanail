@@ -11,4 +11,5 @@ dependencies:
   - alembic
   - psycopg
   - pillow
+  - rasterio
   - ffmpeg

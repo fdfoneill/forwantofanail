@@ -79,7 +79,8 @@ If the diegetic map is missing from `data/assets`, reset will accept an already-
 
 This reset also auto-generates one garrison army for every stronghold based on its type.
 It also creates the provisional authoritative history snapshot for tick 0. The scenario manifest
-references `history_export.json`, which owns the map and faction colors used by historical exports.
+references `history_export.json`, which owns the georeferenced basemap and faction colors used by
+historical exports. The default history basemap is `data/assets/map_diegetic.tif`.
 
 Army-management suggestions live in:
 

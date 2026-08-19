@@ -16,6 +16,12 @@ try:
     from PIL import Image, ImageDraw, ImageFont
 except ImportError:  # Allows snapshot selection/config validation before optional renderer setup.
     Image = ImageDraw = ImageFont = None
+try:
+    import rasterio
+    from rasterio.enums import Resampling
+    from rasterio.warp import transform as transform_coordinates
+except ImportError:  # Snapshot selection remains usable without optional rendering dependencies.
+    rasterio = Resampling = transform_coordinates = None
 from sqlalchemy.orm import Session
 
 from forwantofanail.core.database import get_engine
@@ -60,7 +66,7 @@ def _stable_faction_color(name: str) -> str:
 def load_export_config(path: Path) -> tuple[dict[str, Any], str]:
     raw = path.read_bytes()
     config = json.loads(raw)
-    required = {"background", "neutral", "water", "road", "text", "cell_border"}
+    required = {"background", "neutral", "water", "text"}
     colors = config.get("colors")
     if not isinstance(colors, dict) or not required.issubset(colors):
         raise ValueError(f"History export config must define colors: {', '.join(sorted(required))}")
@@ -70,6 +76,21 @@ def load_export_config(path: Path) -> tuple[dict[str, Any], str]:
     for label, value in {**colors, **faction_colors}.items():
         if not isinstance(value, str) or HEX_COLOR.fullmatch(value) is None:
             raise ValueError(f"Invalid six-digit hex color for '{label}': {value!r}")
+    basemap = config.get("basemap")
+    if basemap is not None:
+        if not isinstance(basemap, dict) or not str(basemap.get("path") or "").strip():
+            raise ValueError("History export basemap requires a path")
+        opacity = float(basemap.get("opacity", 1.0))
+        overlay_opacity = float(basemap.get("control_overlay_opacity", 0.5))
+        if not 0.0 <= opacity <= 1.0 or not 0.0 <= overlay_opacity <= 1.0:
+            raise ValueError("Basemap and control-overlay opacity must be between 0 and 1")
+        resampling = str(basemap.get("resampling", "lanczos")).strip().lower()
+        if resampling not in {"nearest", "bilinear", "cubic", "lanczos"}:
+            raise ValueError(f"Unsupported basemap resampling method: {resampling}")
+        resolved_path = (path.parent / str(basemap["path"])).resolve()
+        if not resolved_path.is_file():
+            raise FileNotFoundError(f"History export basemap not found: {resolved_path}")
+        basemap["resolved_path"] = str(resolved_path)
     return config, hashlib.sha256(raw).hexdigest()
 
 
@@ -128,6 +149,15 @@ def _cell_boundary(cell: str) -> list[tuple[float, float]]:
     return [(float(lng), float(lat)) for lat, lng in h3.cell_to_boundary(cell)]
 
 
+def _rgba(color: str, opacity: float) -> tuple[int, int, int, int]:
+    return (
+        int(color[1:3], 16),
+        int(color[3:5], 16),
+        int(color[5:7], 16),
+        round(max(0.0, min(1.0, opacity)) * 255),
+    )
+
+
 class HistoryRenderer:
     def __init__(self, session: Session, *, width: int, height: int, config: dict[str, Any]):
         if Image is None or ImageDraw is None:
@@ -135,11 +165,12 @@ class HistoryRenderer:
         self.width = width
         self.height = height
         self.config = config
+        self.basemap_image = None
+        self.basemap_position = (0, 0)
         rows = (
             session.query(
                 Location.location_id,
                 Location.region,
-                Location.is_road,
                 TerrainType.is_water,
             )
             .join(TerrainType, TerrainType.terrain_id == Location.terrain_id)
@@ -149,49 +180,110 @@ class HistoryRenderer:
         if not rows:
             raise ValueError("Cannot render history without map locations")
         self.cells: dict[str, dict[str, Any]] = {}
-        all_points: list[tuple[float, float]] = []
-        for location_id, region, is_road, is_water in rows:
+        geographic_boundaries: dict[str, list[tuple[float, float]]] = {}
+        geographic_centers: dict[str, tuple[float, float]] = {}
+        for location_id, region, is_water in rows:
             try:
                 boundary = _cell_boundary(location_id)
                 lat, lng = h3.cell_to_latlng(location_id)
             except Exception as exc:
                 raise ValueError(f"Invalid H3 location in map: {location_id}") from exc
-            all_points.extend(boundary)
+            geographic_boundaries[location_id] = boundary
+            geographic_centers[location_id] = (float(lng), float(lat))
             self.cells[location_id] = {
                 "region": str(region or ""),
-                "road": bool(is_road),
                 "water": bool(is_water),
-                "boundary_geo": boundary,
-                "center_geo": (float(lng), float(lat)),
             }
-        min_x = min(point[0] for point in all_points)
-        max_x = max(point[0] for point in all_points)
-        min_y = min(point[1] for point in all_points)
-        max_y = max(point[1] for point in all_points)
+        projected_boundaries = geographic_boundaries
+        projected_centers = geographic_centers
+        basemap_config = config.get("basemap")
+        source = None
+        if basemap_config is not None:
+            if rasterio is None or Resampling is None or transform_coordinates is None:
+                raise RuntimeError("Rasterio is required for the georeferenced history basemap; update the project environment")
+            source = rasterio.open(basemap_config["resolved_path"])
+            if source.crs is None:
+                source.close()
+                raise ValueError("History basemap has no coordinate reference system")
+            if source.transform.is_identity:
+                source.close()
+                raise ValueError("History basemap has no usable affine geotransform")
+
+            def transform_points(points: list[tuple[float, float]]) -> list[tuple[float, float]]:
+                xs, ys = transform_coordinates("EPSG:4326", source.crs, [point[0] for point in points], [point[1] for point in points])
+                return list(zip(xs, ys))
+
+            projected_boundaries = {
+                cell_id: transform_points(boundary)
+                for cell_id, boundary in geographic_boundaries.items()
+            }
+            projected_centers = {
+                cell_id: transform_points([center])[0]
+                for cell_id, center in geographic_centers.items()
+            }
+            min_x, min_y, max_x, max_y = source.bounds
+            h3_points = [point for boundary in projected_boundaries.values() for point in boundary]
+            h3_min_x = min(point[0] for point in h3_points)
+            h3_max_x = max(point[0] for point in h3_points)
+            h3_min_y = min(point[1] for point in h3_points)
+            h3_max_y = max(point[1] for point in h3_points)
+            # Edge-cell polygons may legitimately overhang artwork fitted to
+            # the playable cell centers by roughly one cell radius.
+            tolerance_x = max(max_x - min_x, 1e-9) * 0.02
+            tolerance_y = max(max_y - min_y, 1e-9) * 0.02
+            if (
+                h3_min_x < min_x - tolerance_x
+                or h3_max_x > max_x + tolerance_x
+                or h3_min_y < min_y - tolerance_y
+                or h3_max_y > max_y + tolerance_y
+            ):
+                source.close()
+                raise ValueError("Scenario H3 extent falls outside the configured georeferenced basemap")
+        else:
+            all_points = [point for boundary in geographic_boundaries.values() for point in boundary]
+            min_x = min(point[0] for point in all_points)
+            max_x = max(point[0] for point in all_points)
+            min_y = min(point[1] for point in all_points)
+            max_y = max(point[1] for point in all_points)
         map_left, map_top = width * 0.035, height * 0.10
         map_right, map_bottom = width * 0.965, height * 0.95
         scale = min(
             (map_right - map_left) / max(max_x - min_x, 1e-9),
             (map_bottom - map_top) / max(max_y - min_y, 1e-9),
         )
-        used_w, used_h = (max_x - min_x) * scale, (max_y - min_y) * scale
-        offset_x = map_left + ((map_right - map_left) - used_w) / 2
-        offset_y = map_top + ((map_bottom - map_top) - used_h) / 2
+        used_w = max(1, round((max_x - min_x) * scale))
+        used_h = max(1, round((max_y - min_y) * scale))
+        offset_x = round(map_left + ((map_right - map_left) - used_w) / 2)
+        offset_y = round(map_top + ((map_bottom - map_top) - used_h) / 2)
 
         def project(point: tuple[float, float]) -> tuple[float, float]:
-            return (offset_x + (point[0] - min_x) * scale, offset_y + (max_y - point[1]) * scale)
+            return (
+                offset_x + ((point[0] - min_x) / max(max_x - min_x, 1e-9)) * used_w,
+                offset_y + ((max_y - point[1]) / max(max_y - min_y, 1e-9)) * used_h,
+            )
 
         self.project = project
-        for cell in self.cells.values():
-            cell["polygon"] = [project(point) for point in cell["boundary_geo"]]
-            cell["center"] = project(cell["center_geo"])
-        road_ids = {cell_id for cell_id, cell in self.cells.items() if cell["road"]}
-        connections: set[tuple[str, str]] = set()
-        for cell_id in sorted(road_ids):
-            for neighbor in h3.grid_disk(cell_id, 1):
-                if neighbor in road_ids and neighbor != cell_id:
-                    connections.add(tuple(sorted((cell_id, neighbor))))
-        self.road_connections = sorted(connections)
+        for cell_id, cell in self.cells.items():
+            cell["polygon"] = [project(point) for point in projected_boundaries[cell_id]]
+            cell["center"] = project(projected_centers[cell_id])
+        if source is not None:
+            if source.count < 3:
+                source.close()
+                raise ValueError("History basemap must contain at least three color bands")
+            resampling_name = str(basemap_config.get("resampling", "lanczos")).lower()
+            resampling_method = getattr(Resampling, resampling_name)
+            data = source.read(
+                [1, 2, 3],
+                out_shape=(3, used_h, used_w),
+                out_dtype="uint8",
+                resampling=resampling_method,
+            )
+            source.close()
+            self.basemap_image = Image.fromarray(data.transpose(1, 2, 0), mode="RGB")
+            basemap_opacity = float(basemap_config.get("opacity", 1.0))
+            if basemap_opacity < 1.0:
+                self.basemap_image.putalpha(round(basemap_opacity * 255))
+            self.basemap_position = (offset_x, offset_y)
         self.title_font = _font(max(20, round(height * 0.032)), bold=True)
         self.label_font = _font(max(11, round(height * 0.016)), bold=True)
         self.small_font = _font(max(10, round(height * 0.013)))
@@ -199,41 +291,28 @@ class HistoryRenderer:
     def render(self, snapshot: WorldSnapshot, state: dict[str, Any], events: list[dict[str, Any]]) -> Image.Image:
         colors = self.config["colors"]
         image = Image.new("RGB", (self.width, self.height), colors["background"])
-        draw = ImageDraw.Draw(image)
+        if self.basemap_image is not None:
+            if self.basemap_image.mode == "RGBA":
+                image.paste(self.basemap_image, self.basemap_position, self.basemap_image)
+            else:
+                image.paste(self.basemap_image, self.basemap_position)
         strongholds = state.get("strongholds", [])
         controller_by_region = {
             _normalized_faction(row.get("name", "")): str(row.get("controller", ""))
             for row in strongholds
         }
-        for cell_id, cell in self.cells.items():
+        control_opacity = float(self.config.get("basemap", {}).get("control_overlay_opacity", 0.5))
+        overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+        for cell in self.cells.values():
             if cell["water"]:
                 fill = colors["water"]
             else:
                 controller = controller_by_region.get(_normalized_faction(cell["region"]), "")
                 fill = _faction_color(self.config, controller) if controller else colors["neutral"]
-            draw.polygon(cell["polygon"], fill=fill, outline=colors["cell_border"], width=1)
-        for first, second in self.road_connections:
-            draw.line([self.cells[first]["center"], self.cells[second]["center"]], fill=colors["road"], width=max(2, self.height // 270))
-
-        for stronghold in strongholds:
-            cell = self.cells.get(stronghold.get("location_h3"))
-            if cell is None:
-                continue
-            x, y = cell["center"]
-            radius = max(7, self.height // 65)
-            fill = _faction_color(self.config, stronghold.get("controller", ""))
-            kind = str(stronghold.get("type", "")).casefold()
-            if kind == "fortress":
-                points = [(x, y - radius), (x + radius, y), (x, y + radius), (x - radius, y)]
-                draw.polygon(points, fill=fill, outline=colors["text"], width=2)
-            elif kind == "city":
-                draw.rectangle((x - radius, y - radius, x + radius, y + radius), fill=fill, outline=colors["text"], width=2)
-            else:
-                draw.ellipse((x - radius, y - radius, x + radius, y + radius), fill=fill, outline=colors["text"], width=2)
-            if stronghold.get("siege"):
-                ring = radius + 6
-                draw.ellipse((x - ring, y - ring, x + ring, y + ring), outline="#F2D35E", width=4)
-            draw.text((x + radius + 4, y - radius), str(stronghold.get("name", "")), fill=colors["text"], font=self.small_font, stroke_width=2, stroke_fill=colors["background"])
+            overlay_draw.polygon(cell["polygon"], fill=_rgba(fill, control_opacity))
+        image = Image.alpha_composite(image.convert("RGBA"), overlay).convert("RGB")
+        draw = ImageDraw.Draw(image)
 
         occupying: dict[str, list[dict[str, Any]]] = {}
         for army in state.get("armies", []):

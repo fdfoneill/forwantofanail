@@ -21,7 +21,13 @@ from forwantofanail.core.models import (
     WorldHistoryEvent,
     WorldSnapshot,
 )
-from forwantofanail.history.export import DEFAULT_CONFIG, export_history, schedule_events_for_frames, select_snapshots
+from forwantofanail.history.export import (
+    DEFAULT_CONFIG,
+    export_history,
+    load_export_config,
+    schedule_events_for_frames,
+    select_snapshots,
+)
 from forwantofanail.history.snapshots import capture_world_snapshot, record_history_event
 
 
@@ -190,8 +196,16 @@ def test_event_markers_persist_for_three_available_frames():
     assert all(rows == [event] for rows in scheduled.values())
 
 
+def test_default_history_config_uses_half_transparent_geotiff_overlay():
+    config, _ = load_export_config(DEFAULT_CONFIG)
+    assert config["basemap"]["resolved_path"].endswith("data/assets/map_diegetic.tif")
+    assert config["basemap"]["control_overlay_opacity"] == 0.5
+
+
 def test_frames_only_export_has_dimensions_manifest_and_does_not_mutate_db(history_db):
     Image = pytest.importorskip("PIL.Image")
+    rasterio = pytest.importorskip("rasterio")
+    numpy = pytest.importorskip("numpy")
     session = create_session()
     try:
         clock = session.get(GameClock, 1)
@@ -209,7 +223,38 @@ def test_frames_only_export_has_dimensions_manifest_and_does_not_mutate_db(histo
     finally:
         session.close()
     output = history_db["tmp_path"] / "export"
-    manifest = export_history(output_dir=output, width=640, height=360, no_video=True, config_path=DEFAULT_CONFIG)
+    session = create_session()
+    try:
+        location_ids = [row[0] for row in session.query(Location.location_id).all()]
+    finally:
+        session.close()
+    boundary_points = [point for cell_id in location_ids for point in h3.cell_to_boundary(cell_id)]
+    west = min(point[1] for point in boundary_points)
+    east = max(point[1] for point in boundary_points)
+    south = min(point[0] for point in boundary_points)
+    north = max(point[0] for point in boundary_points)
+    basemap_path = history_db["tmp_path"] / "synthetic_basemap.tif"
+    raster_data = numpy.zeros((3, 120, 160), dtype="uint8")
+    raster_data[0, :, :] = 204
+    raster_data[1, :, :] = 184
+    raster_data[2, :, :] = 140
+    with rasterio.open(
+        basemap_path,
+        "w",
+        driver="GTiff",
+        width=160,
+        height=120,
+        count=3,
+        dtype="uint8",
+        crs="EPSG:4326",
+        transform=rasterio.transform.from_bounds(west, south, east, north, 160, 120),
+    ) as destination:
+        destination.write(raster_data)
+    config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
+    config["basemap"]["path"] = basemap_path.name
+    config_path = history_db["tmp_path"] / "history_export.json"
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    manifest = export_history(output_dir=output, width=640, height=360, no_video=True, config_path=config_path)
     with Image.open(output / "frames" / "frame_000000.png") as frame:
         assert frame.size == (640, 360)
     assert manifest["frame_count"] == 1
