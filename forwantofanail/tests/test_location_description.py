@@ -202,7 +202,7 @@ def test_environs_brief_describes_discrete_terrain_forage_and_offroad_roads():
 
     sections = build_environs_brief(environs)
 
-    assert sections.terrain.startswith("The army is in Open Ground terrain.")
+    assert sections.terrain.startswith("The army is in open ground terrain.")
     assert "desert to the north" in sections.terrain
     assert "river to the west" in sections.terrain
     assert "river to the southeast" in sections.terrain
@@ -281,6 +281,60 @@ def test_environs_road_does_not_lead_towards_center_stronghold():
 
     assert section.endswith("to a dead end.")
     assert "towards Centerhold" not in section
+
+
+def test_environs_brief_opens_with_occupied_stronghold_and_omits_it_from_nearby_list():
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    nearby_h3 = sorted(h3.grid_ring(center_h3, 1))[0]
+    environs = {
+        "center_h3": center_h3,
+        "radius": 1,
+        "cells": [
+            _brief_cell(
+                center_h3,
+                terrain="Open Ground",
+                road=True,
+                stronghold={
+                    "id": "sh_center",
+                    "name": "The Sapphire Dome",
+                    "type": "Fortress",
+                    "faction": "Dinn",
+                    "defender_strength": 100,
+                },
+            ),
+            _brief_cell(
+                nearby_h3,
+                stronghold={
+                    "id": "sh_nearby",
+                    "name": "Bemm",
+                    "type": "City",
+                    "faction": "Boonan",
+                    "defender_strength": 50,
+                },
+            ),
+        ],
+    }
+
+    sections = build_environs_brief(environs)
+
+    assert sections.terrain.startswith(
+        "The army is occupying the fortress of the Sapphire Dome, in open ground terrain."
+    )
+    assert "Sapphire Dome" not in sections.strongholds
+    assert "city of Bemm" in sections.strongholds
+
+
+def test_environs_brief_opens_with_road_before_terrain():
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    environs = {
+        "center_h3": center_h3,
+        "radius": 0,
+        "cells": [_brief_cell(center_h3, terrain="Open Ground", road=True)],
+    }
+
+    sections = build_environs_brief(environs)
+
+    assert sections.terrain == "The army is on the road in open ground terrain."
 
 
 def test_environs_brief_distinguishes_visible_road_exit_and_dead_end():

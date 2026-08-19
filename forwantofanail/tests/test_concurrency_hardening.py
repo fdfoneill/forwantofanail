@@ -1011,7 +1011,7 @@ def test_brief_endpoint_requires_auth_and_returns_plain_text_for_bearer(sqlite_d
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain; charset=utf-8")
-    assert response.text == "The army is in Open Ground terrain. The area is untouched in terms of forage."
+    assert response.text == "The army is in open ground terrain. The area is untouched in terms of forage."
 
 
 def test_brief_endpoint_accepts_browser_cookie(sqlite_db, monkeypatch):
@@ -1031,7 +1031,7 @@ def test_brief_endpoint_accepts_browser_cookie(sqlite_db, monkeypatch):
 
     assert claim.status_code == 200
     assert response.status_code == 200
-    assert response.text.startswith("The army is in Open Ground terrain.")
+    assert response.text.startswith("The army is in open ground terrain.")
 
 
 def test_brief_endpoint_uses_normal_and_cavalry_environs_radii(sqlite_db, monkeypatch):
@@ -1071,7 +1071,7 @@ def test_admin_commander_brief_requires_admin_token(sqlite_db, monkeypatch):
     assert unauthorized.status_code == 401
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain; charset=utf-8")
-    assert response.text.startswith("The army is in Open Ground terrain.")
+    assert response.text.startswith("The army is in open ground terrain.")
 
 
 def test_dev_dashboard_opens_commander_briefs_in_text_safe_modal(sqlite_db):

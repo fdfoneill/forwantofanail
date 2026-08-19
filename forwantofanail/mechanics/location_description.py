@@ -295,6 +295,7 @@ def _describe_terrain_section(
     if center_cell is None:
         return ""
     current_terrain = str(center_cell.get("terrain_type") or "unknown").strip() or "unknown"
+    current_terrain_display = current_terrain.lower()
     terrain_cells: dict[str, tuple[str, set[str]]] = {}
     for cell_h3, cell in cells_by_h3.items():
         terrain_name = str(cell.get("terrain_type") or "unknown").strip() or "unknown"
@@ -336,7 +337,28 @@ def _describe_terrain_section(
                 continue
             features.append((COMPASS_ORDER[bearing], "road", min(component), f"a road to the {bearing}"))
 
-    section = f"The army is in {current_terrain} terrain."
+    current_stronghold = (
+        center_cell.get("stronghold")
+        if isinstance(center_cell.get("stronghold"), Mapping)
+        else None
+    )
+    if current_stronghold is not None:
+        stronghold_type = (
+            str(current_stronghold.get("type") or "stronghold").strip().lower()
+            or "stronghold"
+        )
+        stronghold_name = _inline_proper_name(
+            current_stronghold.get("name"),
+            "unknown stronghold",
+        )
+        section = (
+            f"The army is occupying the {stronghold_type} of {stronghold_name}, "
+            f"in {current_terrain_display} terrain."
+        )
+    elif bool(center_cell.get("has_road")):
+        section = f"The army is on the road in {current_terrain_display} terrain."
+    else:
+        section = f"The army is in {current_terrain_display} terrain."
     if features:
         phrases = [row[3] for row in sorted(features)]
         section += f" Nearby terrain includes {_natural_join(phrases)}."
@@ -474,6 +496,8 @@ def _describe_strongholds_section(
 ) -> str:
     rows: list[tuple[int, str, str]] = []
     for stronghold_h3, stronghold in _visible_strongholds(cells_by_h3).items():
+        if stronghold_h3 == center_h3:
+            continue
         distance = 0 if stronghold_h3 == center_h3 else _grid_distance(center_h3, stronghold_h3)
         if distance is None:
             continue
