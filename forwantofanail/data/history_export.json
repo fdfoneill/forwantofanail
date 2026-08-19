@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "colors": {
+    "background": "#1B1916",
+    "neutral": "#7B776D",
+    "water": "#486F82",
+    "road": "#D5C29A",
+    "text": "#F3E8CF",
+    "cell_border": "#25221E"
+  },
+  "faction_colors": {
+    "Allakia": "#8F3426",
+    "Boonan": "#8A6845",
+    "Delisgar": "#C49A22",
+    "Dinn": "#0F6868"
+  }
+}
