@@ -405,10 +405,11 @@ def test_environs_brief_uses_only_serialized_army_intelligence():
                 armies=[
                     {
                         "army_id": "army_2",
-                        "faction": "Dinn",
-                        "name": "The Invincibles",
-                        "infantry": 250,
-                        "cavalry": 50,
+                        "faction": "Delisgar",
+                        "name": "The Blessed Banners",
+                        "commander": "Baron Soman",
+                        "infantry": 2500,
+                        "cavalry": 500,
                     }
                 ],
             ),
@@ -431,12 +432,16 @@ def test_environs_brief_uses_only_serialized_army_intelligence():
         f"Nearby strongholds: city of Bemm 1 league to the {close_bearing}, "
         "controlled by Boonan (garrison 0)."
     )
-    assert 'Dinn army "The Invincibles" (strength 300) occupying Bemm' in sections.armies
+    assert (
+        'Delisgar army "The Blessed Banners" '
+        "(strength 3,000, commanded by Baron Soman) occupying Bemm"
+    ) in sections.armies
     occupying_phrase = sections.armies.split(";")[0]
     assert "league" not in occupying_phrase
-    assert f"Dinn army (strength 3000) on the road 3 leagues to the {medium_bearing}" in sections.armies
+    assert f"Dinn army (strength 3,000) on the road 3 leagues to the {medium_bearing}" in sections.armies
     assert f"Allakia army in desert terrain 4 leagues to the {distant_bearing}" in sections.armies
-    assert "The Invincibles" in sections.armies
+    assert "The Blessed Banners" in sections.armies
+    assert "Baron Soman" in sections.armies
     assert "army_3" not in sections.armies and "army_4" not in sections.armies
 
 

@@ -551,8 +551,14 @@ def _describe_armies_section(
             if name:
                 phrase += f' "{name.replace(chr(34), chr(39))}"'
             strength = _visible_army_strength(army)
+            commander = str(army.get("commander") or "").strip()
+            details: list[str] = []
             if strength is not None:
-                phrase += f" (strength {strength})"
+                details.append(f"strength {strength:,}")
+            if commander:
+                details.append(f"commanded by {commander}")
+            if details:
+                phrase += f" ({', '.join(details)})"
             if stronghold is not None:
                 phrase += f" occupying {_inline_proper_name(stronghold.get('name'), 'unknown stronghold')}"
             elif bool(cell.get("has_road")):
