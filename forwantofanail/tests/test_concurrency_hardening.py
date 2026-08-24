@@ -679,8 +679,13 @@ def test_admin_claim_reset_releases_commanders(sqlite_db, monkeypatch):
         session.close()
 
 
-def test_admin_army_summary_reports_commander_armies(sqlite_db, monkeypatch):
+def test_admin_army_summary_reports_commander_armies_with_diegetic_locations(sqlite_db, monkeypatch):
     monkeypatch.setenv("ADMIN_TOKEN", "summary-secret")
+    monkeypatch.setattr(
+        routes,
+        "describe_army_location",
+        lambda _session, location_h3: f"near {location_h3}",
+    )
     session = create_session()
     try:
         rows = routes.admin_armies_summary(session=session, x_admin_token="summary-secret")
@@ -688,7 +693,8 @@ def test_admin_army_summary_reports_commander_armies(sqlite_db, monkeypatch):
         assert by_army["Alpha Host"]["commander_name"] == "Lord Alpha"
         assert by_army["Alpha Host"]["faction"] == "Alpha"
         assert by_army["Alpha Host"]["claimed"] is False
-        assert by_army["Alpha Host"]["strength"] == 100
+        assert by_army["Alpha Host"]["location"] == "near origin_1"
+        assert "strength" not in by_army["Alpha Host"]
         assert by_army["Alpha Host"]["status"] == "idle"
     finally:
         session.close()
@@ -1175,6 +1181,8 @@ def test_dev_dashboard_opens_commander_briefs_in_text_safe_modal(sqlite_db):
     assert 'els.briefModalText.textContent = String(brief' in response.text
     assert "els.summaryList.replaceChildren();" in response.text
     assert "els.summaryList.innerHTML" not in response.text
+    assert 'const location = String(row.location || "at an unknown location");' in response.text
+    assert "row.strength" not in response.text
 
 
 def test_player_dashboard_csp_allows_h3_script_host(sqlite_db):

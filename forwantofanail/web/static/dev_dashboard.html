@@ -393,7 +393,7 @@
         const army = String(row.army_name || "Unnamed army");
         const commander = String(row.commander_name || "No commander");
         const faction = String(row.faction || "No faction");
-        const strength = Number(row.strength || 0).toLocaleString();
+        const location = String(row.location || "at an unknown location");
         const status = String(row.status || "unknown");
         const claimed = !!row.claimed;
         const item = document.createElement("li");
@@ -404,7 +404,7 @@
         button.setAttribute("aria-label", `Open environs brief for ${commander}, commanding ${army}`);
         const armyName = document.createElement("strong");
         armyName.textContent = army;
-        button.append(armyName, document.createTextNode(` (${commander}, ${faction}): ${strength} strong, ${status}`));
+        button.append(armyName, document.createTextNode(` (${commander}, ${faction}): ${location}, ${status}`));
         if (!claimed) {
           const claimStatus = document.createElement("span");
           claimStatus.className = "muted";

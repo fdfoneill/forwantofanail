@@ -5725,7 +5725,7 @@ def admin_armies_summary(
                 "commander_name": _commander_display_name(army.commander) if army.commander else "",
                 "faction": army.army_faction,
                 "claimed": int(army.commander_id) in claims,
-                "strength": _live_warrior_count(army),
+                "location": describe_army_location(session, army.location_id),
                 "status": status,
             }
         )
