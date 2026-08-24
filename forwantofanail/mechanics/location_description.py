@@ -82,6 +82,25 @@ def _display_calendar_date(value: Any) -> str:
     return f"{parsed.strftime('%B')} {parsed.day}, {parsed.year}"
 
 
+def morale_condition_word(value: Any) -> str:
+    try:
+        morale = int(round(float(value)))
+    except (TypeError, ValueError):
+        morale = 2
+    morale = max(2, min(12, morale))
+    if morale >= 10:
+        return "soaring"
+    if morale == 9:
+        return "good"
+    if morale >= 7:
+        return "fair"
+    if morale >= 5:
+        return "poor"
+    if morale >= 3:
+        return "terrible"
+    return "abysmal"
+
+
 def _army_condition(
     *,
     army: Mapping[str, Any],
@@ -152,9 +171,7 @@ def _describe_own_army(army: Mapping[str, Any]) -> str:
 
     sentences = [opening, supply_sentence]
     morale = army.get("morale") if isinstance(army.get("morale"), Mapping) else {}
-    morale_current = max(0, int(morale.get("current") or 0))
-    morale_maximum = max(morale_current, int(morale.get("max") or 12))
-    sentences.append(f"The army's morale is {morale_current} of {morale_maximum}.")
+    sentences.append(f"The army's morale is {morale_condition_word(morale.get('current'))}.")
     column_length = max(0.0, float(army.get("column_length") or 0.0))
     if column_length >= 2.0:
         sentences.append(

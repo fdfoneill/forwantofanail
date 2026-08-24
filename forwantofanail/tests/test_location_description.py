@@ -17,6 +17,7 @@ from forwantofanail.mechanics.location_description import (
     describe_army_location,
     describe_march_stage,
     describe_route_endpoint,
+    morale_condition_word,
 )
 
 
@@ -190,6 +191,26 @@ def _brief_cell(
     }
 
 
+@pytest.mark.parametrize(
+    ("morale", "expected"),
+    [
+        (2, "abysmal"),
+        (3, "terrible"),
+        (4, "terrible"),
+        (5, "poor"),
+        (6, "poor"),
+        (7, "fair"),
+        (8, "fair"),
+        (9, "good"),
+        (10, "soaring"),
+        (11, "soaring"),
+        (12, "soaring"),
+    ],
+)
+def test_morale_condition_word_matches_dashboard_icon_buckets(morale, expected):
+    assert morale_condition_word(morale) == expected
+
+
 def test_commander_brief_uses_labeled_diegetic_sections():
     center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
     army = {
@@ -232,7 +253,7 @@ def test_commander_brief_uses_labeled_diegetic_sections():
     assert brief.split("\n\n") == [
         "ARMY\nUnder your command is the Blessed Banners, an army 3,000 strong "
         "(2,500 infantry and 500 cavalry). You have 12,345 supply, enough to sustain "
-        "your forces for 7 days. The army's morale is 9 of 12. The army's column length "
+        "your forces for 7 days. The army's morale is good. The army's column length "
         "is 2.2 leagues, which limits your daily march.",
         "TIME\nIt is August 24, 1410, in the prime watch (second of the four daily watches). "
         "The army's scouting radius is 3 leagues in all directions.",
