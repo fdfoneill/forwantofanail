@@ -608,6 +608,148 @@ def test_concurrent_army_management_stale_baseline_gets_conflict(sqlite_db):
     assert sorted(409 if result == 409 else 200 for result in results) == [200, 409]
 
 
+def _seed_garrison_management_pair() -> dict:
+    session = create_session()
+    try:
+        left_army = session.get(Army, 1)
+        left_army.location_id = "fort_1"
+        left_army.army_supply = 1000
+        session.get(Stronghold, 1).control = "Alpha"
+        session.add(Detachment(detachment_id=4, detachment_name="Alpha Rearguard", army_id=1, warrior_count=10))
+        session.add(
+            Army(
+                army_id=4,
+                location_id="fort_1",
+                army_name="Testfort Garrison",
+                army_faction="Alpha",
+                commander_id=None,
+                garrison_stronghold_id=1,
+                army_supply=0,
+                army_morale=9,
+                army_resting_morale=9,
+                is_garrison=True,
+                noncombattant_percent=0.0,
+            )
+        )
+        session.add(Detachment(detachment_id=5, detachment_name="Garrison Watch", army_id=4, warrior_count=20))
+        session.commit()
+        return routes.get_army_management_state(commander_id=1, session=session)
+    finally:
+        session.close()
+
+
+def _garrison_management_payload(state: dict, *, left_detachments: list[str], right_detachments: list[str], left_supply: int, right_supply=None):
+    return ArmyManagementApplyRequest(
+        baseline_hash=state["baseline"]["snapshot_hash"],
+        left_army=ArmyManagementArmySideRequest(
+            army_id="army_1",
+            name="Alpha Host",
+            commander_id="cmd_1",
+            supply_current=left_supply,
+            detachment_ids=left_detachments,
+        ),
+        right_target=ArmyManagementRightTargetRequest(mode="existing", army_id="army_4"),
+        right_army=ArmyManagementArmySideRequest(
+            army_id="army_4",
+            name="Testfort Garrison",
+            commander_id=None,
+            supply_current=right_supply,
+            detachment_ids=right_detachments,
+        ),
+    )
+
+
+def test_field_detachment_can_join_garrison_with_confirmed_capacity_loss(sqlite_db):
+    state = _seed_garrison_management_pair()
+    payload = _garrison_management_payload(
+        state,
+        left_detachments=["det_4"],
+        right_detachments=["det_1", "det_5"],
+        left_supply=180,
+    )
+
+    session = create_session()
+    try:
+        routes.apply_army_management(
+            payload,
+            commander_id=1,
+            session=session,
+            idempotency_key="garrison-capacity-loss",
+        )
+    finally:
+        session.close()
+
+    session = create_session()
+    try:
+        assert session.get(Army, 1).army_supply == 180
+        assert session.get(Army, 4).army_supply == 0
+        assert session.get(Detachment, 1).army_id == 4
+        assert session.get(Detachment, 4).army_id == 1
+    finally:
+        session.close()
+
+
+def test_garrison_detachment_can_join_field_army_without_supply_change(sqlite_db):
+    state = _seed_garrison_management_pair()
+    payload = _garrison_management_payload(
+        state,
+        left_detachments=["det_1", "det_4", "det_5"],
+        right_detachments=[],
+        left_supply=1000,
+    )
+
+    session = create_session()
+    try:
+        routes.apply_army_management(
+            payload,
+            commander_id=1,
+            session=session,
+            idempotency_key="pull-from-garrison",
+        )
+    finally:
+        session.close()
+
+    session = create_session()
+    try:
+        assert session.get(Army, 1).army_supply == 1000
+        assert session.get(Army, 4).army_supply == 0
+        assert session.get(Detachment, 5).army_id == 1
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize(
+    ("left_supply", "right_supply"),
+    [
+        (179, None),
+        (1000, None),
+        (180, 1),
+    ],
+)
+def test_garrison_management_rejects_arbitrary_supply_changes(sqlite_db, left_supply, right_supply):
+    state = _seed_garrison_management_pair()
+    payload = _garrison_management_payload(
+        state,
+        left_detachments=["det_4"],
+        right_detachments=["det_1", "det_5"],
+        left_supply=left_supply,
+        right_supply=right_supply,
+    )
+
+    session = create_session()
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            routes.apply_army_management(
+                payload,
+                commander_id=1,
+                session=session,
+                idempotency_key=f"reject-garrison-supply-{left_supply}-{right_supply}",
+            )
+        assert exc_info.value.status_code == 400
+    finally:
+        session.close()
+
+
 def test_get_standing_orders_does_not_insert_row(sqlite_db):
     session = create_session()
     try:

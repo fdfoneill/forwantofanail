@@ -5237,18 +5237,19 @@ def _validate_and_apply_management_transaction(
         if _army_name_exists(session, army_name, exclude_army_ids=exclude_army_ids):
             raise _army_management_error("Army names must be globally unique.")
 
+    original_left_supply = int(left_army.army_supply or 0)
     if right_mode == "existing" and right_existing is not None:
         if right_existing.is_garrison:
             left_supply = int(payload.left_army.supply_current or 0)
             right_supply = int(right_existing.army_supply or 0)
+            if left_supply < 0:
+                raise _army_management_error("Supply values may not be negative.")
             if right_army_payload is not None and right_army_payload.commander_id not in {None, ""}:
                 raise _army_management_error("Cannot assign a commander to a garrison.")
             if right_army_payload is not None and right_army_payload.supply_current not in {None, int(right_existing.army_supply or 0), ""}:
                 raise _army_management_error("Supply cannot be transferred to or from a garrison.")
-            if left_supply != int(left_army.army_supply or 0):
-                raise _army_management_error("Supply cannot be transferred to or from a garrison.")
         else:
-            original_supply_sum = int(left_army.army_supply or 0) + int(right_existing.army_supply or 0)
+            original_supply_sum = original_left_supply + int(right_existing.army_supply or 0)
             left_supply = int(payload.left_army.supply_current or 0)
             right_supply = int((right_army_payload.supply_current if right_army_payload is not None else 0) or 0)
             if left_supply < 0 or right_supply < 0:
@@ -5325,6 +5326,12 @@ def _validate_and_apply_management_transaction(
         detachments=left_detachments_final,
         noncombatant_percent=float(left_army.noncombattant_percent or 0.0),
     )
+    if right_mode == "existing" and right_existing is not None and right_existing.is_garrison:
+        expected_left_supply = min(original_left_supply, left_capacity_final)
+        if left_supply != expected_left_supply:
+            raise _army_management_error(
+                "Field army supply must remain unchanged except for unavoidable carrying-capacity loss."
+            )
     if left_supply > left_capacity_final:
         raise _army_management_error("Left army supply exceeds its maximum carrying capacity.")
 
