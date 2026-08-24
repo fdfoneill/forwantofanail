@@ -12,7 +12,7 @@ from forwantofanail.core.migrate_runtime_tables import migrate_runtime_tables
 from forwantofanail.core.models import Location, Stronghold, TerrainType
 from forwantofanail.mechanics import location_description
 from forwantofanail.mechanics.location_description import (
-    build_army_status_brief,
+    build_commander_brief,
     build_environs_brief,
     describe_army_location,
 )
@@ -188,7 +188,7 @@ def _brief_cell(
     }
 
 
-def test_army_status_brief_describes_command_supply_condition_time_and_scouting():
+def test_commander_brief_uses_labeled_diegetic_sections():
     center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
     army = {
         "name": "The Blessed Banners",
@@ -200,6 +200,7 @@ def test_army_status_brief_describes_command_supply_condition_time_and_scouting(
         },
         "supply": {"current": 12345, "days_estimate": 7.9},
         "column_length": 2.25,
+        "morale": {"current": 9, "max": 12},
     }
     time = {"calendar_date": "1410-08-24", "watch_label": "prime"}
     environs = {
@@ -208,31 +209,49 @@ def test_army_status_brief_describes_command_supply_condition_time_and_scouting(
         "cells": [_brief_cell(center_h3)],
     }
 
-    brief = build_army_status_brief(
+    brief = build_commander_brief(
         army=army,
         time=time,
         environs=environs,
-        current_action={"kind": "besiege"},
-    )
+        current_action={"kind": "besiege", "state": "in_progress"},
+        itinerary={"remaining_moves": [], "remaining_rout": []},
+        standing_orders={
+            "follow_road": {"enabled": True},
+            "forced_march": {"enabled": True},
+        },
+        action_target="against Bemm",
+        action_eta="during the vesper watch on August 24, 1410",
+        unread_letters=2,
+        unread_alerts=3,
+        high_importance_alerts=1,
+        status_signals=[{"message": "Enemy forces are nearby."}],
+    ).render()
 
-    assert brief == (
-        "Under your command is the Blessed Banners, an army 3,000 strong "
-        "(2,500 infantry and 500 cavalry). "
-        "You have 12,345 supply, enough to sustain your forces for 7 days. "
-        "The army's column length is 2.2 leagues, which limits your daily march. "
-        "The army is currently besieging. "
-        "It is August 24, 1410, in the prime watch (second of the four daily watches). "
-        "The army's scouting radius is 3 leagues in all directions."
-    )
+    assert brief.split("\n\n") == [
+        "ARMY\nUnder your command is the Blessed Banners, an army 3,000 strong "
+        "(2,500 infantry and 500 cavalry). You have 12,345 supply, enough to sustain "
+        "your forces for 7 days. The army's morale is 9 of 12. The army's column length "
+        "is 2.2 leagues, which limits your daily march.",
+        "TIME\nIt is August 24, 1410, in the prime watch (second of the four daily watches). "
+        "The army's scouting radius is 3 leagues in all directions.",
+        "ORDERS\nThe army is currently besieging. A siege is underway against Bemm. "
+        "Completion is expected during the vesper watch on August 24, 1410. "
+        "Standing orders: follow the road and forced march.",
+        "ATTENTION\nYou have 2 unread letters and 3 unread alerts. 1 alert is of high importance. "
+        "Current conditions: Enemy forces are nearby.",
+        "LOCAL SITUATION\nThe army is in open ground terrain. The area is untouched in terms of forage. "
+        "No other armies are nearby.",
+    ]
 
 
-def test_army_status_brief_uses_night_wording_and_dashboard_condition_precedence():
+def test_commander_brief_uses_night_wording_and_dashboard_condition_precedence():
     center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
     army = {
         "name": "Night Guard",
         "composition": {"detachments": [{"warriors": 1, "is_cavalry": False}]},
         "supply": {"current": 0, "days_estimate": None},
         "column_length": 0.5,
+        "morale": {"current": 8, "max": 12},
     }
     time = {"calendar_date": "1410-08-24", "watch_label": "night"}
     environs = {
@@ -241,13 +260,73 @@ def test_army_status_brief_uses_night_wording_and_dashboard_condition_precedence
         "cells": [_brief_cell(center_h3)],
     }
 
-    brief = build_army_status_brief(army=army, time=time, environs=environs)
+    brief = build_commander_brief(army=army, time=time, environs=environs).render()
 
     assert "your forces currently consume no supply" in brief
     assert "The army is currently encamped." in brief
     assert "It is August 24, 1410, in the night watch." in brief
     assert "first of the four daily watches" not in brief
     assert "scouting radius is 1 league" in brief
+
+
+def test_commander_brief_does_not_call_unread_items_nothing_to_attend_to():
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    brief = build_commander_brief(
+        army={
+            "name": "Watchful Host",
+            "composition": {"detachments": []},
+            "supply": {"current": 0, "days_estimate": None},
+            "morale": {"current": 9, "max": 12},
+        },
+        time={"calendar_date": "1410-08-24", "watch_label": "matin"},
+        environs={
+            "center_h3": center_h3,
+            "radius": 2,
+            "cells": [_brief_cell(center_h3)],
+        },
+        unread_letters=1,
+    ).render()
+
+    assert "You have 1 unread letter and no unread alerts." in brief
+    assert "Nothing requires immediate attention" not in brief
+
+
+@pytest.mark.parametrize(
+    ("kind", "condition", "order_text"),
+    [
+        ("move", "marching", "March orders are underway toward Bemm."),
+        ("forage", "foraging", "Foraging orders are underway."),
+        ("attack", "attacking", "An attack is underway against the Blessed Banners."),
+        ("besiege", "besieging", "A siege is underway against Bemm."),
+        ("rout", "fleeing", "The army's retreat is underway."),
+    ],
+)
+def test_commander_brief_describes_each_action_kind(kind, condition, order_text):
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    target = {
+        "move": "toward Bemm",
+        "attack": "against the Blessed Banners",
+        "besiege": "against Bemm",
+    }.get(kind, "")
+    brief = build_commander_brief(
+        army={
+            "name": "Test Host",
+            "composition": {"detachments": []},
+            "supply": {"current": 0, "days_estimate": None},
+            "morale": {"current": 9, "max": 12},
+        },
+        time={"calendar_date": "1410-08-24", "watch_label": "prime"},
+        environs={
+            "center_h3": center_h3,
+            "radius": 2,
+            "cells": [_brief_cell(center_h3)],
+        },
+        current_action={"kind": kind, "state": "in_progress"},
+        action_target=target,
+    ).render()
+
+    assert f"The army is currently {condition}." in brief
+    assert order_text in brief
 
 
 def test_environs_brief_describes_discrete_terrain_forage_and_offroad_roads():
@@ -275,6 +354,7 @@ def test_environs_brief_describes_discrete_terrain_forage_and_offroad_roads():
     assert "a road to the west" in sections.terrain
     assert sections.forage == "The area is plentiful in terms of forage."
     assert sections.roads == ""
+    assert sections.armies == "No other armies are nearby."
 
 
 def test_environs_brief_names_visible_strongholds_adjacent_to_road_ends():
@@ -366,6 +446,8 @@ def test_environs_brief_opens_with_occupied_stronghold_and_omits_it_from_nearby_
                     "type": "Fortress",
                     "faction": "Dinn",
                     "defender_strength": 100,
+                    "under_siege": True,
+                    "siege": {"besieger_faction": "Allakia", "matin_ticks_elapsed": 3},
                 },
             ),
             _brief_cell(
@@ -386,8 +468,44 @@ def test_environs_brief_opens_with_occupied_stronghold_and_omits_it_from_nearby_
     assert sections.terrain.startswith(
         "The army is occupying the fortress of the Sapphire Dome, in open ground terrain."
     )
+    assert "The stronghold is under siege by Allakia forces." in sections.terrain
+    assert "matin" not in sections.terrain and "3" not in sections.terrain
     assert "Sapphire Dome" not in sections.strongholds
     assert "city of Bemm" in sections.strongholds
+
+
+def test_environs_brief_describes_visible_nearby_siege_without_internal_state():
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    nearby_h3 = sorted(h3.grid_ring(center_h3, 1))[0]
+    environs = {
+        "center_h3": center_h3,
+        "radius": 1,
+        "cells": [
+            _brief_cell(center_h3),
+            _brief_cell(
+                nearby_h3,
+                stronghold={
+                    "id": "sh_9",
+                    "name": "Bemm",
+                    "type": "City",
+                    "faction": "Boonan",
+                    "defender_strength": 200,
+                    "under_siege": True,
+                    "siege": {
+                        "besieger_faction": "Dinn",
+                        "matin_ticks_elapsed": 4,
+                        "gates_open": True,
+                    },
+                },
+            ),
+        ],
+    }
+
+    strongholds = build_environs_brief(environs).strongholds
+
+    assert "controlled by Boonan, under siege by Dinn (garrison 200)" in strongholds
+    assert "matin" not in strongholds
+    assert "gates" not in strongholds
 
 
 def test_environs_brief_opens_with_road_before_terrain():

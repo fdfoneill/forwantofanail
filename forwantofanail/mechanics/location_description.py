@@ -43,6 +43,29 @@ class EnvironsBriefSections:
         )
 
 
+@dataclass(frozen=True)
+class CommanderBriefSections:
+    army: str
+    time: str
+    orders: str
+    attention: str
+    local_situation: str
+
+    def render(self) -> str:
+        sections = (
+            ("ARMY", self.army),
+            ("TIME", self.time),
+            ("ORDERS", self.orders),
+            ("ATTENTION", self.attention),
+            ("LOCAL SITUATION", self.local_situation),
+        )
+        return "\n\n".join(
+            f"{label}\n{text.strip()}"
+            for label, text in sections
+            if text and text.strip()
+        )
+
+
 def _display_army_name(value: Any) -> str:
     name = str(value or "unnamed army").strip() or "unnamed army"
     if name.casefold().startswith("the "):
@@ -93,14 +116,7 @@ def _army_condition(
     return "holding"
 
 
-def build_army_status_brief(
-    *,
-    army: Mapping[str, Any],
-    time: Mapping[str, Any],
-    environs: Mapping[str, Any],
-    current_action: Mapping[str, Any] | None = None,
-) -> str:
-    """Describe the player's own army state using fields already exposed by /me/view."""
+def _describe_own_army(army: Mapping[str, Any]) -> str:
     composition = army.get("composition") if isinstance(army.get("composition"), Mapping) else {}
     detachments = composition.get("detachments", [])
     infantry = 0
@@ -124,9 +140,7 @@ def build_army_status_brief(
     supply_current = max(0, int(supply.get("current") or 0))
     days_estimate = supply.get("days_estimate")
     if days_estimate is None:
-        supply_sentence = (
-            f"You have {supply_current:,} supply; your forces currently consume no supply."
-        )
+        supply_sentence = f"You have {supply_current:,} supply; your forces currently consume no supply."
     else:
         days_remaining = max(0, int(math.floor(float(days_estimate))))
         day_unit = "day" if days_remaining == 1 else "days"
@@ -136,19 +150,20 @@ def build_army_status_brief(
         )
 
     sentences = [opening, supply_sentence]
+    morale = army.get("morale") if isinstance(army.get("morale"), Mapping) else {}
+    morale_current = max(0, int(morale.get("current") or 0))
+    morale_maximum = max(morale_current, int(morale.get("max") or 12))
+    sentences.append(f"The army's morale is {morale_current} of {morale_maximum}.")
     column_length = max(0.0, float(army.get("column_length") or 0.0))
     if column_length >= 2.0:
         sentences.append(
             f"The army's column length is {column_length:.1f} leagues, which limits your daily march."
         )
-    condition = _army_condition(
-        army=army,
-        time=time,
-        environs=environs,
-        current_action=current_action,
-    )
-    sentences.append(f"The army is currently {condition}.")
+    return " ".join(sentences)
 
+
+def _describe_time(time: Mapping[str, Any], environs: Mapping[str, Any]) -> str:
+    sentences: list[str] = []
     calendar_date = _display_calendar_date(time.get("calendar_date"))
     watch_label = str(time.get("watch_label") or "unknown").strip().casefold() or "unknown"
     if watch_label == "night":
@@ -164,13 +179,148 @@ def build_army_status_brief(
             f"It is {calendar_date}, in the {watch_label} watch "
             f"({ordinal} of the four daily watches)."
         )
-
     radius = max(0, int(environs.get("radius") or 0))
     radius_unit = "league" if radius == 1 else "leagues"
-    sentences.append(
-        f"The army's scouting radius is {radius:,} {radius_unit} in all directions."
-    )
+    sentences.append(f"The army's scouting radius is {radius:,} {radius_unit} in all directions.")
     return " ".join(sentences)
+
+
+def _describe_orders(
+    *,
+    army: Mapping[str, Any],
+    time: Mapping[str, Any],
+    environs: Mapping[str, Any],
+    current_action: Mapping[str, Any] | None = None,
+    itinerary: Mapping[str, Any] | None = None,
+    standing_orders: Mapping[str, Any] | None = None,
+    action_target: str = "",
+    action_eta: str = "",
+) -> str:
+    condition = _army_condition(
+        army=army,
+        time=time,
+        environs=environs,
+        current_action=current_action,
+    )
+    sentences = [f"The army is currently {condition}."]
+    action = current_action or {}
+    kind = str(action.get("kind") or "").strip().casefold()
+    state = str(action.get("state") or "").strip().casefold()
+    state_phrase = "queued" if state == "queued" else "underway"
+    target_suffix = f" {action_target.strip()}" if action_target.strip() else ""
+    if kind == "move":
+        sentences.append(f"March orders are {state_phrase}{target_suffix}.")
+    elif kind == "forage":
+        sentences.append(f"Foraging orders are {state_phrase}.")
+    elif kind == "attack":
+        sentences.append(f"An attack is {state_phrase}{target_suffix}.")
+    elif kind == "besiege":
+        sentences.append(f"A siege is {state_phrase}{target_suffix}.")
+    elif kind == "rout":
+        sentences.append(f"The army's retreat is {state_phrase}{target_suffix}.")
+    else:
+        sentences.append("No active orders.")
+    if action_eta.strip():
+        sentences.append(f"Completion is expected {action_eta.strip()}.")
+
+    itinerary = itinerary or {}
+    remaining_moves = itinerary.get("remaining_moves", [])
+    remaining_rout = itinerary.get("remaining_rout", [])
+    move_count = len(remaining_moves) if isinstance(remaining_moves, list) else 0
+    rout_count = len(remaining_rout) if isinstance(remaining_rout, list) else 0
+    stage_count = move_count or rout_count
+    if stage_count:
+        stage_unit = "stage remains" if stage_count == 1 else "stages remain"
+        sentences.append(f"{stage_count} {stage_unit} in the present itinerary.")
+
+    standing_orders = standing_orders or {}
+    enabled: list[str] = []
+    follow_road = standing_orders.get("follow_road")
+    forced_march = standing_orders.get("forced_march")
+    if isinstance(follow_road, Mapping) and bool(follow_road.get("enabled")):
+        enabled.append("follow the road")
+    if isinstance(forced_march, Mapping) and bool(forced_march.get("enabled")):
+        enabled.append("forced march")
+    if enabled:
+        sentences.append(f"Standing orders: {_natural_join(enabled)}.")
+    else:
+        sentences.append("No standing orders are active.")
+    return " ".join(sentences)
+
+
+def _describe_attention(
+    *,
+    unread_letters: int,
+    unread_alerts: int,
+    high_importance_alerts: int,
+    status_signals: Iterable[Mapping[str, Any]],
+) -> str:
+    letter_count = max(0, int(unread_letters))
+    alert_count = max(0, int(unread_alerts))
+    high_count = min(alert_count, max(0, int(high_importance_alerts)))
+    letter_phrase = "no unread letters" if letter_count == 0 else (
+        "1 unread letter" if letter_count == 1 else f"{letter_count:,} unread letters"
+    )
+    alert_phrase = "no unread alerts" if alert_count == 0 else (
+        "1 unread alert" if alert_count == 1 else f"{alert_count:,} unread alerts"
+    )
+    sentence = f"You have {letter_phrase} and {alert_phrase}."
+    if high_count:
+        unit = "alert is" if high_count == 1 else "alerts are"
+        sentence += f" {high_count:,} {unit} of high importance."
+    signal_messages = [
+        str(signal.get("message") or "").strip()
+        for signal in status_signals
+        if isinstance(signal, Mapping) and str(signal.get("message") or "").strip()
+    ]
+    if signal_messages:
+        sentence += f" Current conditions: {' '.join(signal_messages)}"
+    elif letter_count == 0 and alert_count == 0:
+        sentence += " Nothing requires immediate attention."
+    return sentence
+
+
+def build_commander_brief(
+    *,
+    army: Mapping[str, Any],
+    time: Mapping[str, Any],
+    environs: Mapping[str, Any],
+    current_action: Mapping[str, Any] | None = None,
+    itinerary: Mapping[str, Any] | None = None,
+    standing_orders: Mapping[str, Any] | None = None,
+    action_target: str = "",
+    action_eta: str = "",
+    unread_letters: int = 0,
+    unread_alerts: int = 0,
+    high_importance_alerts: int = 0,
+    status_signals: Iterable[Mapping[str, Any]] = (),
+    border_road_cells: Iterable[str] = (),
+) -> CommanderBriefSections:
+    local_situation = build_environs_brief(
+        environs,
+        border_road_cells=border_road_cells,
+    ).render()
+    return CommanderBriefSections(
+        army=_describe_own_army(army),
+        time=_describe_time(time, environs),
+        orders=_describe_orders(
+            army=army,
+            time=time,
+            environs=environs,
+            current_action=current_action,
+            itinerary=itinerary,
+            standing_orders=standing_orders,
+            action_target=action_target,
+            action_eta=action_eta,
+        ),
+        attention=_describe_attention(
+            unread_letters=unread_letters,
+            unread_alerts=unread_alerts,
+            high_importance_alerts=high_importance_alerts,
+            status_signals=status_signals,
+        ),
+        local_situation=local_situation,
+    )
 
 
 def _grid_distance(origin_h3: str, destination_h3: str) -> int | None:
@@ -486,6 +636,18 @@ def _describe_terrain_section(
             f"The army is occupying the {stronghold_type} of {stronghold_name}, "
             f"in {current_terrain_display} terrain."
         )
+        if bool(current_stronghold.get("under_siege")):
+            siege = current_stronghold.get("siege")
+            besieger = (
+                str(siege.get("besieger_faction") or "").strip()
+                if isinstance(siege, Mapping)
+                else ""
+            )
+            section += (
+                f" The stronghold is under siege by {besieger} forces."
+                if besieger
+                else " The stronghold is under siege."
+            )
     elif bool(center_cell.get("has_road")):
         section = f"The army is on the road in {current_terrain_display} terrain."
     else:
@@ -644,7 +806,19 @@ def _describe_strongholds_section(
                 continue
             unit = "league" if distance == 1 else "leagues"
             position = f"{distance} {unit} to the {bearing}"
-        phrase = f"{stronghold_type} of {name} {position}, controlled by {faction} (garrison {garrison})"
+        siege_phrase = ""
+        if bool(stronghold.get("under_siege")):
+            siege = stronghold.get("siege")
+            besieger = (
+                str(siege.get("besieger_faction") or "").strip()
+                if isinstance(siege, Mapping)
+                else ""
+            )
+            siege_phrase = f", under siege by {besieger}" if besieger else ", under siege"
+        phrase = (
+            f"{stronghold_type} of {name} {position}, controlled by {faction}"
+            f"{siege_phrase} (garrison {garrison})"
+        )
         rows.append((distance, str(stronghold.get("id") or stronghold_h3), phrase))
     if not rows:
         return ""
@@ -709,7 +883,7 @@ def _describe_armies_section(
                     phrase += f" {distance} {unit} to the {bearing}"
             rows.append((distance, str(army.get("army_id") or ""), phrase))
     if not rows:
-        return ""
+        return "No other armies are nearby."
     return f"Other armies: {'; '.join(row[2] for row in sorted(rows))}."
 
 

@@ -1011,9 +1011,10 @@ def test_brief_endpoint_requires_auth_and_returns_plain_text_for_bearer(sqlite_d
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain; charset=utf-8")
-    assert response.text.startswith("Under your command is the Alpha Host, an army 100 strong")
+    assert response.text.startswith("ARMY\nUnder your command is the Alpha Host, an army 100 strong")
     assert response.text.endswith(
-        "The army is in open ground terrain. The area is untouched in terms of forage."
+        "LOCAL SITUATION\nThe army is in open ground terrain. The area is untouched in terms of forage. "
+        "No other armies are nearby."
     )
 
 
@@ -1034,8 +1035,89 @@ def test_brief_endpoint_accepts_browser_cookie(sqlite_db, monkeypatch):
 
     assert claim.status_code == 200
     assert response.status_code == 200
-    assert response.text.startswith("Under your command is the Alpha Host")
+    assert response.text.startswith("ARMY\nUnder your command is the Alpha Host")
     assert "The army is in open ground terrain." in response.text
+
+
+def test_brief_attention_counts_do_not_mark_letters_or_alerts_read(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes, "_serialize_environs", lambda *_args, **_kwargs: _brief_endpoint_environs())
+    monkeypatch.setattr(routes, "_border_road_neighbor_ids", lambda *_args, **_kwargs: [])
+    session = create_session()
+    try:
+        clock = routes._get_or_create_clock(session)
+        message = Message(
+            sender_commander_id=2,
+            sender_name="Lady Beta",
+            recipient_id=1,
+            content="Hold your ground.",
+            priority="normal",
+            sent_day=clock.day,
+            sent_watch=clock.watch,
+            sent_tick=clock.world_tick,
+            delivery_day=clock.day,
+            delivery_watch=clock.watch,
+            delivery_tick=clock.world_tick,
+            status="received",
+            is_read=False,
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(message)
+        alert = routes._create_alert(
+            session,
+            recipient_commander_id=1,
+            alert_type="report",
+            signal_kind="event",
+            category="orders",
+            importance="high",
+            message="Scouts report movement.",
+            created_day=clock.day,
+            created_watch=clock.watch,
+        )
+        session.commit()
+        message_id = message.message_id
+        alert_id = alert.alert_id
+
+        brief = routes._commander_brief_text(session, 1)
+        session.expire_all()
+
+        assert "ATTENTION\nYou have 1 unread letter and 1 unread alert." in brief
+        assert "1 alert is of high importance." in brief
+        assert session.get(Message, message_id).is_read is False
+        receipt = session.get(AlertRecipient, (alert_id, 1))
+        assert receipt.read_at is None
+        assert receipt.delivered_at is None
+    finally:
+        session.close()
+
+
+def test_brief_renders_action_target_and_eta_without_internal_ids(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes, "_serialize_environs", lambda *_args, **_kwargs: _brief_endpoint_environs())
+    monkeypatch.setattr(routes, "_border_road_neighbor_ids", lambda *_args, **_kwargs: [])
+    session = create_session()
+    try:
+        action = Action(
+            commander_id=1,
+            kind="move",
+            state="queued",
+            parameters_json=json.dumps({"destination_h3": "origin_2"}),
+            accepted_at=datetime.now(timezone.utc),
+            eta_day=2,
+            eta_watch=2,
+        )
+        session.add(action)
+        session.commit()
+
+        brief = routes._commander_brief_text(session, 1)
+
+        assert "ORDERS\nThe army is currently marching." in brief
+        assert "March orders are queued toward an undescribed destination." in brief
+        assert "Completion is expected during the prime watch on May 22, 1410." in brief
+        assert "1 stage remains in the present itinerary." in brief
+        assert "origin_2" not in brief
+        assert "destination_h3" not in brief
+        assert "action_" not in brief
+    finally:
+        session.close()
 
 
 def test_brief_endpoint_uses_normal_and_cavalry_environs_radii(sqlite_db, monkeypatch):
@@ -1075,7 +1157,7 @@ def test_admin_commander_brief_requires_admin_token(sqlite_db, monkeypatch):
     assert unauthorized.status_code == 401
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/plain; charset=utf-8")
-    assert response.text.startswith("Under your command is the Beta Guard")
+    assert response.text.startswith("ARMY\nUnder your command is the Beta Guard")
     assert "The army is in open ground terrain." in response.text
 
 

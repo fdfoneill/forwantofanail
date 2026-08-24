@@ -59,8 +59,7 @@ from forwantofanail.mechanics.forage import (
     forage_depletion_level,
 )
 from forwantofanail.mechanics.location_description import (
-    build_army_status_brief,
-    build_environs_brief,
+    build_commander_brief,
     describe_army_location,
 )
 from forwantofanail.mechanics.movement import (
@@ -5881,6 +5880,101 @@ def get_my_view(
     }
 
 
+def _diegetic_action_position(session: Session, location_h3: str) -> str:
+    location = str(location_h3 or "").strip()
+    if not location:
+        return ""
+    stronghold = _stronghold_at_h3(session, location)
+    if stronghold is not None:
+        return str(stronghold.stronghold_name or "the target stronghold").strip()
+    description = describe_army_location(session, location)
+    if description == "at an unknown location":
+        return "an undescribed destination"
+    return f"a position {description}"
+
+
+def _brief_action_target(session: Session, action: Action | None) -> str:
+    if action is None:
+        return ""
+    try:
+        params = json.loads(action.parameters_json or "{}")
+    except json.JSONDecodeError:
+        params = {}
+    if action.kind == "besiege":
+        name = str(params.get("target_stronghold_name") or "").strip()
+        if not name and params.get("target_stronghold_id") is not None:
+            stronghold = session.get(Stronghold, int(params["target_stronghold_id"]))
+            name = str(stronghold.stronghold_name or "").strip() if stronghold else ""
+        return f"against {name or 'the target stronghold'}"
+    if action.kind == "attack":
+        target_army = None
+        if params.get("target_army_id") is not None:
+            target_army = session.get(Army, int(params["target_army_id"]))
+        if target_army is not None:
+            name = str(target_army.army_name or "").strip()
+            if name:
+                return f"against {name}"
+        position = _diegetic_action_position(session, str(params.get("target_h3") or ""))
+        return f"against forces at {position}" if position else "against the enemy"
+    if action.kind == "move":
+        position = _diegetic_action_position(session, str(params.get("destination_h3") or ""))
+        return f"toward {position}" if position else ""
+    if action.kind == "rout":
+        path = [str(value).strip() for value in params.get("path", []) if str(value).strip()]
+        position = _diegetic_action_position(session, path[0] if path else "")
+        return f"toward {position}" if position else ""
+    return ""
+
+
+def _brief_action_eta(action: Action | None) -> str:
+    if action is None or action.eta_day is None or action.eta_watch is None:
+        return ""
+    event_date = _scenario_date_for_day(int(action.eta_day))
+    watch_name = WATCH_LABELS.get(Watch(int(action.eta_watch)), "unknown")
+    return (
+        f"during the {watch_name} watch on "
+        f"{event_date.strftime('%B')} {event_date.day}, {event_date.year}"
+    )
+
+
+def _brief_unread_alert_counts(
+    session: Session,
+    *,
+    commander_id: int,
+    world_tick: int,
+) -> tuple[int, int]:
+    rows = (
+        session.query(Alert.importance)
+        .join(AlertRecipient, AlertRecipient.alert_id == Alert.alert_id)
+        .filter(
+            AlertRecipient.commander_id == commander_id,
+            AlertRecipient.available_tick <= world_tick,
+            AlertRecipient.read_at.is_(None),
+            Alert.signal_kind == "event",
+        )
+        .all()
+    )
+    return len(rows), sum(1 for row in rows if str(row[0] or "").strip().lower() == "high")
+
+
+def _brief_unread_letter_count(
+    session: Session,
+    *,
+    commander_id: int,
+    clock: GameClock,
+) -> int:
+    return (
+        session.query(Message.message_id)
+        .filter(
+            Message.recipient_id == commander_id,
+            Message.status == "received",
+            Message.is_read.is_(False),
+            _is_delivered_filter(clock.day, clock.watch),
+        )
+        .count()
+    )
+
+
 def _commander_brief_text(session: Session, commander_id: int) -> str:
     clock = _get_or_create_clock(session)
     army = _find_commander_army(session, commander_id)
@@ -5894,22 +5988,41 @@ def _commander_brief_text(session: Session, commander_id: int) -> str:
         viewer_army=army,
     )
     visible_set = {str(cell.get("h3")) for cell in environs["cells"]}
-    sections = build_environs_brief(
-        environs,
-        border_road_cells=_border_road_neighbor_ids(session, visible_set),
-    )
     current_action = _get_current_action_row(session, commander_id)
-    army_status = build_army_status_brief(
+    current_action_payload = (
+        _serialize_action(session, current_action, commander_id)
+        if current_action
+        else None
+    )
+    itinerary = _serialize_remaining_itinerary(session, commander_id)
+    standing_row = session.get(StandingOrder, commander_id)
+    standing = _serialize_standing_orders(standing_row)
+    status_signals = _status_signals_for_army(session, army, current_action, standing_row)
+    unread_alerts, high_alerts = _brief_unread_alert_counts(
+        session,
+        commander_id=commander_id,
+        world_tick=int(clock.world_tick),
+    )
+    sections = build_commander_brief(
         army=_serialize_army(army),
         time=_clock_payload(clock),
         environs=environs,
-        current_action=(
-            _serialize_action(session, current_action, commander_id)
-            if current_action
-            else None
+        current_action=current_action_payload,
+        itinerary=itinerary,
+        standing_orders=standing,
+        action_target=_brief_action_target(session, current_action),
+        action_eta=_brief_action_eta(current_action),
+        unread_letters=_brief_unread_letter_count(
+            session,
+            commander_id=commander_id,
+            clock=clock,
         ),
+        unread_alerts=unread_alerts,
+        high_importance_alerts=high_alerts,
+        status_signals=status_signals,
+        border_road_cells=_border_road_neighbor_ids(session, visible_set),
     )
-    return " ".join(part for part in (army_status, sections.render()) if part)
+    return sections.render()
 
 
 @router.get("/me/brief", response_class=PlainTextResponse)
