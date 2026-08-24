@@ -283,6 +283,161 @@ def _advance_one_action_tick() -> None:
         session.close()
 
 
+def test_stronghold_capture_displaces_empty_field_army_without_deleting_commander(sqlite_db, monkeypatch):
+    siege_id = _seed_active_test_siege()
+    monkeypatch.setattr(routes, "list_valid_destinations", lambda _session, army_id: ["retreat_1"] if army_id == 2 else [])
+    monkeypatch.setattr(
+        routes,
+        "_nearest_distance_to_armies",
+        lambda location_id, _winner_armies: 1 if location_id == "retreat_1" else 0,
+    )
+
+    session = create_session()
+    try:
+        session.add(Location(location_id="retreat_1", terrain_id=1, is_road=True, settlement=1))
+        defender = session.get(Army, 2)
+        for detachment in list(defender.detachments):
+            detachment.warrior_count = 0
+            session.delete(detachment)
+        session.add(
+            Army(
+                army_id=4,
+                location_id="fort_1",
+                army_name="Testfort Garrison",
+                army_faction="Beta",
+                commander_id=None,
+                garrison_stronghold_id=1,
+                army_supply=0,
+                army_morale=9,
+                army_resting_morale=9,
+                is_garrison=True,
+                noncombattant_percent=0.0,
+            )
+        )
+        session.flush()
+
+        clock = session.get(GameClock, 1)
+        attacker = session.get(Army, 1)
+        stronghold = session.get(Stronghold, 1)
+        siege = session.get(Siege, siege_id)
+
+        assert routes._clear_remaining_defenders_for_capture(
+            session,
+            clock=clock,
+            stronghold=stronghold,
+            attacker=attacker,
+        )
+        assert session.get(Army, 2).location_id == "retreat_1"
+        assert session.get(Army, 2).commander_id == 2
+
+        assert routes._finalize_siege_capture(
+            session,
+            clock=clock,
+            siege=siege,
+            stronghold=stronghold,
+            attacker=attacker,
+            apply_loot=False,
+        )
+        assert attacker.location_id == "fort_1"
+        assert stronghold.control == "Alpha"
+        assert session.get(Army, 4).army_faction == "Alpha"
+        assert session.get(Commander, 2) is not None
+    finally:
+        session.close()
+
+
+def test_stronghold_capture_does_not_delete_empty_field_army_when_displacement_is_blocked(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes, "list_valid_destinations", lambda _session, _army_id: [])
+
+    session = create_session()
+    try:
+        defender = session.get(Army, 2)
+        for detachment in list(defender.detachments):
+            detachment.warrior_count = 0
+            session.delete(detachment)
+        session.flush()
+
+        cleared = routes._clear_remaining_defenders_for_capture(
+            session,
+            clock=session.get(GameClock, 1),
+            stronghold=session.get(Stronghold, 1),
+            attacker=session.get(Army, 1),
+        )
+
+        assert cleared is False
+        assert session.get(Army, 2) is not None
+        assert session.get(Army, 2).location_id == "fort_1"
+        assert session.get(Commander, 2) is not None
+    finally:
+        session.close()
+
+
+def test_march_displaces_empty_hostile_field_army(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes, "list_valid_destinations", lambda _session, army_id: ["escape_1"] if army_id == 2 else [])
+
+    session = create_session()
+    try:
+        session.add_all(
+            [
+                Location(location_id="target_1", terrain_id=1, is_road=True, settlement=1),
+                Location(location_id="escape_1", terrain_id=1, is_road=True, settlement=1),
+            ]
+        )
+        defender = session.get(Army, 2)
+        defender.location_id = "target_1"
+        for detachment in list(defender.detachments):
+            detachment.warrior_count = 0
+            session.delete(detachment)
+        session.flush()
+
+        attacker = session.get(Army, 1)
+        moved = routes._execute_move_to_destination(
+            session,
+            session.get(GameClock, 1),
+            attacker,
+            "target_1",
+        )
+
+        assert moved is True
+        assert attacker.location_id == "target_1"
+        assert session.get(Army, 2).location_id == "escape_1"
+        assert session.get(Army, 2).commander_id == 2
+        assert session.get(Commander, 2) is not None
+    finally:
+        session.close()
+
+
+def test_march_is_blocked_when_empty_hostile_field_army_cannot_be_displaced(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes, "list_valid_destinations", lambda _session, _army_id: [])
+
+    session = create_session()
+    try:
+        session.add(Location(location_id="target_1", terrain_id=1, is_road=True, settlement=1))
+        defender = session.get(Army, 2)
+        defender.location_id = "target_1"
+        for detachment in list(defender.detachments):
+            detachment.warrior_count = 0
+            session.delete(detachment)
+        session.flush()
+
+        attacker = session.get(Army, 1)
+        origin_h3 = attacker.location_id
+        moved = routes._execute_move_to_destination(
+            session,
+            session.get(GameClock, 1),
+            attacker,
+            "target_1",
+        )
+
+        assert moved is False
+        assert attacker.location_id == origin_h3
+        assert session.get(Army, 2).location_id == "target_1"
+        assert session.get(Army, 2) is not None
+        assert session.get(Commander, 2) is not None
+    finally:
+        session.close()
+
+
 def test_same_watch_march_then_same_siege_preserves_continuity(sqlite_db, monkeypatch):
     monkeypatch.setattr(routes.h3, "grid_ring", lambda _location_id, _distance: ["fort_1"])
     monkeypatch.setattr(routes, "calculate_move_watches", lambda *_args, **_kwargs: 1)

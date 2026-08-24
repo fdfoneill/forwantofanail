@@ -1465,6 +1465,30 @@ def _defender_armies_in_stronghold(
     return [army for army in armies if _army_has_live_detachments(army)]
 
 
+def _capture_blockers_in_stronghold(
+    session: Session,
+    stronghold: Stronghold,
+    attacker_faction: str,
+) -> list[Army]:
+    """Return hostile armies that must be cleared before capture.
+
+    Empty field armies still represent commanders in the current game model, so
+    they must be displaced rather than silently sharing the captured cell with
+    the attacker. Empty garrison rows are retained as stronghold placeholders
+    and change faction when control changes, so they are not capture blockers.
+    """
+    return [
+        army
+        for army in _defender_armies_in_stronghold(
+            session,
+            stronghold,
+            attacker_faction,
+            include_empty=True,
+        )
+        if not army.is_garrison or _army_has_live_detachments(army)
+    ]
+
+
 def _end_siege(
     session: Session,
     *,
@@ -2743,6 +2767,51 @@ def _schedule_next_rout_leg(
     return True
 
 
+def _displace_empty_hostile_field_armies_for_entry(
+    session: Session,
+    *,
+    clock: GameClock,
+    moving_army: Army,
+    destination_h3: str,
+) -> bool:
+    if not _army_has_live_detachments(moving_army):
+        return True
+
+    session.flush()
+    occupants = (
+        session.query(Army)
+        .options(joinedload(Army.detachments))
+        .filter(
+            Army.location_id == destination_h3,
+            Army.army_id != moving_army.army_id,
+            Army.army_faction != moving_army.army_faction,
+            Army.is_garrison.is_(False),
+        )
+        .order_by(Army.army_id.asc())
+        .all()
+    )
+    empty_occupants = [army for army in occupants if not _army_has_live_detachments(army)]
+    if not empty_occupants:
+        return True
+
+    planned_retreats: list[tuple[Army, str]] = []
+    for occupant in empty_occupants:
+        candidates = [
+            candidate
+            for candidate in list_valid_destinations(session, occupant.army_id)
+            if not _is_enemy_occupied(session, destination_h3=candidate, moving_army=occupant)
+        ]
+        if not candidates:
+            return False
+        planned_retreats.append((occupant, random.choice(candidates)))
+
+    for occupant, retreat_h3 in planned_retreats:
+        if not _execute_move_to_destination(session, clock, occupant, retreat_h3):
+            return False
+    session.flush()
+    return True
+
+
 def _execute_move_to_destination(session: Session, clock: GameClock, army: Army, destination_h3: str) -> bool:
     destination_location = session.get(Location, destination_h3)
     if destination_location is None:
@@ -2762,6 +2831,13 @@ def _execute_move_to_destination(session: Session, clock: GameClock, army: Army,
         )
         if hostile_occupant is not None:
             return False
+    if not _displace_empty_hostile_field_armies_for_entry(
+        session,
+        clock=clock,
+        moving_army=army,
+        destination_h3=destination_h3,
+    ):
+        return False
     army.location = destination_location
     army.location_id = destination_h3
     session.add(
@@ -3731,6 +3807,13 @@ def _occupy_abandoned_sieged_stronghold(session: Session, *, clock: GameClock, s
     defenders = _defender_armies_in_stronghold(session, stronghold, besieger.army_faction)
     if defenders:
         return False
+    if not _clear_remaining_defenders_for_capture(
+        session,
+        clock=clock,
+        stronghold=stronghold,
+        attacker=besieger,
+    ):
+        return False
     return _finalize_siege_capture(
         session,
         clock=clock,
@@ -3761,20 +3844,29 @@ def _clear_remaining_defenders_for_capture(
     stronghold: Stronghold,
     attacker: Army,
 ) -> bool:
-    remaining_defenders = _defender_armies_in_stronghold(session, stronghold, attacker.army_faction)
-    remaining_defenders = [army for army in remaining_defenders if army.army_faction != attacker.army_faction]
+    remaining_defenders = _capture_blockers_in_stronghold(session, stronghold, attacker.army_faction)
     for defender in remaining_defenders:
-        result = _retreat_one_cell_with_wagon_drop(
+        if _army_has_live_detachments(defender):
+            result = _retreat_one_cell_with_wagon_drop(
+                session,
+                army=defender,
+                winner_armies=[attacker],
+                clock=clock,
+            )
+            if not result.get("retreated") and not result.get("destroyed"):
+                return False
+        elif not _retreat_one_cell(
             session,
             army=defender,
             winner_armies=[attacker],
             clock=clock,
-        )
-        if not result.get("retreated") and not result.get("destroyed"):
+        ):
+            # Until zero-strength army lifecycle rules are defined, preserve the
+            # commander's army and refuse an overlapping capture if it cannot be
+            # displaced safely.
             return False
     session.flush()
-    blockers = _defender_armies_in_stronghold(session, stronghold, attacker.army_faction)
-    blockers = [army for army in blockers if army.army_faction != attacker.army_faction]
+    blockers = _capture_blockers_in_stronghold(session, stronghold, attacker.army_faction)
     return not blockers
 
 
@@ -3787,8 +3879,7 @@ def _finalize_siege_capture(
     attacker: Army,
     apply_loot: bool,
 ) -> bool:
-    blockers = _defender_armies_in_stronghold(session, stronghold, attacker.army_faction)
-    blockers = [army for army in blockers if army.army_faction != attacker.army_faction]
+    blockers = _capture_blockers_in_stronghold(session, stronghold, attacker.army_faction)
     if blockers:
         return False
 
