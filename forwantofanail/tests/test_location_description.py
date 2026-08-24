@@ -15,6 +15,8 @@ from forwantofanail.mechanics.location_description import (
     build_commander_brief,
     build_environs_brief,
     describe_army_location,
+    describe_march_stage,
+    describe_route_endpoint,
 )
 
 
@@ -294,7 +296,7 @@ def test_commander_brief_does_not_call_unread_items_nothing_to_attend_to():
 @pytest.mark.parametrize(
     ("kind", "condition", "order_text"),
     [
-        ("move", "marching", "March orders are underway toward Bemm."),
+        ("move", "marching", "Its next stage leads toward Bemm."),
         ("forage", "foraging", "Foraging orders are underway."),
         ("attack", "attacking", "An attack is underway against the Blessed Banners."),
         ("besiege", "besieging", "A siege is underway against Bemm."),
@@ -327,6 +329,72 @@ def test_commander_brief_describes_each_action_kind(kind, condition, order_text)
 
     assert f"The army is currently {condition}." in brief
     assert order_text in brief
+
+
+def test_commander_brief_distinguishes_immediate_stage_from_route_endpoint():
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    brief = build_commander_brief(
+        army={
+            "name": "Road Host",
+            "composition": {"detachments": []},
+            "supply": {"current": 0, "days_estimate": None},
+            "morale": {"current": 9, "max": 12},
+        },
+        time={"calendar_date": "1410-08-24", "watch_label": "prime"},
+        environs={
+            "center_h3": center_h3,
+            "radius": 2,
+            "cells": [_brief_cell(center_h3)],
+        },
+        current_action={"kind": "move", "state": "in_progress"},
+        itinerary={"remaining_moves": ["stage_1", "stage_2", "stage_3"]},
+        action_target="southwest along the road between Castle Nalish and Yinnagul",
+        route_endpoint="west of Yinnagul",
+    ).render()
+
+    assert (
+        "Its next stage leads southwest along the road between Castle Nalish and Yinnagul."
+        in brief
+    )
+    assert "3 stages remain in the ordered route, which ends west of Yinnagul." in brief
+
+
+def test_march_stage_adds_bearing_and_distinguishes_onto_from_along_road(monkeypatch):
+    origin_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    destination_h3 = _cell_at_bearing(origin_h3, 1, "southwest")
+    monkeypatch.setattr(
+        location_description,
+        "describe_army_location",
+        lambda _session, _location: "on the road between Castle Nalish and Yinnagul",
+    )
+
+    class RoadSession:
+        def __init__(self, origin_is_road):
+            self.origin_is_road = origin_is_road
+
+        def get(self, model, key):
+            assert model is Location and key == origin_h3
+            return SimpleNamespace(is_road=self.origin_is_road)
+
+    assert describe_march_stage(RoadSession(False), origin_h3, destination_h3) == (
+        "southwest onto the road between Castle Nalish and Yinnagul"
+    )
+    assert describe_march_stage(RoadSession(True), origin_h3, destination_h3) == (
+        "southwest along the road between Castle Nalish and Yinnagul"
+    )
+
+
+def test_route_endpoint_uses_diegetic_location_without_cell_identifier(monkeypatch):
+    monkeypatch.setattr(
+        location_description,
+        "describe_army_location",
+        lambda _session, _location: "west of Yinnagul",
+    )
+
+    endpoint = describe_route_endpoint(SimpleNamespace(), "8f6889082cc820c")
+
+    assert endpoint == "west of Yinnagul"
+    assert "8f6889082cc820c" not in endpoint
 
 
 def test_environs_brief_describes_discrete_terrain_forage_and_offroad_roads():

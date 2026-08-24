@@ -61,6 +61,8 @@ from forwantofanail.mechanics.forage import (
 from forwantofanail.mechanics.location_description import (
     build_commander_brief,
     describe_army_location,
+    describe_march_stage,
+    describe_route_endpoint,
 )
 from forwantofanail.mechanics.movement import (
     calculate_move_watches,
@@ -5893,7 +5895,7 @@ def _diegetic_action_position(session: Session, location_h3: str) -> str:
     return f"a position {description}"
 
 
-def _brief_action_target(session: Session, action: Action | None) -> str:
+def _brief_action_target(session: Session, action: Action | None, army: Army) -> str:
     if action is None:
         return ""
     try:
@@ -5917,13 +5919,23 @@ def _brief_action_target(session: Session, action: Action | None) -> str:
         position = _diegetic_action_position(session, str(params.get("target_h3") or ""))
         return f"against forces at {position}" if position else "against the enemy"
     if action.kind == "move":
-        position = _diegetic_action_position(session, str(params.get("destination_h3") or ""))
-        return f"toward {position}" if position else ""
+        return describe_march_stage(
+            session,
+            army.location_id,
+            str(params.get("destination_h3") or ""),
+        )
     if action.kind == "rout":
         path = [str(value).strip() for value in params.get("path", []) if str(value).strip()]
         position = _diegetic_action_position(session, path[0] if path else "")
         return f"toward {position}" if position else ""
     return ""
+
+
+def _brief_route_endpoint(session: Session, itinerary: dict[str, Any]) -> str:
+    remaining_moves = itinerary.get("remaining_moves", [])
+    if not isinstance(remaining_moves, list) or len(remaining_moves) <= 1:
+        return ""
+    return describe_route_endpoint(session, str(remaining_moves[-1] or ""))
 
 
 def _brief_action_eta(action: Action | None) -> str:
@@ -6010,8 +6022,9 @@ def _commander_brief_text(session: Session, commander_id: int) -> str:
         current_action=current_action_payload,
         itinerary=itinerary,
         standing_orders=standing,
-        action_target=_brief_action_target(session, current_action),
+        action_target=_brief_action_target(session, current_action, army),
         action_eta=_brief_action_eta(current_action),
+        route_endpoint=_brief_route_endpoint(session, itinerary),
         unread_letters=_brief_unread_letter_count(
             session,
             commander_id=commander_id,

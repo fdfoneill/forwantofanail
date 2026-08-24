@@ -90,7 +90,8 @@ def _army_condition(
     current_action: Mapping[str, Any] | None,
 ) -> str:
     kind = str((current_action or {}).get("kind") or "").strip().casefold()
-    if kind == "rout":
+    action_state = str((current_action or {}).get("state") or "").strip().casefold()
+    if kind == "rout" and action_state == "in_progress":
         return "fleeing"
 
     watch_label = str(time.get("watch_label") or "").strip().casefold()
@@ -105,7 +106,7 @@ def _army_condition(
         "attack": "attacking",
         "besiege": "besieging",
     }
-    if kind in action_conditions:
+    if action_state == "in_progress" and kind in action_conditions:
         return action_conditions[kind]
 
     center_h3 = str(environs.get("center_h3") or "").strip()
@@ -195,6 +196,7 @@ def _describe_orders(
     standing_orders: Mapping[str, Any] | None = None,
     action_target: str = "",
     action_eta: str = "",
+    route_endpoint: str = "",
 ) -> str:
     condition = _army_condition(
         army=army,
@@ -209,7 +211,13 @@ def _describe_orders(
     state_phrase = "queued" if state == "queued" else "underway"
     target_suffix = f" {action_target.strip()}" if action_target.strip() else ""
     if kind == "move":
-        sentences.append(f"March orders are {state_phrase}{target_suffix}.")
+        if action_target.strip():
+            if state == "queued":
+                sentences.append(f"Its next ordered stage will lead {action_target.strip()}.")
+            else:
+                sentences.append(f"Its next stage leads {action_target.strip()}.")
+        else:
+            sentences.append(f"March orders are {state_phrase}.")
     elif kind == "forage":
         sentences.append(f"Foraging orders are {state_phrase}.")
     elif kind == "attack":
@@ -221,7 +229,10 @@ def _describe_orders(
     else:
         sentences.append("No active orders.")
     if action_eta.strip():
-        sentences.append(f"Completion is expected {action_eta.strip()}.")
+        if kind == "move":
+            sentences.append(f"The present stage is expected {action_eta.strip()}.")
+        else:
+            sentences.append(f"Completion is expected {action_eta.strip()}.")
 
     itinerary = itinerary or {}
     remaining_moves = itinerary.get("remaining_moves", [])
@@ -231,7 +242,10 @@ def _describe_orders(
     stage_count = move_count or rout_count
     if stage_count:
         stage_unit = "stage remains" if stage_count == 1 else "stages remain"
-        sentences.append(f"{stage_count} {stage_unit} in the present itinerary.")
+        route_sentence = f"{stage_count} {stage_unit} in the ordered route"
+        if stage_count > 1 and route_endpoint.strip():
+            route_sentence += f", which ends {route_endpoint.strip()}"
+        sentences.append(f"{route_sentence}.")
 
     standing_orders = standing_orders or {}
     enabled: list[str] = []
@@ -290,6 +304,7 @@ def build_commander_brief(
     standing_orders: Mapping[str, Any] | None = None,
     action_target: str = "",
     action_eta: str = "",
+    route_endpoint: str = "",
     unread_letters: int = 0,
     unread_alerts: int = 0,
     high_importance_alerts: int = 0,
@@ -312,6 +327,7 @@ def build_commander_brief(
             standing_orders=standing_orders,
             action_target=action_target,
             action_eta=action_eta,
+            route_endpoint=route_endpoint,
         ),
         attention=_describe_attention(
             unread_letters=unread_letters,
@@ -494,6 +510,39 @@ def describe_army_location(session: Session, location_h3: str) -> str:
             continue
         return f"{bearing} of {stronghold.stronghold_name}"
     return "at an unknown location"
+
+
+def describe_march_stage(session: Session, origin_h3: str, destination_h3: str) -> str:
+    """Describe an immediate march stage by heading and diegetic destination."""
+    origin = str(origin_h3 or "").strip()
+    destination = str(destination_h3 or "").strip()
+    if not origin or not destination:
+        return ""
+    bearing = _bearing_word(origin, destination)
+    heading = f"{bearing} " if bearing else ""
+    description = describe_army_location(session, destination)
+    if description.startswith("occupying "):
+        return f"{heading}toward {description.removeprefix('occupying ')}".strip()
+    if description.startswith("on the road "):
+        origin_location = session.get(Location, origin)
+        movement = "along" if origin_location is not None and bool(origin_location.is_road) else "onto"
+        return f"{heading}{movement} the road {description.removeprefix('on the road ')}".strip()
+    if description == "at an unknown location":
+        return f"{heading}toward an undescribed destination".strip()
+    return f"{heading}toward a position {description}".strip()
+
+
+def describe_route_endpoint(session: Session, destination_h3: str) -> str:
+    """Describe where an ordered route ends, ready to follow the word 'ends'."""
+    destination = str(destination_h3 or "").strip()
+    if not destination:
+        return ""
+    description = describe_army_location(session, destination)
+    if description.startswith("occupying "):
+        return f"at {description.removeprefix('occupying ')}"
+    if description == "at an unknown location":
+        return "at an undescribed destination"
+    return description
 
 
 def _h3_neighbors(cell_h3: str) -> set[str]:
