@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
+from datetime import date
 import math
 from typing import Any
 
@@ -40,6 +41,136 @@ class EnvironsBriefSections:
             for section in (self.terrain, self.forage, self.roads, self.strongholds, self.armies)
             if section and section.strip()
         )
+
+
+def _display_army_name(value: Any) -> str:
+    name = str(value or "unnamed army").strip() or "unnamed army"
+    if name.casefold().startswith("the "):
+        return f"the {name[4:]}"
+    return f"the {name}"
+
+
+def _display_calendar_date(value: Any) -> str:
+    raw = str(value or "").strip()
+    try:
+        parsed = date.fromisoformat(raw)
+    except ValueError:
+        return raw or "an unknown date"
+    return f"{parsed.strftime('%B')} {parsed.day}, {parsed.year}"
+
+
+def _army_condition(
+    *,
+    army: Mapping[str, Any],
+    time: Mapping[str, Any],
+    environs: Mapping[str, Any],
+    current_action: Mapping[str, Any] | None,
+) -> str:
+    kind = str((current_action or {}).get("kind") or "").strip().casefold()
+    if kind == "rout":
+        return "fleeing"
+
+    watch_label = str(time.get("watch_label") or "").strip().casefold()
+    column_length = float(army.get("column_length") or 0.0)
+    if column_length > 2.0 and watch_label in {"night", "matin", "vesper"}:
+        return "encamped"
+    if watch_label == "night":
+        return "encamped"
+    action_conditions = {
+        "move": "marching",
+        "forage": "foraging",
+        "attack": "attacking",
+        "besiege": "besieging",
+    }
+    if kind in action_conditions:
+        return action_conditions[kind]
+
+    center_h3 = str(environs.get("center_h3") or "").strip()
+    center_cell = _cell_mapping(environs).get(center_h3)
+    stronghold = center_cell.get("stronghold") if center_cell else None
+    if isinstance(stronghold, Mapping) and bool(stronghold.get("under_siege")):
+        return "under siege"
+    return "holding"
+
+
+def build_army_status_brief(
+    *,
+    army: Mapping[str, Any],
+    time: Mapping[str, Any],
+    environs: Mapping[str, Any],
+    current_action: Mapping[str, Any] | None = None,
+) -> str:
+    """Describe the player's own army state using fields already exposed by /me/view."""
+    composition = army.get("composition") if isinstance(army.get("composition"), Mapping) else {}
+    detachments = composition.get("detachments", [])
+    infantry = 0
+    cavalry = 0
+    if isinstance(detachments, list):
+        for detachment in detachments:
+            if not isinstance(detachment, Mapping):
+                continue
+            warriors = max(0, int(detachment.get("warriors") or 0))
+            if bool(detachment.get("is_cavalry")):
+                cavalry += warriors
+            else:
+                infantry += warriors
+    strength = infantry + cavalry
+    opening = (
+        f"Under your command is {_display_army_name(army.get('name'))}, an army {strength:,} strong "
+        f"({infantry:,} infantry and {cavalry:,} cavalry)."
+    )
+
+    supply = army.get("supply") if isinstance(army.get("supply"), Mapping) else {}
+    supply_current = max(0, int(supply.get("current") or 0))
+    days_estimate = supply.get("days_estimate")
+    if days_estimate is None:
+        supply_sentence = (
+            f"You have {supply_current:,} supply; your forces currently consume no supply."
+        )
+    else:
+        days_remaining = max(0, int(math.floor(float(days_estimate))))
+        day_unit = "day" if days_remaining == 1 else "days"
+        supply_sentence = (
+            f"You have {supply_current:,} supply, enough to sustain your forces for "
+            f"{days_remaining:,} {day_unit}."
+        )
+
+    sentences = [opening, supply_sentence]
+    column_length = max(0.0, float(army.get("column_length") or 0.0))
+    if column_length >= 2.0:
+        sentences.append(
+            f"The army's column length is {column_length:.1f} leagues, which limits your daily march."
+        )
+    condition = _army_condition(
+        army=army,
+        time=time,
+        environs=environs,
+        current_action=current_action,
+    )
+    sentences.append(f"The army is currently {condition}.")
+
+    calendar_date = _display_calendar_date(time.get("calendar_date"))
+    watch_label = str(time.get("watch_label") or "unknown").strip().casefold() or "unknown"
+    if watch_label == "night":
+        sentences.append(f"It is {calendar_date}, in the night watch.")
+    else:
+        ordinal = {
+            "matin": "first",
+            "prime": "second",
+            "sixbell": "third",
+            "vesper": "fourth",
+        }.get(watch_label, "unknown")
+        sentences.append(
+            f"It is {calendar_date}, in the {watch_label} watch "
+            f"({ordinal} of the four daily watches)."
+        )
+
+    radius = max(0, int(environs.get("radius") or 0))
+    radius_unit = "league" if radius == 1 else "leagues"
+    sentences.append(
+        f"The army's scouting radius is {radius:,} {radius_unit} in all directions."
+    )
+    return " ".join(sentences)
 
 
 def _grid_distance(origin_h3: str, destination_h3: str) -> int | None:

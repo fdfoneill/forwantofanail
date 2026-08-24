@@ -11,7 +11,11 @@ from forwantofanail.core.database import create_session, reset_database_runtime
 from forwantofanail.core.migrate_runtime_tables import migrate_runtime_tables
 from forwantofanail.core.models import Location, Stronghold, TerrainType
 from forwantofanail.mechanics import location_description
-from forwantofanail.mechanics.location_description import build_environs_brief, describe_army_location
+from forwantofanail.mechanics.location_description import (
+    build_army_status_brief,
+    build_environs_brief,
+    describe_army_location,
+)
 
 
 @pytest.fixture()
@@ -182,6 +186,68 @@ def _brief_cell(
         "stronghold": stronghold,
         "other_armies": armies or [],
     }
+
+
+def test_army_status_brief_describes_command_supply_condition_time_and_scouting():
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    army = {
+        "name": "The Blessed Banners",
+        "composition": {
+            "detachments": [
+                {"warriors": 2500, "is_cavalry": False},
+                {"warriors": 500, "is_cavalry": True},
+            ],
+        },
+        "supply": {"current": 12345, "days_estimate": 7.9},
+        "column_length": 2.25,
+    }
+    time = {"calendar_date": "1410-08-24", "watch_label": "prime"}
+    environs = {
+        "center_h3": center_h3,
+        "radius": 3,
+        "cells": [_brief_cell(center_h3)],
+    }
+
+    brief = build_army_status_brief(
+        army=army,
+        time=time,
+        environs=environs,
+        current_action={"kind": "besiege"},
+    )
+
+    assert brief == (
+        "Under your command is the Blessed Banners, an army 3,000 strong "
+        "(2,500 infantry and 500 cavalry). "
+        "You have 12,345 supply, enough to sustain your forces for 7 days. "
+        "The army's column length is 2.2 leagues, which limits your daily march. "
+        "The army is currently besieging. "
+        "It is August 24, 1410, in the prime watch (second of the four daily watches). "
+        "The army's scouting radius is 3 leagues in all directions."
+    )
+
+
+def test_army_status_brief_uses_night_wording_and_dashboard_condition_precedence():
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    army = {
+        "name": "Night Guard",
+        "composition": {"detachments": [{"warriors": 1, "is_cavalry": False}]},
+        "supply": {"current": 0, "days_estimate": None},
+        "column_length": 0.5,
+    }
+    time = {"calendar_date": "1410-08-24", "watch_label": "night"}
+    environs = {
+        "center_h3": center_h3,
+        "radius": 1,
+        "cells": [_brief_cell(center_h3)],
+    }
+
+    brief = build_army_status_brief(army=army, time=time, environs=environs)
+
+    assert "your forces currently consume no supply" in brief
+    assert "The army is currently encamped." in brief
+    assert "It is August 24, 1410, in the night watch." in brief
+    assert "first of the four daily watches" not in brief
+    assert "scouting radius is 1 league" in brief
 
 
 def test_environs_brief_describes_discrete_terrain_forage_and_offroad_roads():

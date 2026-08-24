@@ -58,7 +58,11 @@ from forwantofanail.mechanics.forage import (
     forage_condition_word as _forage_condition_word,
     forage_depletion_level,
 )
-from forwantofanail.mechanics.location_description import build_environs_brief, describe_army_location
+from forwantofanail.mechanics.location_description import (
+    build_army_status_brief,
+    build_environs_brief,
+    describe_army_location,
+)
 from forwantofanail.mechanics.movement import (
     calculate_move_watches,
     calculate_move_watches_from_origin,
@@ -5878,6 +5882,7 @@ def get_my_view(
 
 
 def _commander_brief_text(session: Session, commander_id: int) -> str:
+    clock = _get_or_create_clock(session)
     army = _find_commander_army(session, commander_id)
     environs_radius = _environs_radius_for_army(army)
     environs = _serialize_environs(
@@ -5893,7 +5898,18 @@ def _commander_brief_text(session: Session, commander_id: int) -> str:
         environs,
         border_road_cells=_border_road_neighbor_ids(session, visible_set),
     )
-    return sections.render()
+    current_action = _get_current_action_row(session, commander_id)
+    army_status = build_army_status_brief(
+        army=_serialize_army(army),
+        time=_clock_payload(clock),
+        environs=environs,
+        current_action=(
+            _serialize_action(session, current_action, commander_id)
+            if current_action
+            else None
+        ),
+    )
+    return " ".join(part for part in (army_status, sections.render()) if part)
 
 
 @router.get("/me/brief", response_class=PlainTextResponse)
