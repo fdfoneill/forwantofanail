@@ -1197,6 +1197,56 @@ def _sortie_context_for_army(session: Session, army: Army | None) -> tuple[Stron
     return None, None
 
 
+def _valid_stronghold_attack_targets(
+    session: Session,
+    army: Army,
+) -> tuple[Stronghold | None, Siege | None, list[Army]]:
+    """Return field armies an occupant may attack without leaving its stronghold."""
+    stronghold = _stronghold_at_h3(session, army.location_id)
+    if stronghold is None:
+        return None, None, []
+    try:
+        adjacent_h3 = set(h3.grid_ring(army.location_id, 1))
+    except Exception:
+        return stronghold, None, []
+
+    active_siege = _active_siege_for_stronghold(session, stronghold.stronghold_id)
+    candidates: list[Army] = []
+    if active_siege is not None:
+        sortie_stronghold, sortie_siege = _sortie_context_for_army(session, army)
+        if sortie_stronghold is None or sortie_siege is None:
+            return stronghold, active_siege, []
+        for participant in _active_siege_participants_for_siege(session, sortie_siege):
+            candidate = session.get(Army, participant.besieger_army_id)
+            if candidate is not None:
+                candidates.append(candidate)
+    else:
+        candidates = (
+            session.query(Army)
+            .filter(
+                Army.location_id.in_(list(adjacent_h3)),
+                Army.army_id != army.army_id,
+                Army.army_faction != army.army_faction,
+                Army.is_garrison.is_(False),
+            )
+            .order_by(Army.army_id.asc())
+            .all()
+        )
+
+    valid: list[Army] = []
+    for candidate in candidates:
+        if candidate.army_faction == army.army_faction or candidate.location_id not in adjacent_h3:
+            continue
+        if candidate.is_garrison or not _army_has_live_detachments(candidate):
+            continue
+        # Sallying into another occupied stronghold would bypass siege rules.
+        if active_siege is None and _stronghold_at_h3(session, candidate.location_id) is not None:
+            continue
+        valid.append(candidate)
+    valid.sort(key=lambda row: row.army_id)
+    return stronghold, active_siege, valid
+
+
 def _max_resistance_for_stronghold(stronghold: Stronghold) -> float:
     return float(SIEGE_RESISTANCE_BY_TYPE.get(str(stronghold.stronghold_type or "").strip().lower(), 10.0))
 
@@ -3501,8 +3551,8 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
         attacker = session.query(Army).filter(Army.commander_id == action.commander_id).first()
         if attacker is None:
             continue
-        sortie_stronghold, sortie_siege = _sortie_context_for_army(session, attacker)
-        if sortie_stronghold is None or sortie_siege is None:
+        occupied_stronghold, _, valid_stronghold_targets = _valid_stronghold_attack_targets(session, attacker)
+        if occupied_stronghold is None:
             continue
         try:
             params = json.loads(action.parameters_json or "{}")
@@ -3514,13 +3564,13 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
             target_army_id = int(raw_target_army_id)
         except (TypeError, ValueError):
             continue
-        participant_army_ids = {
-            participant.besieger_army_id
-            for participant in _active_siege_participants_for_siege(session, sortie_siege)
-        }
-        if target_army_id in participant_army_ids and target_h3:
+        valid_target = next(
+            (candidate for candidate in valid_stronghold_targets if candidate.army_id == target_army_id),
+            None,
+        )
+        if valid_target is not None and valid_target.location_id == target_h3:
             sortie_action_ids.add(action.action_id)
-            sortie_defender_ids_by_stronghold_id[sortie_stronghold.stronghold_id].add(attacker.army_id)
+            sortie_defender_ids_by_stronghold_id[occupied_stronghold.stronghold_id].add(attacker.army_id)
 
     for action in due_attack_actions:
         attacker = session.query(Army).filter(Army.commander_id == action.commander_id).first()
@@ -3528,7 +3578,6 @@ def _resolve_due_attack_battles(session: Session, clock: GameClock, due_attack_a
             action.state = "failed"
             failed += 1
             continue
-        sortie_stronghold, sortie_siege = _sortie_context_for_army(session, attacker)
         is_sortie_action = action.action_id in sortie_action_ids
         if _army_is_in_stronghold(session, attacker) and not is_sortie_action:
             action.state = "failed"
@@ -4063,9 +4112,6 @@ def _start_action_now_if_valid(session: Session, action: Action, army: Army, clo
     if action.kind == "attack":
         if clock.watch == int(Watch.NIGHT) or _long_column_start_blocked(army, int(clock.watch)):
             return False
-        if _army_is_in_stronghold(session, army) and _sortie_context_for_army(session, army)[1] is None:
-            action.state = "failed"
-            return False
         try:
             payload = json.loads(action.parameters_json or "{}")
         except json.JSONDecodeError:
@@ -4075,6 +4121,20 @@ def _start_action_now_if_valid(session: Session, action: Action, army: Army, clo
         if target_h3 == "" or target_army_id is None:
             action.state = "failed"
             return False
+        if _army_is_in_stronghold(session, army):
+            try:
+                parsed_target_army_id = int(target_army_id)
+            except (TypeError, ValueError):
+                action.state = "failed"
+                return False
+            _, _, valid_targets = _valid_stronghold_attack_targets(session, army)
+            valid_target = next(
+                (candidate for candidate in valid_targets if candidate.army_id == parsed_target_army_id),
+                None,
+            )
+            if valid_target is None or valid_target.location_id != target_h3:
+                action.state = "failed"
+                return False
         action.started_day = clock.day
         action.started_watch = clock.watch
         action.state = "in_progress"
@@ -6411,24 +6471,20 @@ def get_valid_attack_targets(
     session: Session = Depends(_get_session),
 ):
     army = _find_commander_army(session, commander_id)
-    sortie_stronghold, sortie_siege = _sortie_context_for_army(session, army)
-    if sortie_stronghold is not None and sortie_siege is not None:
-        targets = []
-        for participant in _active_siege_participants_for_siege(session, sortie_siege):
-            besieger = session.get(Army, participant.besieger_army_id)
-            if besieger is None or besieger.army_faction == army.army_faction:
-                continue
-            targets.append(
-                {
-                    "target_h3": besieger.location_id,
-                    "target_army_id": _army_ref(besieger.army_id),
-                    "faction": besieger.army_faction,
-                    "label": str(besieger.army_name or f"{besieger.army_faction} army").strip(),
-                }
-            )
-        return {"origin_h3": army.location_id, "targets": targets}
     if _army_is_in_stronghold(session, army):
-        return {"origin_h3": army.location_id, "targets": []}
+        _, _, valid_targets = _valid_stronghold_attack_targets(session, army)
+        return {
+            "origin_h3": army.location_id,
+            "targets": [
+                {
+                    "target_h3": target.location_id,
+                    "target_army_id": _army_ref(target.army_id),
+                    "faction": target.army_faction,
+                    "label": str(target.army_name or f"{target.army_faction} army").strip(),
+                }
+                for target in valid_targets
+            ],
+        }
     active_siege = _active_siege_for_besieger(session, army.army_id)
     if active_siege is not None:
         stronghold = session.get(Stronghold, active_siege.stronghold_id)
@@ -6601,8 +6657,6 @@ def create_action(
             for existing in active_actions:
                 existing.state = "cancelled"
         elif payload.kind == "attack":
-            if _army_is_in_stronghold(session, army) and sortie_siege is None:
-                raise HTTPException(status_code=400, detail="Armies occupying strongholds cannot attack")
             target_h3 = (payload.target_h3 or "").strip()
             if not target_h3:
                 raise HTTPException(status_code=400, detail="target_h3 is required for attack actions")
@@ -6626,6 +6680,14 @@ def create_action(
                         "target_army_id": target_army_ref,
                     },
                 )
+            occupying_stronghold = _stronghold_at_h3(session, army.location_id)
+            if occupying_stronghold is not None and sortie_siege is None:
+                _, _, valid_sally_targets = _valid_stronghold_attack_targets(session, army)
+                if target_army_id not in {candidate.army_id for candidate in valid_sally_targets}:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Armies occupying strongholds may only attack adjacent enemy field armies",
+                    )
             try:
                 adjacent = set(h3.grid_ring(army.location_id, 1))
             except Exception:

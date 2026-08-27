@@ -396,6 +396,92 @@ def test_forage_fails_if_army_becomes_a_besieged_defender_before_completion(sqli
         session.close()
 
 
+def test_unbesieged_stronghold_occupant_can_sally_against_adjacent_enemy(sqlite_db, monkeypatch):
+    monkeypatch.setattr(
+        routes.h3,
+        "grid_ring",
+        lambda location_id, _distance: ["origin_1"] if location_id == "fort_1" else ["fort_1"],
+    )
+    monkeypatch.setattr(routes.h3, "grid_disk", lambda location_id, _radius: [location_id])
+
+    session = create_session()
+    try:
+        clock = session.get(GameClock, 1)
+        clock.watch = int(routes.Watch.PRIME)
+        clock.world_tick = routes.to_world_tick(clock.day, clock.watch)
+        occupant = session.get(Army, 2)
+        occupant.army_morale = 2
+        session.get(Army, 1).army_morale = 12
+        session.commit()
+
+        targets = routes.get_valid_attack_targets(
+            staged_path=None,
+            commander_id=2,
+            session=session,
+        )
+        assert [target["target_army_id"] for target in targets["targets"]] == ["army_1"]
+
+        result = routes.create_action(
+            ActionCreateRequest(kind="attack", target_h3="origin_1", target_army_id="army_1"),
+            commander_id=2,
+            session=session,
+            idempotency_key="unbesieged-sally",
+        )
+        assert result["state"] == "in_progress"
+    finally:
+        session.close()
+
+    session = create_session()
+    try:
+        action = (
+            session.query(Action)
+            .filter(Action.commander_id == 2, Action.kind == "attack", Action.state == "in_progress")
+            .one()
+        )
+        clock = session.get(GameClock, 1)
+        clock.day = int(action.eta_day)
+        clock.watch = int(action.eta_watch)
+        clock.world_tick = routes.to_world_tick(clock.day, clock.watch)
+        result = routes._execute_action_tick(session, clock)
+        session.flush()
+
+        assert result["completed"] == 1
+        assert action.state == "completed"
+        assert session.get(Army, 2).location_id == "fort_1"
+    finally:
+        session.close()
+
+
+def test_besieged_stronghold_still_limits_sorties_to_active_besiegers(sqlite_db, monkeypatch):
+    _seed_active_test_siege()
+    monkeypatch.setattr(
+        routes.h3,
+        "grid_ring",
+        lambda location_id, _distance: ["origin_1", "origin_2"] if location_id == "fort_1" else ["fort_1"],
+    )
+
+    session = create_session()
+    try:
+        targets = routes.get_valid_attack_targets(
+            staged_path=None,
+            commander_id=2,
+            session=session,
+        )
+        assert [target["target_army_id"] for target in targets["targets"]] == ["army_1"]
+
+        with pytest.raises(HTTPException) as exc_info:
+            routes.create_action(
+                ActionCreateRequest(kind="attack", target_h3="origin_2", target_army_id="army_3"),
+                commander_id=2,
+                session=session,
+                idempotency_key="invalid-nonbesieger-sortie",
+            )
+        assert exc_info.value.status_code == 400
+        assert "only active besiegers" in str(exc_info.value.detail)
+    finally:
+        session.close()
+
+
 def test_stronghold_capture_displaces_empty_field_army_without_deleting_commander(sqlite_db, monkeypatch):
     siege_id = _seed_active_test_siege()
     monkeypatch.setattr(routes, "list_valid_destinations", lambda _session, army_id: ["retreat_1"] if army_id == 2 else [])
