@@ -283,6 +283,107 @@ def _advance_one_action_tick() -> None:
         session.close()
 
 
+def test_besieger_can_forage_without_lifting_siege(sqlite_db, monkeypatch):
+    siege_id = _seed_active_test_siege()
+    monkeypatch.setattr(routes.h3, "grid_disk", lambda _location_id, _radius: ["origin_1", "origin_2", "fort_1"])
+
+    session = create_session()
+    try:
+        clock = session.get(GameClock, 1)
+        clock.watch = int(routes.Watch.MATIN)
+        clock.world_tick = routes.to_world_tick(clock.day, clock.watch)
+        army = session.get(Army, 1)
+        created, cancelled_count, cancelled_by_kind = routes._apply_plan(
+            session,
+            commander_id=1,
+            army=army,
+            clock=clock,
+            kind="forage",
+            path=[],
+            now=datetime.now(timezone.utc),
+        )
+        session.flush()
+
+        assert len(created) == 1
+        forage = created[0]
+        assert forage.state == "queued"
+        assert cancelled_count == 0
+        assert cancelled_by_kind == {}
+        assert session.get(Siege, siege_id).state == "active"
+        assert (
+            session.query(SiegeParticipant)
+            .filter(
+                SiegeParticipant.siege_id == siege_id,
+                SiegeParticipant.besieger_army_id == 1,
+                SiegeParticipant.state == "active",
+            )
+            .count()
+            == 1
+        )
+
+        clock.world_tick += 1
+        clock.day, next_watch = routes.from_world_tick(clock.world_tick)
+        clock.watch = int(next_watch)
+        start_result = routes._execute_action_tick(session, clock)
+        session.flush()
+        assert start_result["started"] == 1
+        assert forage.state == "in_progress"
+        assert session.get(Siege, siege_id).state == "active"
+
+        clock.day = int(forage.eta_day)
+        clock.watch = int(forage.eta_watch)
+        clock.world_tick = routes.to_world_tick(clock.day, clock.watch)
+        result = routes._execute_action_tick(session, clock)
+        session.flush()
+
+        assert result["completed"] == 1
+        assert forage.state == "completed"
+        assert session.get(Siege, siege_id).state == "active"
+        assert (
+            session.query(WorldHistoryEvent)
+            .filter(WorldHistoryEvent.event_kind == "siege_ended")
+            .count()
+            == 0
+        )
+    finally:
+        session.close()
+
+
+def test_forage_fails_if_army_becomes_a_besieged_defender_before_completion(sqlite_db, monkeypatch):
+    _seed_active_test_siege()
+    monkeypatch.setattr(routes.h3, "grid_disk", lambda _location_id, _radius: ["fort_1"])
+
+    session = create_session()
+    try:
+        clock = session.get(GameClock, 1)
+        defender = session.get(Army, 2)
+        location = session.get(Location, "fort_1")
+        original_depletion = int(location.foraged_this_season or 0)
+        action = Action(
+            commander_id=2,
+            kind="forage",
+            state="in_progress",
+            parameters_json="{}",
+            accepted_at=datetime.now(timezone.utc),
+            started_day=clock.day,
+            started_watch=clock.watch,
+            eta_day=clock.day,
+            eta_watch=clock.watch,
+        )
+        session.add(action)
+        session.flush()
+
+        result = routes._execute_action_tick(session, clock)
+        session.flush()
+
+        assert result["failed"] == 1
+        assert action.state == "failed"
+        assert int(location.foraged_this_season or 0) == original_depletion
+        assert defender.location_id == "fort_1"
+    finally:
+        session.close()
+
+
 def test_stronghold_capture_displaces_empty_field_army_without_deleting_commander(sqlite_db, monkeypatch):
     siege_id = _seed_active_test_siege()
     monkeypatch.setattr(routes, "list_valid_destinations", lambda _session, army_id: ["retreat_1"] if army_id == 2 else [])
@@ -1065,9 +1166,9 @@ def test_completed_forage_increments_cells_and_reports_prior_condition(sqlite_db
         locations["fort_1"].foraged_this_season = 2
         army = session.get(Army, 1)
         gain, forageable_locations, average_depletion = routes._forage_supply_gain_for_army(session, army)
-        assert gain == 3611
-        assert {location.location_id for location in forageable_locations} == {"origin_1", "origin_2", "fort_1"}
-        assert average_depletion == 1
+        assert gain == 3333
+        assert {location.location_id for location in forageable_locations} == {"origin_1", "origin_2"}
+        assert average_depletion == 0.5
 
         clock = session.get(GameClock, 1)
         session.add(
@@ -1091,10 +1192,54 @@ def test_completed_forage_increments_cells_and_reports_prior_condition(sqlite_db
         assert [
             locations[location_id].foraged_this_season
             for location_id in ("origin_1", "origin_2", "fort_1")
-        ] == [1, 2, 3]
+        ] == [1, 2, 2]
         alert = session.query(Alert).filter(Alert.recipient_commander_id == 1).order_by(Alert.alert_id.desc()).first()
         assert alert is not None
-        assert "foraged from picked-over country" in alert.message
+        assert "foraged from plentiful country" in alert.message
+    finally:
+        session.close()
+
+
+def test_forage_excludes_enemy_field_armies_and_garrisons(sqlite_db, monkeypatch):
+    monkeypatch.setattr(
+        routes.h3,
+        "grid_disk",
+        lambda _location_id, _radius: ["origin_1", "origin_2", "enemy_field", "enemy_garrison"],
+    )
+    session = create_session()
+    try:
+        session.add_all(
+            [
+                Location(location_id="enemy_field", terrain_id=1, settlement=1),
+                Location(location_id="enemy_garrison", terrain_id=1, settlement=1),
+            ]
+        )
+        session.get(Army, 2).location_id = "enemy_field"
+        session.add(
+            Army(
+                army_id=4,
+                location_id="enemy_garrison",
+                army_name="Enemy Garrison",
+                army_faction="Beta",
+                commander_id=None,
+                garrison_stronghold_id=1,
+                army_supply=0,
+                army_morale=9,
+                army_resting_morale=9,
+                is_garrison=True,
+                noncombattant_percent=0.0,
+            )
+        )
+        session.flush()
+
+        gain, forageable_locations, average_depletion = routes._forage_supply_gain_for_army(
+            session,
+            session.get(Army, 1),
+        )
+
+        assert gain == 5000
+        assert {location.location_id for location in forageable_locations} == {"origin_1", "origin_2"}
+        assert average_depletion == 0
     finally:
         session.close()
 

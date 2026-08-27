@@ -352,6 +352,51 @@ def test_commander_brief_describes_each_action_kind(kind, condition, order_text)
     assert order_text in brief
 
 
+def test_commander_brief_makes_forage_siege_continuity_explicit():
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    brief = build_commander_brief(
+        army={
+            "name": "Test Host",
+            "composition": {"detachments": []},
+            "supply": {"current": 0, "days_estimate": None},
+            "morale": {"current": 9, "max": 12},
+        },
+        time={"calendar_date": "1410-08-24", "watch_label": "prime"},
+        environs={
+            "center_h3": center_h3,
+            "radius": 2,
+            "cells": [_brief_cell(center_h3)],
+        },
+        current_action={"kind": "forage", "state": "in_progress"},
+        siege_target="Bemm",
+    ).render()
+
+    assert "The army is currently foraging." in brief
+    assert "Foraging orders are underway while maintaining the siege of Bemm." in brief
+
+
+def test_commander_brief_retains_siege_status_after_forage_finishes():
+    center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
+    brief = build_commander_brief(
+        army={
+            "name": "Test Host",
+            "composition": {"detachments": []},
+            "supply": {"current": 0, "days_estimate": None},
+            "morale": {"current": 9, "max": 12},
+        },
+        time={"calendar_date": "1410-08-24", "watch_label": "prime"},
+        environs={
+            "center_h3": center_h3,
+            "radius": 2,
+            "cells": [_brief_cell(center_h3)],
+        },
+        siege_target="Bemm",
+    ).render()
+
+    assert "The army is currently besieging." in brief
+    assert "No other active orders. The siege of Bemm is being maintained." in brief
+
+
 def test_commander_brief_distinguishes_immediate_stage_from_route_endpoint():
     center_h3 = h3.latlng_to_cell(41.0, 29.0, 7)
     brief = build_commander_brief(

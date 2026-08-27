@@ -107,6 +107,7 @@ def _army_condition(
     time: Mapping[str, Any],
     environs: Mapping[str, Any],
     current_action: Mapping[str, Any] | None,
+    siege_target: str = "",
 ) -> str:
     kind = str((current_action or {}).get("kind") or "").strip().casefold()
     action_state = str((current_action or {}).get("state") or "").strip().casefold()
@@ -127,6 +128,8 @@ def _army_condition(
     }
     if action_state == "in_progress" and kind in action_conditions:
         return action_conditions[kind]
+    if siege_target.strip():
+        return "besieging"
 
     center_h3 = str(environs.get("center_h3") or "").strip()
     center_cell = _cell_mapping(environs).get(center_h3)
@@ -214,12 +217,14 @@ def _describe_orders(
     action_target: str = "",
     action_eta: str = "",
     route_endpoint: str = "",
+    siege_target: str = "",
 ) -> str:
     condition = _army_condition(
         army=army,
         time=time,
         environs=environs,
         current_action=current_action,
+        siege_target=siege_target,
     )
     sentences = [f"The army is currently {condition}."]
     action = current_action or {}
@@ -236,7 +241,12 @@ def _describe_orders(
         else:
             sentences.append(f"March orders are {state_phrase}.")
     elif kind == "forage":
-        sentences.append(f"Foraging orders are {state_phrase}.")
+        if siege_target.strip():
+            sentences.append(
+                f"Foraging orders are {state_phrase} while maintaining the siege of {siege_target.strip()}."
+            )
+        else:
+            sentences.append(f"Foraging orders are {state_phrase}.")
     elif kind == "attack":
         sentences.append(f"An attack is {state_phrase}{target_suffix}.")
     elif kind == "besiege":
@@ -244,7 +254,12 @@ def _describe_orders(
     elif kind == "rout":
         sentences.append(f"The army's retreat is {state_phrase}{target_suffix}.")
     else:
-        sentences.append("No active orders.")
+        if siege_target.strip():
+            sentences.append(f"No other active orders. The siege of {siege_target.strip()} is being maintained.")
+        else:
+            sentences.append("No active orders.")
+    if siege_target.strip() and kind not in {"", "forage", "besiege"}:
+        sentences.append(f"The siege of {siege_target.strip()} is being maintained.")
     if action_eta.strip():
         if kind == "move":
             sentences.append(f"The present stage is expected {action_eta.strip()}.")
@@ -322,6 +337,7 @@ def build_commander_brief(
     action_target: str = "",
     action_eta: str = "",
     route_endpoint: str = "",
+    siege_target: str = "",
     unread_letters: int = 0,
     unread_alerts: int = 0,
     high_importance_alerts: int = 0,
@@ -345,6 +361,7 @@ def build_commander_brief(
             action_target=action_target,
             action_eta=action_eta,
             route_endpoint=route_endpoint,
+            siege_target=siege_target,
         ),
         attention=_describe_attention(
             unread_letters=unread_letters,

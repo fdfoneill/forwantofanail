@@ -2007,7 +2007,30 @@ def _forage_supply_gain_for_army(session: Session, army: Army) -> tuple[int, lis
     radius = _environs_radius_for_army(army)
     visible_h3 = list(h3.grid_disk(army.location_id, radius))
     locations = session.query(Location).filter(Location.location_id.in_(visible_h3)).all()
-    forageable_locations = [location for location in locations if int(location.settlement or 0) > 0]
+    enemy_occupied_h3 = {
+        str(location_id)
+        for (location_id,) in session.query(Army.location_id)
+        .filter(
+            Army.location_id.in_(visible_h3),
+            Army.army_id != army.army_id,
+            Army.army_faction != army.army_faction,
+        )
+        .distinct()
+        .all()
+    }
+    # A besieged stronghold remains inaccessible even if its garrison happens to
+    # have no surviving Army row. The siege target is never part of the besieger's
+    # forage country.
+    active_siege = _active_siege_for_besieger(session, army.army_id)
+    if active_siege is not None:
+        besieged_stronghold = session.get(Stronghold, active_siege.stronghold_id)
+        if besieged_stronghold is not None:
+            enemy_occupied_h3.add(str(besieged_stronghold.location_id))
+    forageable_locations = [
+        location
+        for location in locations
+        if int(location.settlement or 0) > 0 and location.location_id not in enemy_occupied_h3
+    ]
     exact_gain = sum((_forage_yield_for_location(location) for location in forageable_locations), Fraction(0, 1))
     average_depletion = (
         sum(_forage_depletion_level(location) for location in forageable_locations) / len(forageable_locations)
@@ -2223,7 +2246,7 @@ def _apply_plan(
     now: datetime,
     allow_partial_night_march: bool = False,
     disable_follow_road: bool = False,
-) -> tuple[list[Action], int]:
+) -> tuple[list[Action], int, dict[str, int]]:
     _ = disable_follow_road
     active_actions = (
         session.query(Action)
@@ -2295,12 +2318,18 @@ def _apply_plan(
     if created_actions and not in_progress_exists:
         _start_action_now_if_valid(session, created_actions[0], army, clock)
 
+    preserves_siege_duty = kind == "forage" and _active_siege_for_besieger(session, army.army_id) is not None
     cancelled_by_kind: dict[str, int] = {}
     for existing in active_actions:
-        kind = (existing.kind or "unknown").strip().lower()
-        cancelled_by_kind[kind] = cancelled_by_kind.get(kind, 0) + 1
+        existing_kind = (existing.kind or "unknown").strip().lower()
+        # The besiege action row yields the single active-action slot to forage,
+        # but SiegeParticipant remains authoritative and active. Do not report
+        # that bookkeeping change to the player as a cancelled siege order.
+        if preserves_siege_duty and existing_kind == "besiege":
+            continue
+        cancelled_by_kind[existing_kind] = cancelled_by_kind.get(existing_kind, 0) + 1
 
-    return created_actions, len(active_actions), cancelled_by_kind
+    return created_actions, sum(cancelled_by_kind.values()), cancelled_by_kind
 
 
 def _ordered_active_actions_for_commander(session: Session, commander_id: int) -> list[Action]:
@@ -3969,6 +3998,9 @@ def _start_action_now_if_valid(session: Session, action: Action, army: Army, clo
         )
 
     if action.kind == "forage":
+        if _army_is_under_siege(session, army):
+            action.state = "failed"
+            return False
         if clock.watch == int(Watch.NIGHT):
             # Night submissions remain queued until at least Matin.
             return False
@@ -4160,10 +4192,6 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
             continue
         if _long_column_completion_blocked(army, int(clock.watch)):
             continue
-        if action.kind == "forage":
-            # The order becomes effective at this transition. Submission alone
-            # never interrupts an existing siege.
-            _abandon_active_siege_for_army(session, army=army, clock=clock)
         if action.eta_day is None or action.eta_watch is None:
             action.state = "failed"
             failed += 1
@@ -4176,6 +4204,12 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
             continue
 
         if action.kind == "forage":
+            # Revalidate at completion: a queued or underway forage order may
+            # have become trapped inside a newly established enemy siege.
+            if _army_is_under_siege(session, army):
+                action.state = "failed"
+                failed += 1
+                continue
             gain, forageable_locations, average_depletion = _forage_supply_gain_for_army(session, army)
             capacity = supply_stats(army).capacity
             supply_before = int(army.army_supply or 0)
@@ -4464,8 +4498,6 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
             ):
                 failed += 1
                 continue
-            if action.kind == "forage":
-                _abandon_active_siege_for_army(session, army=army, clock=clock)
             if action.state == "completed":
                 completed += 1
                 continue
@@ -6029,6 +6061,16 @@ def _brief_action_target(session: Session, action: Action | None, army: Army) ->
     return ""
 
 
+def _brief_siege_target(session: Session, army: Army) -> str:
+    siege = _active_siege_for_besieger(session, army.army_id)
+    if siege is None:
+        return ""
+    stronghold = session.get(Stronghold, siege.stronghold_id)
+    if stronghold is None:
+        return "the target stronghold"
+    return str(stronghold.stronghold_name or "the target stronghold").strip()
+
+
 def _brief_route_endpoint(session: Session, itinerary: dict[str, Any]) -> str:
     remaining_moves = itinerary.get("remaining_moves", [])
     if not isinstance(remaining_moves, list) or len(remaining_moves) <= 1:
@@ -6123,6 +6165,7 @@ def _commander_brief_text(session: Session, commander_id: int) -> str:
         action_target=_brief_action_target(session, current_action, army),
         action_eta=_brief_action_eta(current_action),
         route_endpoint=_brief_route_endpoint(session, itinerary),
+        siege_target=_brief_siege_target(session, army),
         unread_letters=_brief_unread_letter_count(
             session,
             commander_id=commander_id,
@@ -6618,8 +6661,9 @@ def create_action(
                 existing.state = "cancelled"
 
         if active_siege is not None and payload.kind in {"move", "forage"}:
-            # Replace the action intent now, but keep effective siege state
-            # until the replacement actually takes effect at a transition.
+            # Replace the action row now. Movement ends siege duty only when its
+            # first progress is consumed; forage never ends the authoritative
+            # SiegeParticipant relationship.
             active_besiege_actions = (
                 session.query(Action)
                 .filter(
