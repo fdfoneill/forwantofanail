@@ -1612,6 +1612,41 @@ def _start_siege(
     return siege
 
 
+def _restore_besiege_action_for_active_participant(
+    session: Session,
+    *,
+    army: Army,
+    commander_id: int,
+    clock: GameClock,
+) -> Action | None:
+    """Restore the action-row view of siege duty after a temporary action."""
+    siege = _active_siege_for_besieger(session, army.army_id)
+    if siege is None or siege.state != "active":
+        return None
+    stronghold = session.get(Stronghold, siege.stronghold_id)
+    if stronghold is None:
+        return None
+    action = Action(
+        commander_id=commander_id,
+        kind="besiege",
+        state="in_progress",
+        parameters_json=json.dumps(
+            {
+                "target_stronghold_id": stronghold.stronghold_id,
+                "target_h3": stronghold.location_id,
+                "target_stronghold_name": stronghold.stronghold_name,
+            }
+        ),
+        accepted_at=datetime.now(timezone.utc),
+        started_day=clock.day,
+        started_watch=clock.watch,
+        eta_day=None,
+        eta_watch=None,
+    )
+    session.add(action)
+    return action
+
+
 def _abandon_active_siege_for_army(
     session: Session,
     *,
@@ -4218,6 +4253,12 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
             for location in forageable_locations:
                 location.foraged_this_season = min(3, _forage_depletion_level(location) + 1)
             action.state = "completed"
+            _restore_besiege_action_for_active_participant(
+                session,
+                army=army,
+                commander_id=action.commander_id,
+                clock=clock,
+            )
             forage_condition = _forage_condition_word(average_depletion)
             _create_alert(
                 session,

@@ -339,6 +339,18 @@ def test_besieger_can_forage_without_lifting_siege(sqlite_db, monkeypatch):
         assert result["completed"] == 1
         assert forage.state == "completed"
         assert session.get(Siege, siege_id).state == "active"
+        restored_action = (
+            session.query(Action)
+            .filter(
+                Action.commander_id == 1,
+                Action.kind == "besiege",
+                Action.state == "in_progress",
+            )
+            .one()
+        )
+        restored_parameters = json.loads(restored_action.parameters_json)
+        assert restored_parameters["target_stronghold_id"] == 1
+        assert restored_parameters["target_stronghold_name"] == "Testfort"
         assert (
             session.query(WorldHistoryEvent)
             .filter(WorldHistoryEvent.event_kind == "siege_ended")
