@@ -1392,6 +1392,26 @@
       "open water": "var(--water)",
     };
 
+    const TERRAIN_TEXTURES = {
+      "open ground": "/static/terrain/open_ground.svg",
+      "forest": "/static/terrain/forest.svg",
+      "rainforest": "/static/terrain/rainforest.svg",
+      "mountainous": "/static/terrain/mountainous.svg",
+      "desert": "/static/terrain/desert.svg",
+      "river": "/static/terrain/river.svg",
+      "open water": "/static/terrain/open_water.svg",
+    };
+
+    const TERRAIN_TEXTURE_OPACITY = {
+      "open ground": 0.32,
+      "forest": 0.42,
+      "rainforest": 0.46,
+      "mountainous": 0.38,
+      "desert": 0.35,
+      "river": 0.34,
+      "open water": 0.30,
+    };
+
     const TERRAIN_ORDER = ["open ground", "forest", "rainforest", "mountainous", "desert", "river", "open water"];
     const STRONGHOLD_ICON_BY_TYPE = {
       city: "/static/icons/strongholds/city.svg",
@@ -3444,6 +3464,30 @@
       return TERRAIN_COLORS[terrainKey(terrainType)] || "var(--unknown)";
     }
 
+    function terrainPatternId(terrainType) {
+      const key = terrainKey(terrainType);
+      return TERRAIN_TEXTURES[key] ? `terrain-pattern-${key.replace(/[^a-z0-9]+/g, "-")}` : "";
+    }
+
+    function terrainFill(terrainType) {
+      const patternId = terrainPatternId(terrainType);
+      return patternId ? `url(#${patternId})` : terrainColor(terrainType);
+    }
+
+    function terrainPatternDefs() {
+      const patterns = Object.entries(TERRAIN_TEXTURES).map(([terrain, href]) => {
+        const id = terrainPatternId(terrain);
+        const opacity = TERRAIN_TEXTURE_OPACITY[terrain] ?? 0.35;
+        return (
+          `<pattern id="${id}" patternUnits="userSpaceOnUse" width="96" height="96">` +
+            `<rect width="96" height="96" fill="${terrainColor(terrain)}" />` +
+            `<image href="${href}" width="96" height="96" opacity="${opacity}" preserveAspectRatio="none" />` +
+          `</pattern>`
+        );
+      });
+      return `<defs>${patterns.join("")}</defs>`;
+    }
+
     function parseBoundary(boundary) {
       return boundary.map((point) => {
         if (Array.isArray(point)) {
@@ -4484,7 +4528,7 @@
         const points = item.poly.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(" ");
         const isCenter = item.cell.h3 === view.environs.center_h3;
         const polyClass = isCenter ? "cell-poly center-cell" : "cell-poly";
-        const polygon = `<polygon class="${polyClass}" data-h3="${item.cell.h3}" points="${points}" fill="${terrainColor(item.cell.terrain_type)}" opacity="0.94" />`;
+        const polygon = `<polygon class="${polyClass}" data-h3="${item.cell.h3}" points="${points}" fill="${terrainFill(item.cell.terrain_type)}" opacity="0.94" />`;
         if (isCenter) {
           centerPolygon = polygon;
         } else {
@@ -4576,6 +4620,7 @@
         polygons.push(centerPolygon);
       }
       els.mapCanvas.innerHTML =
+        terrainPatternDefs() +
         `<g>${polygons.join("")}</g>` +
         `<g>${roadLines.join("")}</g>` +
         `<g>${strongholdIcons.join("")}</g>` +

@@ -135,7 +135,14 @@ def _default_scenario_manifest() -> dict[str, object]:
                 "source": "assets/map_diegetic.png",
                 "target": "map_diegetic.png",
                 "allow_existing_target": True,
-            }
+            },
+            {"source": "assets/terrain/open_ground.svg", "target": "terrain/open_ground.svg"},
+            {"source": "assets/terrain/forest.svg", "target": "terrain/forest.svg"},
+            {"source": "assets/terrain/rainforest.svg", "target": "terrain/rainforest.svg"},
+            {"source": "assets/terrain/mountainous.svg", "target": "terrain/mountainous.svg"},
+            {"source": "assets/terrain/desert.svg", "target": "terrain/desert.svg"},
+            {"source": "assets/terrain/river.svg", "target": "terrain/river.svg"},
+            {"source": "assets/terrain/open_water.svg", "target": "terrain/open_water.svg"},
         ],
     }
 
