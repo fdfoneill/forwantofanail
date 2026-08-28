@@ -1397,33 +1397,6 @@ def _active_sieged_stronghold_ids(session: Session) -> set[int]:
     }
 
 
-def _watch_boundary_rank(day: int, watch: int) -> tuple[int, int]:
-    watch_rank = {
-        int(Watch.MATIN): 0,
-        int(Watch.PRIME): 1,
-        int(Watch.NOON): 2,
-        int(Watch.VESPER): 3,
-        int(Watch.NIGHT): 4,
-    }
-    return (int(day), watch_rank.get(int(watch), int(watch)))
-
-
-def _stronghold_ids_sieged_at_watch_start(session: Session, day: int, watch: int) -> set[int]:
-    boundary = _watch_boundary_rank(day, watch)
-    stronghold_ids: set[int] = set()
-    sieges = session.query(Siege).all()
-    for siege in sieges:
-        started = _watch_boundary_rank(int(siege.started_day or 0), int(siege.started_watch or 0))
-        if started >= boundary:
-            continue
-        if siege.ended_day is not None and siege.ended_watch is not None:
-            ended = _watch_boundary_rank(int(siege.ended_day), int(siege.ended_watch))
-            if ended < boundary:
-                continue
-        stronghold_ids.add(int(siege.stronghold_id))
-    return stronghold_ids
-
-
 def _captured_sieged_stronghold_ids_for_watch(session: Session, clock: GameClock) -> set[int]:
     return {
         int(siege.stronghold_id)
@@ -6004,7 +5977,10 @@ def advance_time_for_development(
 
         for _ in range(payload.steps):
             capture_world_snapshot(session, clock, is_final=True)
-            siege_state_at_watch_start = _stronghold_ids_sieged_at_watch_start(session, clock.day, clock.watch)
+            # Compare the actual state immediately before and after this watch's
+            # processing. Reconstructing the state at the start of the departing
+            # watch made a transition look new again on the following watch.
+            siege_state_before_tick = _active_sieged_stronghold_ids(session)
             clock.world_tick += 1
             clock.day, watch_enum = from_world_tick(clock.world_tick)
             clock.watch = int(watch_enum)
@@ -6020,7 +5996,7 @@ def advance_time_for_development(
                 actions_failed += tick_result["failed"]
             _emit_siege_transition_alerts(
                 session,
-                start_stronghold_ids=siege_state_at_watch_start,
+                start_stronghold_ids=siege_state_before_tick,
                 clock=clock,
             )
             supply_result = None

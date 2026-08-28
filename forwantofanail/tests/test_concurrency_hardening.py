@@ -23,6 +23,7 @@ from forwantofanail.api.schemas import (
     LoginRequest,
     MessageCreateRequest,
     StandingFollowRoadUpdateRequest,
+    TimeAdvanceRequest,
 )
 from forwantofanail.core.database import Base, create_session, get_engine, reset_database_runtime
 from forwantofanail.core.initialize_db import _drop_all_tables_for_reset
@@ -773,6 +774,81 @@ def test_new_siege_is_deferred_until_watch_execution(sqlite_db, monkeypatch):
         assert session.query(Siege).filter(Siege.state == "active").count() == 1
         event = session.query(WorldHistoryEvent).filter(WorldHistoryEvent.event_kind == "siege_started").one()
         assert event.world_tick == 1
+    finally:
+        session.close()
+
+
+def test_siege_start_news_is_not_repeated_on_following_watch(sqlite_db, monkeypatch):
+    monkeypatch.setenv("DEV_ADMIN_TOKEN", "test-admin")
+    monkeypatch.setattr(routes.h3, "grid_ring", lambda _location_id, _distance: ["fort_1"])
+    session = create_session()
+    try:
+        routes.create_action(
+            ActionCreateRequest(kind="besiege", target_stronghold_id="sh_1"),
+            commander_id=1,
+            session=session,
+            idempotency_key="start-siege-for-news",
+        )
+    finally:
+        session.close()
+
+    session = create_session()
+    try:
+        routes.advance_time_for_development(
+            TimeAdvanceRequest(steps=2, execute_actions=True),
+            session=session,
+            x_admin_token="test-admin",
+            idempotency_key="advance-past-siege-start",
+        )
+    finally:
+        session.close()
+
+    session = create_session()
+    try:
+        alerts = session.query(Alert).filter(Alert.message.contains("was besieged by")).all()
+        assert len(alerts) == 3
+        assert {alert.recipient_commander_id for alert in alerts} == {1, 2, 3}
+        assert {alert.created_tick for alert in alerts} == {1}
+    finally:
+        session.close()
+
+
+def test_siege_lift_news_is_not_repeated_on_following_watch(sqlite_db, monkeypatch):
+    monkeypatch.setenv("DEV_ADMIN_TOKEN", "test-admin")
+    monkeypatch.setattr(routes.h3, "grid_ring", lambda _location_id, _distance: ["fort_1"])
+    monkeypatch.setattr(routes, "calculate_move_watches", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(routes, "calculate_move_watches_from_origin", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(routes, "_movement_capacity_for_interval_start", lambda *_args, **_kwargs: 1)
+    _seed_active_test_siege()
+
+    session = create_session()
+    try:
+        routes.plan_actions(
+            ActionPlanRequest(kind="march", path=["origin_2"]),
+            commander_id=1,
+            session=session,
+            idempotency_key="march-away-for-news",
+        )
+    finally:
+        session.close()
+
+    session = create_session()
+    try:
+        routes.advance_time_for_development(
+            TimeAdvanceRequest(steps=2, execute_actions=True),
+            session=session,
+            x_admin_token="test-admin",
+            idempotency_key="advance-past-siege-lift",
+        )
+    finally:
+        session.close()
+
+    session = create_session()
+    try:
+        alerts = session.query(Alert).filter(Alert.message.contains("siege on Testfort was lifted")).all()
+        assert len(alerts) == 3
+        assert {alert.recipient_commander_id for alert in alerts} == {1, 2, 3}
+        assert {alert.created_tick for alert in alerts} == {1}
     finally:
         session.close()
 
