@@ -23,6 +23,7 @@ from forwantofanail.api.schemas import (
     LoginRequest,
     MessageCreateRequest,
     StandingFollowRoadUpdateRequest,
+    TimeAdvanceRequest,
 )
 from forwantofanail.core.database import Base, create_session, get_engine, reset_database_runtime
 from forwantofanail.core.initialize_db import _drop_all_tables_for_reset
@@ -283,6 +284,360 @@ def _advance_one_action_tick() -> None:
         session.close()
 
 
+def test_besieger_can_forage_without_lifting_siege(sqlite_db, monkeypatch):
+    siege_id = _seed_active_test_siege()
+    monkeypatch.setattr(routes.h3, "grid_disk", lambda _location_id, _radius: ["origin_1", "origin_2", "fort_1"])
+
+    session = create_session()
+    try:
+        clock = session.get(GameClock, 1)
+        clock.watch = int(routes.Watch.MATIN)
+        clock.world_tick = routes.to_world_tick(clock.day, clock.watch)
+        army = session.get(Army, 1)
+        created, cancelled_count, cancelled_by_kind = routes._apply_plan(
+            session,
+            commander_id=1,
+            army=army,
+            clock=clock,
+            kind="forage",
+            path=[],
+            now=datetime.now(timezone.utc),
+        )
+        session.flush()
+
+        assert len(created) == 1
+        forage = created[0]
+        assert forage.state == "queued"
+        assert cancelled_count == 0
+        assert cancelled_by_kind == {}
+        assert session.get(Siege, siege_id).state == "active"
+        assert (
+            session.query(SiegeParticipant)
+            .filter(
+                SiegeParticipant.siege_id == siege_id,
+                SiegeParticipant.besieger_army_id == 1,
+                SiegeParticipant.state == "active",
+            )
+            .count()
+            == 1
+        )
+
+        clock.world_tick += 1
+        clock.day, next_watch = routes.from_world_tick(clock.world_tick)
+        clock.watch = int(next_watch)
+        start_result = routes._execute_action_tick(session, clock)
+        session.flush()
+        assert start_result["started"] == 1
+        assert forage.state == "in_progress"
+        assert session.get(Siege, siege_id).state == "active"
+
+        clock.day = int(forage.eta_day)
+        clock.watch = int(forage.eta_watch)
+        clock.world_tick = routes.to_world_tick(clock.day, clock.watch)
+        result = routes._execute_action_tick(session, clock)
+        session.flush()
+
+        assert result["completed"] == 1
+        assert forage.state == "completed"
+        assert session.get(Siege, siege_id).state == "active"
+        restored_action = (
+            session.query(Action)
+            .filter(
+                Action.commander_id == 1,
+                Action.kind == "besiege",
+                Action.state == "in_progress",
+            )
+            .one()
+        )
+        restored_parameters = json.loads(restored_action.parameters_json)
+        assert restored_parameters["target_stronghold_id"] == 1
+        assert restored_parameters["target_stronghold_name"] == "Testfort"
+        assert (
+            session.query(WorldHistoryEvent)
+            .filter(WorldHistoryEvent.event_kind == "siege_ended")
+            .count()
+            == 0
+        )
+    finally:
+        session.close()
+
+
+def test_forage_fails_if_army_becomes_a_besieged_defender_before_completion(sqlite_db, monkeypatch):
+    _seed_active_test_siege()
+    monkeypatch.setattr(routes.h3, "grid_disk", lambda _location_id, _radius: ["fort_1"])
+
+    session = create_session()
+    try:
+        clock = session.get(GameClock, 1)
+        defender = session.get(Army, 2)
+        location = session.get(Location, "fort_1")
+        original_depletion = int(location.foraged_this_season or 0)
+        action = Action(
+            commander_id=2,
+            kind="forage",
+            state="in_progress",
+            parameters_json="{}",
+            accepted_at=datetime.now(timezone.utc),
+            started_day=clock.day,
+            started_watch=clock.watch,
+            eta_day=clock.day,
+            eta_watch=clock.watch,
+        )
+        session.add(action)
+        session.flush()
+
+        result = routes._execute_action_tick(session, clock)
+        session.flush()
+
+        assert result["failed"] == 1
+        assert action.state == "failed"
+        assert int(location.foraged_this_season or 0) == original_depletion
+        assert defender.location_id == "fort_1"
+    finally:
+        session.close()
+
+
+def test_unbesieged_stronghold_occupant_can_sally_against_adjacent_enemy(sqlite_db, monkeypatch):
+    monkeypatch.setattr(
+        routes.h3,
+        "grid_ring",
+        lambda location_id, _distance: ["origin_1"] if location_id == "fort_1" else ["fort_1"],
+    )
+    monkeypatch.setattr(routes.h3, "grid_disk", lambda location_id, _radius: [location_id])
+
+    session = create_session()
+    try:
+        clock = session.get(GameClock, 1)
+        clock.watch = int(routes.Watch.PRIME)
+        clock.world_tick = routes.to_world_tick(clock.day, clock.watch)
+        occupant = session.get(Army, 2)
+        occupant.army_morale = 2
+        session.get(Army, 1).army_morale = 12
+        session.commit()
+
+        targets = routes.get_valid_attack_targets(
+            staged_path=None,
+            commander_id=2,
+            session=session,
+        )
+        assert [target["target_army_id"] for target in targets["targets"]] == ["army_1"]
+
+        result = routes.create_action(
+            ActionCreateRequest(kind="attack", target_h3="origin_1", target_army_id="army_1"),
+            commander_id=2,
+            session=session,
+            idempotency_key="unbesieged-sally",
+        )
+        assert result["state"] == "in_progress"
+    finally:
+        session.close()
+
+    session = create_session()
+    try:
+        action = (
+            session.query(Action)
+            .filter(Action.commander_id == 2, Action.kind == "attack", Action.state == "in_progress")
+            .one()
+        )
+        clock = session.get(GameClock, 1)
+        clock.day = int(action.eta_day)
+        clock.watch = int(action.eta_watch)
+        clock.world_tick = routes.to_world_tick(clock.day, clock.watch)
+        result = routes._execute_action_tick(session, clock)
+        session.flush()
+
+        assert result["completed"] == 1
+        assert action.state == "completed"
+        assert session.get(Army, 2).location_id == "fort_1"
+    finally:
+        session.close()
+
+
+def test_besieged_stronghold_still_limits_sorties_to_active_besiegers(sqlite_db, monkeypatch):
+    _seed_active_test_siege()
+    monkeypatch.setattr(
+        routes.h3,
+        "grid_ring",
+        lambda location_id, _distance: ["origin_1", "origin_2"] if location_id == "fort_1" else ["fort_1"],
+    )
+
+    session = create_session()
+    try:
+        targets = routes.get_valid_attack_targets(
+            staged_path=None,
+            commander_id=2,
+            session=session,
+        )
+        assert [target["target_army_id"] for target in targets["targets"]] == ["army_1"]
+
+        with pytest.raises(HTTPException) as exc_info:
+            routes.create_action(
+                ActionCreateRequest(kind="attack", target_h3="origin_2", target_army_id="army_3"),
+                commander_id=2,
+                session=session,
+                idempotency_key="invalid-nonbesieger-sortie",
+            )
+        assert exc_info.value.status_code == 400
+        assert "only active besiegers" in str(exc_info.value.detail)
+    finally:
+        session.close()
+
+
+def test_stronghold_capture_displaces_empty_field_army_without_deleting_commander(sqlite_db, monkeypatch):
+    siege_id = _seed_active_test_siege()
+    monkeypatch.setattr(routes, "list_valid_destinations", lambda _session, army_id: ["retreat_1"] if army_id == 2 else [])
+    monkeypatch.setattr(
+        routes,
+        "_nearest_distance_to_armies",
+        lambda location_id, _winner_armies: 1 if location_id == "retreat_1" else 0,
+    )
+
+    session = create_session()
+    try:
+        session.add(Location(location_id="retreat_1", terrain_id=1, is_road=True, settlement=1))
+        defender = session.get(Army, 2)
+        for detachment in list(defender.detachments):
+            detachment.warrior_count = 0
+            session.delete(detachment)
+        session.add(
+            Army(
+                army_id=4,
+                location_id="fort_1",
+                army_name="Testfort Garrison",
+                army_faction="Beta",
+                commander_id=None,
+                garrison_stronghold_id=1,
+                army_supply=0,
+                army_morale=9,
+                army_resting_morale=9,
+                is_garrison=True,
+                noncombattant_percent=0.0,
+            )
+        )
+        session.flush()
+
+        clock = session.get(GameClock, 1)
+        attacker = session.get(Army, 1)
+        stronghold = session.get(Stronghold, 1)
+        siege = session.get(Siege, siege_id)
+
+        assert routes._clear_remaining_defenders_for_capture(
+            session,
+            clock=clock,
+            stronghold=stronghold,
+            attacker=attacker,
+        )
+        assert session.get(Army, 2).location_id == "retreat_1"
+        assert session.get(Army, 2).commander_id == 2
+
+        assert routes._finalize_siege_capture(
+            session,
+            clock=clock,
+            siege=siege,
+            stronghold=stronghold,
+            attacker=attacker,
+            apply_loot=False,
+        )
+        assert attacker.location_id == "fort_1"
+        assert stronghold.control == "Alpha"
+        assert session.get(Army, 4).army_faction == "Alpha"
+        assert session.get(Commander, 2) is not None
+    finally:
+        session.close()
+
+
+def test_stronghold_capture_does_not_delete_empty_field_army_when_displacement_is_blocked(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes, "list_valid_destinations", lambda _session, _army_id: [])
+
+    session = create_session()
+    try:
+        defender = session.get(Army, 2)
+        for detachment in list(defender.detachments):
+            detachment.warrior_count = 0
+            session.delete(detachment)
+        session.flush()
+
+        cleared = routes._clear_remaining_defenders_for_capture(
+            session,
+            clock=session.get(GameClock, 1),
+            stronghold=session.get(Stronghold, 1),
+            attacker=session.get(Army, 1),
+        )
+
+        assert cleared is False
+        assert session.get(Army, 2) is not None
+        assert session.get(Army, 2).location_id == "fort_1"
+        assert session.get(Commander, 2) is not None
+    finally:
+        session.close()
+
+
+def test_march_displaces_empty_hostile_field_army(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes, "list_valid_destinations", lambda _session, army_id: ["escape_1"] if army_id == 2 else [])
+
+    session = create_session()
+    try:
+        session.add_all(
+            [
+                Location(location_id="target_1", terrain_id=1, is_road=True, settlement=1),
+                Location(location_id="escape_1", terrain_id=1, is_road=True, settlement=1),
+            ]
+        )
+        defender = session.get(Army, 2)
+        defender.location_id = "target_1"
+        for detachment in list(defender.detachments):
+            detachment.warrior_count = 0
+            session.delete(detachment)
+        session.flush()
+
+        attacker = session.get(Army, 1)
+        moved = routes._execute_move_to_destination(
+            session,
+            session.get(GameClock, 1),
+            attacker,
+            "target_1",
+        )
+
+        assert moved is True
+        assert attacker.location_id == "target_1"
+        assert session.get(Army, 2).location_id == "escape_1"
+        assert session.get(Army, 2).commander_id == 2
+        assert session.get(Commander, 2) is not None
+    finally:
+        session.close()
+
+
+def test_march_is_blocked_when_empty_hostile_field_army_cannot_be_displaced(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes, "list_valid_destinations", lambda _session, _army_id: [])
+
+    session = create_session()
+    try:
+        session.add(Location(location_id="target_1", terrain_id=1, is_road=True, settlement=1))
+        defender = session.get(Army, 2)
+        defender.location_id = "target_1"
+        for detachment in list(defender.detachments):
+            detachment.warrior_count = 0
+            session.delete(detachment)
+        session.flush()
+
+        attacker = session.get(Army, 1)
+        origin_h3 = attacker.location_id
+        moved = routes._execute_move_to_destination(
+            session,
+            session.get(GameClock, 1),
+            attacker,
+            "target_1",
+        )
+
+        assert moved is False
+        assert attacker.location_id == origin_h3
+        assert session.get(Army, 2).location_id == "target_1"
+        assert session.get(Army, 2) is not None
+        assert session.get(Commander, 2) is not None
+    finally:
+        session.close()
+
+
 def test_same_watch_march_then_same_siege_preserves_continuity(sqlite_db, monkeypatch):
     monkeypatch.setattr(routes.h3, "grid_ring", lambda _location_id, _distance: ["fort_1"])
     monkeypatch.setattr(routes, "calculate_move_watches", lambda *_args, **_kwargs: 1)
@@ -423,6 +778,81 @@ def test_new_siege_is_deferred_until_watch_execution(sqlite_db, monkeypatch):
         session.close()
 
 
+def test_siege_start_news_is_not_repeated_on_following_watch(sqlite_db, monkeypatch):
+    monkeypatch.setenv("DEV_ADMIN_TOKEN", "test-admin")
+    monkeypatch.setattr(routes.h3, "grid_ring", lambda _location_id, _distance: ["fort_1"])
+    session = create_session()
+    try:
+        routes.create_action(
+            ActionCreateRequest(kind="besiege", target_stronghold_id="sh_1"),
+            commander_id=1,
+            session=session,
+            idempotency_key="start-siege-for-news",
+        )
+    finally:
+        session.close()
+
+    session = create_session()
+    try:
+        routes.advance_time_for_development(
+            TimeAdvanceRequest(steps=2, execute_actions=True),
+            session=session,
+            x_admin_token="test-admin",
+            idempotency_key="advance-past-siege-start",
+        )
+    finally:
+        session.close()
+
+    session = create_session()
+    try:
+        alerts = session.query(Alert).filter(Alert.message.contains("was besieged by")).all()
+        assert len(alerts) == 3
+        assert {alert.recipient_commander_id for alert in alerts} == {1, 2, 3}
+        assert {alert.created_tick for alert in alerts} == {1}
+    finally:
+        session.close()
+
+
+def test_siege_lift_news_is_not_repeated_on_following_watch(sqlite_db, monkeypatch):
+    monkeypatch.setenv("DEV_ADMIN_TOKEN", "test-admin")
+    monkeypatch.setattr(routes.h3, "grid_ring", lambda _location_id, _distance: ["fort_1"])
+    monkeypatch.setattr(routes, "calculate_move_watches", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(routes, "calculate_move_watches_from_origin", lambda *_args, **_kwargs: 1)
+    monkeypatch.setattr(routes, "_movement_capacity_for_interval_start", lambda *_args, **_kwargs: 1)
+    _seed_active_test_siege()
+
+    session = create_session()
+    try:
+        routes.plan_actions(
+            ActionPlanRequest(kind="march", path=["origin_2"]),
+            commander_id=1,
+            session=session,
+            idempotency_key="march-away-for-news",
+        )
+    finally:
+        session.close()
+
+    session = create_session()
+    try:
+        routes.advance_time_for_development(
+            TimeAdvanceRequest(steps=2, execute_actions=True),
+            session=session,
+            x_admin_token="test-admin",
+            idempotency_key="advance-past-siege-lift",
+        )
+    finally:
+        session.close()
+
+    session = create_session()
+    try:
+        alerts = session.query(Alert).filter(Alert.message.contains("siege on Testfort was lifted")).all()
+        assert len(alerts) == 3
+        assert {alert.recipient_commander_id for alert in alerts} == {1, 2, 3}
+        assert {alert.created_tick for alert in alerts} == {1}
+    finally:
+        session.close()
+
+
 def test_concurrent_army_management_stale_baseline_gets_conflict(sqlite_db):
     baseline_session = create_session()
     try:
@@ -451,6 +881,148 @@ def test_concurrent_army_management_stale_baseline_gets_conflict(sqlite_db):
         )
 
     assert sorted(409 if result == 409 else 200 for result in results) == [200, 409]
+
+
+def _seed_garrison_management_pair() -> dict:
+    session = create_session()
+    try:
+        left_army = session.get(Army, 1)
+        left_army.location_id = "fort_1"
+        left_army.army_supply = 1000
+        session.get(Stronghold, 1).control = "Alpha"
+        session.add(Detachment(detachment_id=4, detachment_name="Alpha Rearguard", army_id=1, warrior_count=10))
+        session.add(
+            Army(
+                army_id=4,
+                location_id="fort_1",
+                army_name="Testfort Garrison",
+                army_faction="Alpha",
+                commander_id=None,
+                garrison_stronghold_id=1,
+                army_supply=0,
+                army_morale=9,
+                army_resting_morale=9,
+                is_garrison=True,
+                noncombattant_percent=0.0,
+            )
+        )
+        session.add(Detachment(detachment_id=5, detachment_name="Garrison Watch", army_id=4, warrior_count=20))
+        session.commit()
+        return routes.get_army_management_state(commander_id=1, session=session)
+    finally:
+        session.close()
+
+
+def _garrison_management_payload(state: dict, *, left_detachments: list[str], right_detachments: list[str], left_supply: int, right_supply=None):
+    return ArmyManagementApplyRequest(
+        baseline_hash=state["baseline"]["snapshot_hash"],
+        left_army=ArmyManagementArmySideRequest(
+            army_id="army_1",
+            name="Alpha Host",
+            commander_id="cmd_1",
+            supply_current=left_supply,
+            detachment_ids=left_detachments,
+        ),
+        right_target=ArmyManagementRightTargetRequest(mode="existing", army_id="army_4"),
+        right_army=ArmyManagementArmySideRequest(
+            army_id="army_4",
+            name="Testfort Garrison",
+            commander_id=None,
+            supply_current=right_supply,
+            detachment_ids=right_detachments,
+        ),
+    )
+
+
+def test_field_detachment_can_join_garrison_with_confirmed_capacity_loss(sqlite_db):
+    state = _seed_garrison_management_pair()
+    payload = _garrison_management_payload(
+        state,
+        left_detachments=["det_4"],
+        right_detachments=["det_1", "det_5"],
+        left_supply=180,
+    )
+
+    session = create_session()
+    try:
+        routes.apply_army_management(
+            payload,
+            commander_id=1,
+            session=session,
+            idempotency_key="garrison-capacity-loss",
+        )
+    finally:
+        session.close()
+
+    session = create_session()
+    try:
+        assert session.get(Army, 1).army_supply == 180
+        assert session.get(Army, 4).army_supply == 0
+        assert session.get(Detachment, 1).army_id == 4
+        assert session.get(Detachment, 4).army_id == 1
+    finally:
+        session.close()
+
+
+def test_garrison_detachment_can_join_field_army_without_supply_change(sqlite_db):
+    state = _seed_garrison_management_pair()
+    payload = _garrison_management_payload(
+        state,
+        left_detachments=["det_1", "det_4", "det_5"],
+        right_detachments=[],
+        left_supply=1000,
+    )
+
+    session = create_session()
+    try:
+        routes.apply_army_management(
+            payload,
+            commander_id=1,
+            session=session,
+            idempotency_key="pull-from-garrison",
+        )
+    finally:
+        session.close()
+
+    session = create_session()
+    try:
+        assert session.get(Army, 1).army_supply == 1000
+        assert session.get(Army, 4).army_supply == 0
+        assert session.get(Detachment, 5).army_id == 1
+    finally:
+        session.close()
+
+
+@pytest.mark.parametrize(
+    ("left_supply", "right_supply"),
+    [
+        (179, None),
+        (1000, None),
+        (180, 1),
+    ],
+)
+def test_garrison_management_rejects_arbitrary_supply_changes(sqlite_db, left_supply, right_supply):
+    state = _seed_garrison_management_pair()
+    payload = _garrison_management_payload(
+        state,
+        left_detachments=["det_4"],
+        right_detachments=["det_1", "det_5"],
+        left_supply=left_supply,
+        right_supply=right_supply,
+    )
+
+    session = create_session()
+    try:
+        with pytest.raises(HTTPException) as exc_info:
+            routes.apply_army_management(
+                payload,
+                commander_id=1,
+                session=session,
+                idempotency_key=f"reject-garrison-supply-{left_supply}-{right_supply}",
+            )
+        assert exc_info.value.status_code == 400
+    finally:
+        session.close()
 
 
 def test_get_standing_orders_does_not_insert_row(sqlite_db):
@@ -679,8 +1251,13 @@ def test_admin_claim_reset_releases_commanders(sqlite_db, monkeypatch):
         session.close()
 
 
-def test_admin_army_summary_reports_commander_armies(sqlite_db, monkeypatch):
+def test_admin_army_summary_reports_commander_armies_with_diegetic_locations(sqlite_db, monkeypatch):
     monkeypatch.setenv("ADMIN_TOKEN", "summary-secret")
+    monkeypatch.setattr(
+        routes,
+        "describe_army_location",
+        lambda _session, location_h3: f"near {location_h3}",
+    )
     session = create_session()
     try:
         rows = routes.admin_armies_summary(session=session, x_admin_token="summary-secret")
@@ -688,7 +1265,8 @@ def test_admin_army_summary_reports_commander_armies(sqlite_db, monkeypatch):
         assert by_army["Alpha Host"]["commander_name"] == "Lord Alpha"
         assert by_army["Alpha Host"]["faction"] == "Alpha"
         assert by_army["Alpha Host"]["claimed"] is False
-        assert by_army["Alpha Host"]["strength"] == 100
+        assert by_army["Alpha Host"]["location"] == "near origin_1"
+        assert "strength" not in by_army["Alpha Host"]
         assert by_army["Alpha Host"]["status"] == "idle"
     finally:
         session.close()
@@ -762,9 +1340,9 @@ def test_completed_forage_increments_cells_and_reports_prior_condition(sqlite_db
         locations["fort_1"].foraged_this_season = 2
         army = session.get(Army, 1)
         gain, forageable_locations, average_depletion = routes._forage_supply_gain_for_army(session, army)
-        assert gain == 3611
-        assert {location.location_id for location in forageable_locations} == {"origin_1", "origin_2", "fort_1"}
-        assert average_depletion == 1
+        assert gain == 3333
+        assert {location.location_id for location in forageable_locations} == {"origin_1", "origin_2"}
+        assert average_depletion == 0.5
 
         clock = session.get(GameClock, 1)
         session.add(
@@ -788,10 +1366,54 @@ def test_completed_forage_increments_cells_and_reports_prior_condition(sqlite_db
         assert [
             locations[location_id].foraged_this_season
             for location_id in ("origin_1", "origin_2", "fort_1")
-        ] == [1, 2, 3]
+        ] == [1, 2, 2]
         alert = session.query(Alert).filter(Alert.recipient_commander_id == 1).order_by(Alert.alert_id.desc()).first()
         assert alert is not None
-        assert "foraged from picked-over country" in alert.message
+        assert "foraged from plentiful country" in alert.message
+    finally:
+        session.close()
+
+
+def test_forage_excludes_enemy_field_armies_and_garrisons(sqlite_db, monkeypatch):
+    monkeypatch.setattr(
+        routes.h3,
+        "grid_disk",
+        lambda _location_id, _radius: ["origin_1", "origin_2", "enemy_field", "enemy_garrison"],
+    )
+    session = create_session()
+    try:
+        session.add_all(
+            [
+                Location(location_id="enemy_field", terrain_id=1, settlement=1),
+                Location(location_id="enemy_garrison", terrain_id=1, settlement=1),
+            ]
+        )
+        session.get(Army, 2).location_id = "enemy_field"
+        session.add(
+            Army(
+                army_id=4,
+                location_id="enemy_garrison",
+                army_name="Enemy Garrison",
+                army_faction="Beta",
+                commander_id=None,
+                garrison_stronghold_id=1,
+                army_supply=0,
+                army_morale=9,
+                army_resting_morale=9,
+                is_garrison=True,
+                noncombattant_percent=0.0,
+            )
+        )
+        session.flush()
+
+        gain, forageable_locations, average_depletion = routes._forage_supply_gain_for_army(
+            session,
+            session.get(Army, 1),
+        )
+
+        assert gain == 5000
+        assert {location.location_id for location in forageable_locations} == {"origin_1", "origin_2"}
+        assert average_depletion == 0
     finally:
         session.close()
 
@@ -975,6 +1597,208 @@ def test_browser_claim_uses_httponly_cookie(sqlite_db, monkeypatch):
         assert "token" not in response.json()
         assert "HttpOnly" in response.headers["set-cookie"]
         assert client.get("/v1/auth/session").status_code == 200
+
+
+def _brief_endpoint_environs():
+    center_h3 = "871ec9020ffffff"
+    return {
+        "center_h3": center_h3,
+        "radius": 2,
+        "cells": [
+            {
+                "h3": center_h3,
+                "terrain_type": "Open Ground",
+                "has_road": False,
+                "settlement": 1,
+                "foraged_this_season": 0,
+                "stronghold": None,
+                "other_armies": [],
+            }
+        ],
+    }
+
+
+def test_brief_endpoint_requires_auth_and_returns_plain_text_for_bearer(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes, "_serialize_environs", lambda *_args, **_kwargs: _brief_endpoint_environs())
+    monkeypatch.setattr(routes, "_border_road_neighbor_ids", lambda *_args, **_kwargs: [])
+    claim = _call_with_session(lambda session: routes.claim_commander("cmd_1", session=session))
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        assert client.get("/v1/me/brief").status_code == 401
+        response = client.get(
+            "/v1/me/brief",
+            headers={"Authorization": f"Bearer {claim['token']}"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain; charset=utf-8")
+    assert response.text.startswith("ARMY\nUnder your command is the Alpha Host, an army 100 strong")
+    assert response.text.endswith(
+        "LOCAL SITUATION\nThe army is in open ground terrain. The area is untouched in terms of forage. "
+        "No other armies are nearby."
+    )
+
+
+def test_brief_endpoint_accepts_browser_cookie(sqlite_db, monkeypatch):
+    monkeypatch.setenv("GAME_PASSWORD", "shared-secret")
+    monkeypatch.setenv("SESSION_SECRET", "session-secret")
+    monkeypatch.setattr(routes, "_serialize_environs", lambda *_args, **_kwargs: _brief_endpoint_environs())
+    monkeypatch.setattr(routes, "_border_road_neighbor_ids", lambda *_args, **_kwargs: [])
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        claim = client.post(
+            "/v1/auth/claim",
+            headers={"Idempotency-Key": "brief-browser-claim"},
+            json={"commander_id": "cmd_1", "game_password": "shared-secret", "client_kind": "browser"},
+        )
+        response = client.get("/v1/me/brief")
+
+    assert claim.status_code == 200
+    assert response.status_code == 200
+    assert response.text.startswith("ARMY\nUnder your command is the Alpha Host")
+    assert "The army is in open ground terrain." in response.text
+
+
+def test_brief_attention_counts_do_not_mark_letters_or_alerts_read(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes, "_serialize_environs", lambda *_args, **_kwargs: _brief_endpoint_environs())
+    monkeypatch.setattr(routes, "_border_road_neighbor_ids", lambda *_args, **_kwargs: [])
+    session = create_session()
+    try:
+        clock = routes._get_or_create_clock(session)
+        message = Message(
+            sender_commander_id=2,
+            sender_name="Lady Beta",
+            recipient_id=1,
+            content="Hold your ground.",
+            priority="normal",
+            sent_day=clock.day,
+            sent_watch=clock.watch,
+            sent_tick=clock.world_tick,
+            delivery_day=clock.day,
+            delivery_watch=clock.watch,
+            delivery_tick=clock.world_tick,
+            status="received",
+            is_read=False,
+            created_at=datetime.now(timezone.utc),
+        )
+        session.add(message)
+        alert = routes._create_alert(
+            session,
+            recipient_commander_id=1,
+            alert_type="report",
+            signal_kind="event",
+            category="orders",
+            importance="high",
+            message="Scouts report movement.",
+            created_day=clock.day,
+            created_watch=clock.watch,
+        )
+        session.commit()
+        message_id = message.message_id
+        alert_id = alert.alert_id
+
+        brief = routes._commander_brief_text(session, 1)
+        session.expire_all()
+
+        assert "ATTENTION\nYou have 1 unread letter and 1 unread alert." in brief
+        assert "1 alert is of high importance." in brief
+        assert session.get(Message, message_id).is_read is False
+        receipt = session.get(AlertRecipient, (alert_id, 1))
+        assert receipt.read_at is None
+        assert receipt.delivered_at is None
+    finally:
+        session.close()
+
+
+def test_brief_renders_action_target_and_eta_without_internal_ids(sqlite_db, monkeypatch):
+    monkeypatch.setattr(routes, "_serialize_environs", lambda *_args, **_kwargs: _brief_endpoint_environs())
+    monkeypatch.setattr(routes, "_border_road_neighbor_ids", lambda *_args, **_kwargs: [])
+    session = create_session()
+    try:
+        action = Action(
+            commander_id=1,
+            kind="move",
+            state="queued",
+            parameters_json=json.dumps({"destination_h3": "origin_2"}),
+            accepted_at=datetime.now(timezone.utc),
+            eta_day=2,
+            eta_watch=2,
+        )
+        session.add(action)
+        session.commit()
+
+        brief = routes._commander_brief_text(session, 1)
+
+        assert "ORDERS\nThe army is currently holding." in brief
+        assert "Its next ordered stage will lead toward an undescribed destination." in brief
+        assert "The present stage is expected during the prime watch on May 22, 1410." in brief
+        assert "1 stage remains in the ordered route." in brief
+        assert "origin_2" not in brief
+        assert "destination_h3" not in brief
+        assert "action_" not in brief
+    finally:
+        session.close()
+
+
+def test_brief_endpoint_uses_normal_and_cavalry_environs_radii(sqlite_db, monkeypatch):
+    radii = []
+
+    def serialize(_session, _center_h3, radius, **_kwargs):
+        radii.append(radius)
+        return _brief_endpoint_environs()
+
+    monkeypatch.setattr(routes, "_serialize_environs", serialize)
+    monkeypatch.setattr(routes, "_border_road_neighbor_ids", lambda *_args, **_kwargs: [])
+    session = create_session()
+    try:
+        routes.get_my_brief(commander_id=1, session=session)
+        session.get(Detachment, 1).is_cavalry = True
+        session.flush()
+        routes.get_my_brief(commander_id=1, session=session)
+    finally:
+        session.close()
+
+    assert radii == [2, 4]
+
+
+def test_admin_commander_brief_requires_admin_token(sqlite_db, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "brief-admin")
+    monkeypatch.setattr(routes, "_serialize_environs", lambda *_args, **_kwargs: _brief_endpoint_environs())
+    monkeypatch.setattr(routes, "_border_road_neighbor_ids", lambda *_args, **_kwargs: [])
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        unauthorized = client.get("/v1/admin/commanders/cmd_2/brief")
+        response = client.get(
+            "/v1/admin/commanders/cmd_2/brief",
+            headers={"X-Admin-Token": "brief-admin"},
+        )
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/plain; charset=utf-8")
+    assert response.text.startswith("ARMY\nUnder your command is the Beta Guard")
+    assert "The army is in open ground terrain." in response.text
+
+
+def test_dev_dashboard_opens_commander_briefs_in_text_safe_modal(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/dev/dashboard")
+
+    assert response.status_code == 200
+    assert 'id="briefModalOverlay"' in response.text
+    assert 'id="briefModalText"' in response.text
+    assert 'className = "summary-button"' in response.text
+    assert "/v1/admin/commanders/${encodeURIComponent(commanderId)}/brief" in response.text
+    assert 'els.briefModalText.textContent = String(brief' in response.text
+    assert "els.summaryList.replaceChildren();" in response.text
+    assert "els.summaryList.innerHTML" not in response.text
+    assert 'const location = String(row.location || "at an unknown location");' in response.text
+    assert "row.strength" not in response.text
 
 
 def test_player_dashboard_csp_allows_h3_script_host(sqlite_db):
