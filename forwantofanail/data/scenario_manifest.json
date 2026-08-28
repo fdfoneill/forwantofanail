@@ -13,6 +13,7 @@
     "movements": "movements.csv"
   },
   "history_export_config": "history_export.json",
+  "stronghold_points": "assets/stronghold_points/copper_coast_strongholds_corrected.shp",
   "static_assets": [
     {
       "source": "assets/map_diegetic.png",

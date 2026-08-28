@@ -1661,6 +1661,88 @@ def test_brief_endpoint_accepts_browser_cookie(sqlite_db, monkeypatch):
     assert "The army is in open ground terrain." in response.text
 
 
+def test_historical_stronghold_map_requires_auth_and_ignores_live_control(sqlite_db, monkeypatch):
+    catalog = {
+        "map_width": 3837,
+        "map_height": 2953,
+        "strongholds": [
+            {
+                "id": "sh_1",
+                "name": "Testfort",
+                "historical_faction": "Beta",
+                "stronghold_type": "Town",
+                "historical_gloss": None,
+                "map_x": 100.5,
+                "map_y": 200.5,
+            }
+        ],
+    }
+    monkeypatch.setattr(routes, "load_historical_stronghold_catalog", lambda: catalog)
+    session = create_session()
+    try:
+        session.get(Stronghold, 1).control = "Alpha"
+        session.commit()
+    finally:
+        session.close()
+    claim = _call_with_session(lambda session: routes.claim_commander("cmd_1", session=session))
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        assert client.get("/v1/me/map/strongholds").status_code == 401
+        response = client.get(
+            "/v1/me/map/strongholds",
+            headers={"Authorization": f"Bearer {claim['token']}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == catalog
+    serialized = response.json()["strongholds"][0]
+    assert serialized["historical_faction"] == "Beta"
+    assert not ({"control", "current_controller", "siege", "garrison", "armies"} & set(serialized))
+
+
+def test_historical_stronghold_map_accepts_browser_cookie(sqlite_db, monkeypatch):
+    monkeypatch.setenv("GAME_PASSWORD", "shared-secret")
+    monkeypatch.setenv("SESSION_SECRET", "session-secret")
+    monkeypatch.setattr(
+        routes,
+        "load_historical_stronghold_catalog",
+        lambda: {"map_width": 1, "map_height": 1, "strongholds": []},
+    )
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        claim = client.post(
+            "/v1/auth/claim",
+            headers={"Idempotency-Key": "map-browser-claim"},
+            json={"commander_id": "cmd_1", "game_password": "shared-secret", "client_kind": "browser"},
+        )
+        response = client.get("/v1/me/map/strongholds")
+
+    assert claim.status_code == 200
+    assert response.status_code == 200
+
+
+def test_historical_stronghold_map_returns_503_when_catalog_is_invalid(sqlite_db, monkeypatch):
+    from forwantofanail.core.scenario_catalog import ScenarioCatalogError
+
+    def fail_catalog():
+        raise ScenarioCatalogError("bad map")
+
+    monkeypatch.setattr(routes, "load_historical_stronghold_catalog", fail_catalog)
+    claim = _call_with_session(lambda session: routes.claim_commander("cmd_1", session=session))
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/v1/me/map/strongholds",
+            headers={"Authorization": f"Bearer {claim['token']}"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Historical stronghold map annotations are unavailable."
+
+
 def test_brief_attention_counts_do_not_mark_letters_or_alerts_read(sqlite_db, monkeypatch):
     monkeypatch.setattr(routes, "_serialize_environs", lambda *_args, **_kwargs: _brief_endpoint_environs())
     monkeypatch.setattr(routes, "_border_road_neighbor_ids", lambda *_args, **_kwargs: [])
@@ -1810,6 +1892,25 @@ def test_player_dashboard_csp_allows_h3_script_host(sqlite_db):
     assert response.status_code == 200
     assert "https://cdn.jsdelivr.net" in response.headers["content-security-policy"]
     assert "https://cdn.jsdelivr.net/npm/h3-js@4.1.0/dist/h3-js.umd.js" in response.text
+
+
+def test_player_dashboard_uses_text_safe_pinned_historical_stronghold_cards(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    assert 'id="diegeticStrongholdHotspots"' in response.text
+    assert 'api("/v1/me/map/strongholds", {}, true)' in response.text
+    assert 'button.className = "diegetic-stronghold-hotspot"' in response.text
+    assert 'button.style.left = `${Number(stronghold.map_x)}px`' in response.text
+    assert 'button.style.top = `${Number(stronghold.map_y)}px`' in response.text
+    assert 'historyLine.textContent = `Historically ${String(stronghold?.historical_faction' in response.text
+    assert 'glossLine.textContent = gloss;' in response.text
+    assert 'state.activeHistoricalStrongholdId' in response.text
+    assert 'hideHoverCard({ restoreHistoricalFocus: true })' in response.text
+    assert 'Historical stronghold annotations unavailable.' in response.text
 
 
 def test_player_dashboard_serializes_staged_path_h3_values(sqlite_db):

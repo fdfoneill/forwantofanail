@@ -22,6 +22,7 @@ from forwantofanail.core.models import (
     TerrainType,
 )
 from forwantofanail.history.snapshots import capture_world_snapshot
+from forwantofanail.core.scenario_catalog import build_historical_stronghold_catalog_for_scenario
 
 
 def _drop_all_tables_for_reset(engine) -> None:
@@ -103,12 +104,15 @@ def _generated_garrison_composition(stronghold_type: str) -> list[dict[str, obje
     return [{"suffix": "Infantry", "warriors": 250, "is_cavalry": False}]
 
 
-def _load_csv(model_cls, csv_path: Path, converters: dict[str, callable]):
+def _load_csv(model_cls, csv_path: Path, converters: dict[str, callable], *, ignored_fields: set[str] | None = None):
+    ignored_fields = ignored_fields or set()
     with csv_path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
         for row in reader:
             payload = {}
             for key, value in row.items():
+                if key in ignored_fields:
+                    continue
                 converter = converters.get(key)
                 payload[key] = converter(value) if converter else value
             yield model_cls(**payload)
@@ -117,6 +121,7 @@ def _load_csv(model_cls, csv_path: Path, converters: dict[str, callable]):
 def _default_scenario_manifest() -> dict[str, object]:
     return {
         "history_export_config": "history_export.json",
+        "stronghold_points": "assets/stronghold_points/copper_coast_strongholds_corrected.shp",
         "csv_files": {
             "terrain_types": "terrain_types.csv",
             "locations": "locations.csv",
@@ -198,6 +203,14 @@ def _validate_scenario_manifest(manifest: dict[str, object], data_dir: Path) -> 
     history_export_path = _resolve_scenario_file(data_dir, str(history_export_config))
     if not history_export_path.exists():
         raise FileNotFoundError(f"Scenario history export config not found at '{history_export_path}'.")
+    stronghold_points = manifest.get("stronghold_points")
+    if not stronghold_points:
+        raise ValueError("Scenario manifest requires 'stronghold_points'.")
+    stronghold_points_path = _resolve_scenario_file(data_dir, str(stronghold_points))
+    for suffix in (".shp", ".shx", ".dbf", ".prj"):
+        component = stronghold_points_path.with_suffix(suffix)
+        if not component.exists():
+            raise FileNotFoundError(f"Scenario stronghold point component not found at '{component}'.")
     required_section = manifest.get("csv_files")
     if not isinstance(required_section, dict):
         raise ValueError("Scenario manifest section 'csv_files' must be an object.")
@@ -247,6 +260,7 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
     engine = get_engine()
     if reset:
         _prepare_scenario_static_assets(manifest, data_dir)
+        build_historical_stronghold_catalog_for_scenario(data_dir)
         _drop_all_tables_for_reset(engine)
     Base.metadata.create_all(engine)
 
@@ -385,6 +399,7 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
                     "control": str,
                     "stronghold_threshold": _parse_int,
                 },
+                ignored_fields={"historical_gloss"},
             )
         )
         session.flush()

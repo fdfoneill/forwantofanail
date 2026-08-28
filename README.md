@@ -81,6 +81,11 @@ This reset also auto-generates one garrison army for every stronghold based on i
 It also creates the provisional authoritative history snapshot for tick 0. The scenario manifest
 references `history_export.json`, which owns the georeferenced basemap and faction colors used by
 historical exports. The default history basemap is `data/assets/map_diegetic.tif`.
+The player map uses the manifest's `stronghold_points` shapefile and that GeoTIFF to position
+globally known historical stronghold hotspots. The point layer must include `.shp`, `.shx`, `.dbf`,
+and `.prj` components and exactly one `GRID_ID` point for every scenario stronghold. Immutable
+faction/type metadata still comes from `strongholds.csv`; optional card prose belongs in its
+`historical_gloss` column and is omitted from the card when blank.
 
 Army-management suggestions live in:
 

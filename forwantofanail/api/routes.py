@@ -54,6 +54,7 @@ from forwantofanail.core.models import (
     Stronghold,
     TerrainType,
 )
+from forwantofanail.core.scenario_catalog import ScenarioCatalogError, load_historical_stronghold_catalog
 from forwantofanail.mechanics.forage import (
     forage_condition_word as _forage_condition_word,
     forage_depletion_level,
@@ -6262,6 +6263,19 @@ def get_my_brief(
     session: Session = Depends(_get_session),
 ):
     return _commander_brief_text(session, commander_id)
+
+
+@router.get("/me/map/strongholds")
+def get_historical_stronghold_map(
+    _commander_id: int = Depends(_get_current_commander_id),
+):
+    try:
+        return load_historical_stronghold_catalog()
+    except ScenarioCatalogError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Historical stronghold map annotations are unavailable.",
+        ) from exc
 
 
 @router.get("/me/army-management")

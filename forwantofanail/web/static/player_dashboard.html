@@ -622,6 +622,30 @@
       -webkit-user-drag: none;
       pointer-events: none;
     }
+    .diegetic-stronghold-hotspots {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+    .diegetic-stronghold-hotspot {
+      position: absolute;
+      width: calc(32px * var(--diegetic-inverse-scale, 1));
+      height: calc(32px * var(--diegetic-inverse-scale, 1));
+      transform: translate(-50%, -50%);
+      border: calc(1px * var(--diegetic-inverse-scale, 1)) solid transparent;
+      border-radius: 50%;
+      padding: 0;
+      background: transparent;
+      pointer-events: auto;
+      cursor: pointer;
+    }
+    .diegetic-stronghold-hotspot:hover,
+    .diegetic-stronghold-hotspot:focus-visible,
+    .diegetic-stronghold-hotspot[aria-expanded="true"] {
+      background: rgba(255, 250, 241, 0.2);
+      border-color: rgba(56, 45, 34, 0.72);
+      outline: none;
+    }
     .diegetic-map-message {
       position: absolute;
       left: 50%;
@@ -635,6 +659,27 @@
       color: var(--ink);
       font-size: 12px;
       white-space: nowrap;
+    }
+    .diegetic-annotation-message {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      z-index: 2;
+      background: rgba(255, 250, 241, 0.92);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 7px 9px;
+      color: var(--muted);
+      font-size: 11px;
+      pointer-events: none;
+    }
+    .historical-stronghold-line {
+      line-height: 1.4;
+    }
+    .historical-stronghold-gloss {
+      margin-top: 8px;
+      line-height: 1.45;
+      color: var(--ink);
     }
     .alerts-pane {
       position: absolute;
@@ -1225,8 +1270,10 @@
         <div class="diegetic-map-viewport" id="diegeticMapViewport" hidden>
           <div class="diegetic-map-inner" id="diegeticMapInner">
             <img class="diegetic-map-image" id="diegeticMapImage" src="/static/map_diegetic.png" alt="Diegetic world map" draggable="false" />
+            <div class="diegetic-stronghold-hotspots" id="diegeticStrongholdHotspots"></div>
           </div>
           <div class="diegetic-map-message" id="diegeticMapMessage" hidden>World map unavailable.</div>
+          <div class="diegetic-annotation-message" id="diegeticAnnotationMessage" hidden>Historical stronghold annotations unavailable.</div>
         </div>
       </div>
       <aside class="alerts-pane" id="alertPane">
@@ -1338,6 +1385,10 @@
         dragStartOffsetY: 0,
         pointerId: null,
       },
+      historicalStrongholds: null,
+      historicalStrongholdsLoaded: false,
+      historicalStrongholdsError: "",
+      activeHistoricalStrongholdId: "",
       hoverH3: null,
       correspondents: [],
       inbox: [],
@@ -1550,6 +1601,8 @@
       diegeticMapInner: document.getElementById("diegeticMapInner"),
       diegeticMapImage: document.getElementById("diegeticMapImage"),
       diegeticMapMessage: document.getElementById("diegeticMapMessage"),
+      diegeticStrongholdHotspots: document.getElementById("diegeticStrongholdHotspots"),
+      diegeticAnnotationMessage: document.getElementById("diegeticAnnotationMessage"),
       alertPane: document.getElementById("alertPane"),
       alertList: document.getElementById("alertList"),
       olderAlertsBtn: document.getElementById("olderAlertsBtn"),
@@ -1581,7 +1634,6 @@
       els.mapCanvas.style.display = diegetic ? "none" : "block";
       if (diegetic) {
         els.diegeticMapViewport.removeAttribute("hidden");
-        hideHoverCard();
       } else {
         els.diegeticMapViewport.setAttribute("hidden", "");
       }
@@ -1631,6 +1683,7 @@
     function renderDiegeticMap() {
       applyMapModeVisibility();
       els.diegeticMapMessage.hidden = !state.diegeticMap.failed;
+      els.diegeticAnnotationMessage.hidden = state.diegeticMap.failed || !state.historicalStrongholdsError;
       els.diegeticMapViewport.classList.toggle("dragging", !!state.diegeticMap.dragging);
       if (state.diegeticMap.failed) {
         return;
@@ -1638,7 +1691,68 @@
       clampDiegeticMapTransform();
       const fitScale = getDiegeticFitScale();
       const actualScale = fitScale * state.diegeticMap.scale;
+      els.diegeticMapInner.style.setProperty("--diegetic-inverse-scale", String(1 / actualScale));
       els.diegeticMapInner.style.transform = `translate(${state.diegeticMap.offsetX}px, ${state.diegeticMap.offsetY}px) scale(${actualScale})`;
+    }
+
+    function renderHistoricalStrongholdHotspots() {
+      els.diegeticStrongholdHotspots.replaceChildren();
+      const catalog = state.historicalStrongholds;
+      if (!catalog || !Array.isArray(catalog.strongholds)) {
+        return;
+      }
+      if (
+        Number(catalog.map_width) !== Number(state.diegeticMap.naturalWidth)
+        || Number(catalog.map_height) !== Number(state.diegeticMap.naturalHeight)
+      ) {
+        state.historicalStrongholdsError = "Historical stronghold annotations unavailable.";
+        return;
+      }
+      catalog.strongholds.forEach((stronghold) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "diegetic-stronghold-hotspot";
+        button.dataset.historicalStrongholdId = String(stronghold.id || "");
+        button.style.left = `${Number(stronghold.map_x)}px`;
+        button.style.top = `${Number(stronghold.map_y)}px`;
+        button.setAttribute("aria-label", `View historical information for ${String(stronghold.name || "stronghold")}`);
+        button.setAttribute("aria-expanded", "false");
+        button.setAttribute("aria-controls", "hoverCard");
+        button.addEventListener("pointerdown", (event) => event.stopPropagation());
+        button.addEventListener("click", (event) => {
+          event.stopPropagation();
+          showHistoricalStrongholdCard(stronghold, button);
+        });
+        els.diegeticStrongholdHotspots.appendChild(button);
+      });
+    }
+
+    function showHistoricalStrongholdCard(stronghold, trigger) {
+      hideHoverCard();
+      state.activeHistoricalStrongholdId = String(stronghold?.id || "");
+      trigger.setAttribute("aria-expanded", "true");
+      els.hoverTitle.textContent = String(stronghold?.name || "Stronghold");
+      els.hoverTitle.classList.add("stronghold");
+      els.hoverMeta.replaceChildren();
+
+      const historyLine = document.createElement("div");
+      historyLine.className = "historical-stronghold-line";
+      historyLine.textContent = `Historically ${String(stronghold?.historical_faction || "")} ${String(stronghold?.stronghold_type || "")}`.trim();
+      els.hoverMeta.appendChild(historyLine);
+      const gloss = String(stronghold?.historical_gloss || "").trim();
+      if (gloss) {
+        const glossLine = document.createElement("div");
+        glossLine.className = "historical-stronghold-gloss";
+        glossLine.textContent = gloss;
+        els.hoverMeta.appendChild(glossLine);
+      }
+      els.queueMoveBtn.style.display = "none";
+      els.hoverCard.style.display = "block";
+      const triggerRect = trigger.getBoundingClientRect();
+      positionHistoricalStrongholdCard(
+        triggerRect.left + (triggerRect.width / 2),
+        triggerRect.top + (triggerRect.height / 2)
+      );
     }
 
     function renderAlerts() {
@@ -3580,7 +3694,35 @@
       return raw;
     }
 
+    async function ensureHistoricalStrongholdCatalog() {
+      if (!state.token || state.historicalStrongholdsLoaded) {
+        return;
+      }
+      state.historicalStrongholdsLoaded = true;
+      const sessionSnapshot = snapshotSession();
+      try {
+        const catalog = await api("/v1/me/map/strongholds", {}, true);
+        if (!isCurrentSession(sessionSnapshot)) {
+          return;
+        }
+        state.historicalStrongholds = catalog;
+        state.historicalStrongholdsError = "";
+        renderHistoricalStrongholdHotspots();
+      } catch (err) {
+        if (!isCurrentSession(sessionSnapshot)) {
+          return;
+        }
+        state.historicalStrongholds = null;
+        state.historicalStrongholdsError = "Historical stronghold annotations unavailable.";
+        els.diegeticStrongholdHotspots.replaceChildren();
+      }
+      if (isDiegeticMapMode()) {
+        renderDiegeticMap();
+      }
+    }
+
     function resetPlayerSession({ clearStoredClaim = false } = {}) {
+      hideHoverCard();
       closeCommanderModal({ restoreFocus: false });
       closeComposeModal({ restoreFocus: false });
       closeLetterDetailModal({ restoreFocus: false });
@@ -3594,6 +3736,11 @@
       state.selectedCommanderOverview = "";
       state.selectedCommanderPortrait = "";
       state.view = null;
+      state.historicalStrongholds = null;
+      state.historicalStrongholdsLoaded = false;
+      state.historicalStrongholdsError = "";
+      state.activeHistoricalStrongholdId = "";
+      els.diegeticStrongholdHotspots.replaceChildren();
       state.alerts = [];
       state.alertsHasMore = false;
       state.alertsBeforeId = "";
@@ -3813,6 +3960,13 @@
       const commander = payload.commander || {};
       const claimOption = state.claimOptions.find((option) => option.id === commander.id) || {};
       const hydratedCommander = { ...claimOption, ...commander };
+      if (state.selectedCommanderId && state.selectedCommanderId !== String(hydratedCommander.id || "")) {
+        hideHoverCard();
+        state.historicalStrongholds = null;
+        state.historicalStrongholdsLoaded = false;
+        state.historicalStrongholdsError = "";
+        els.diegeticStrongholdHotspots.replaceChildren();
+      }
       state.token = payload.token || "cookie-session";
       state.selectedCommanderId = hydratedCommander.id || "";
       state.selectedCommander = hydratedCommander.name || "";
@@ -4643,10 +4797,21 @@
       }
     }
 
-    function hideHoverCard() {
+    function hideHoverCard({ restoreHistoricalFocus = false } = {}) {
+      const activeHistoricalId = state.activeHistoricalStrongholdId;
+      const activeTrigger = Array.from(els.diegeticStrongholdHotspots.children).find(
+        (element) => element.dataset?.historicalStrongholdId === activeHistoricalId
+      );
+      els.diegeticStrongholdHotspots.querySelectorAll("[aria-expanded='true']").forEach((button) => {
+        button.setAttribute("aria-expanded", "false");
+      });
+      state.activeHistoricalStrongholdId = "";
       state.hoverH3 = null;
       els.hoverCard.style.display = "none";
       clearHoveredMoveOutline();
+      if (restoreHistoricalFocus && activeTrigger?.isConnected) {
+        activeTrigger.focus();
+      }
     }
 
     function positionHoverCard(clientX, clientY) {
@@ -4665,6 +4830,21 @@
       y = Math.max(margin, y);
       els.hoverCard.style.left = `${x}px`;
       els.hoverCard.style.top = `${y}px`;
+    }
+
+    function positionHistoricalStrongholdCard(clientX, clientY) {
+      const panelRect = els.mapPanel.getBoundingClientRect();
+      const viewportRect = els.diegeticMapViewport.getBoundingClientRect();
+      const cardRect = els.hoverCard.getBoundingClientRect();
+      const margin = 12;
+      const minX = viewportRect.left - panelRect.left + margin;
+      const minY = viewportRect.top - panelRect.top + margin;
+      const maxX = viewportRect.right - panelRect.left - cardRect.width - margin;
+      const maxY = viewportRect.bottom - panelRect.top - cardRect.height - margin;
+      const preferredX = clientX - panelRect.left + 14;
+      const preferredY = clientY - panelRect.top + 14;
+      els.hoverCard.style.left = `${Math.max(minX, Math.min(maxX, preferredX))}px`;
+      els.hoverCard.style.top = `${Math.max(minY, Math.min(maxY, preferredY))}px`;
     }
 
     function settlementDescription(settlementValue) {
@@ -4832,6 +5012,7 @@
         renderMap();
         return;
       }
+      hideHoverCard();
       state.mapMode = nextMode;
       renderMap();
     }
@@ -4871,6 +5052,7 @@
         state.diegeticMap.failed = false;
         state.diegeticMap.naturalWidth = Math.max(1, Number(els.diegeticMapImage.naturalWidth) || state.diegeticMap.naturalWidth);
         state.diegeticMap.naturalHeight = Math.max(1, Number(els.diegeticMapImage.naturalHeight) || state.diegeticMap.naturalHeight);
+        renderHistoricalStrongholdHotspots();
         renderDiegeticMap();
       };
       const handleImageError = () => {
@@ -4896,6 +5078,7 @@
         if (!isDiegeticMapMode() || state.diegeticMap.failed) {
           return;
         }
+        hideHoverCard();
         state.diegeticMap.dragging = true;
         state.diegeticMap.pointerId = event.pointerId;
         state.diegeticMap.dragStartClientX = event.clientX;
@@ -4925,6 +5108,7 @@
           return;
         }
         event.preventDefault();
+        hideHoverCard();
         const rect = getDiegeticViewportRect();
         if (!rect.width || !rect.height) {
           return;
@@ -4985,6 +5169,7 @@
       }
       state.refreshInFlight = true;
       try {
+      await ensureHistoricalStrongholdCatalog();
       await refreshView();
       await refreshArmyManagementState({ preserveDraft: true });
       await refreshCorrespondents();
@@ -5184,6 +5369,19 @@
         event.preventDefault();
         event.stopImmediatePropagation();
         closeCommanderModal();
+      } else if (state.activeHistoricalStrongholdId) {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        hideHoverCard({ restoreHistoricalFocus: true });
+      }
+    });
+    document.addEventListener("click", (event) => {
+      if (
+        state.activeHistoricalStrongholdId
+        && !els.hoverCard.contains(event.target)
+        && !event.target.closest?.("[data-historical-stronghold-id]")
+      ) {
+        hideHoverCard();
       }
     });
     els.olderAlertsBtn.addEventListener("click", () => {

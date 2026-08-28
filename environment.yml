@@ -12,4 +12,5 @@ dependencies:
   - psycopg
   - pillow
   - rasterio
+  - pyshp
   - ffmpeg
