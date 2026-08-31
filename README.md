@@ -133,6 +133,7 @@ Production additionally requires PostgreSQL, `APP_ENV=production`, and the canon
 
 * `GET /v1/auth/commanders` returns claimable commander summaries; `POST /v1/auth/claim` requires the shared game password.
 * `GET /v1/me/brief` returns a labeled, plain-text snapshot of the authenticated army's current condition, orders, attention items, and viewer-filtered local situation.
+* `GET /v1/me/navigation/route?origin=current&destination=sh_<id>&allow_off_road=false` returns a diegetic strategic route summary, semantic legs, travel totals, and an initial compass instruction without exposing H3 cells. A stronghold reference may replace `current`; off-road planning uses the current army's mobility profile but deliberately ignores live remote intelligence.
 * `GET /v1/me/roads/border` derives adjacent off-environs road cells from the authenticated army's visibility.
 * Staging validation accepts a contiguous `staged_path` rooted at the authenticated army; arbitrary remote origins are rejected.
 * `POST /v1/me/actions/plan` replaces active queue with either forage, a staged march path, or halt (empty march path).

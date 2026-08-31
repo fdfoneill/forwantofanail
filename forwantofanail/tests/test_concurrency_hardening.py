@@ -1640,6 +1640,51 @@ def test_brief_endpoint_requires_auth_and_returns_plain_text_for_bearer(sqlite_d
     )
 
 
+def test_navigation_route_endpoint_requires_auth_and_uses_stronghold_refs(sqlite_db, monkeypatch):
+    captured = {}
+
+    def summarize(_session, *, army, origin, destination, allow_off_road):
+        captured.update(
+            army_id=army.army_id,
+            origin=origin,
+            destination_id=destination.stronghold_id,
+            allow_off_road=allow_off_road,
+        )
+        return {
+            "origin": "your current position",
+            "destination": destination.stronghold_name,
+            "route_type": "fastest",
+            "summary": "From your current position, travel 2 leagues by road to Testfort.",
+            "total_leagues": 2,
+            "estimated_watches": 2,
+            "legs": [],
+            "initial_direction": "east",
+            "initial_instruction": "Take the eastern road toward Testfort.",
+        }
+
+    monkeypatch.setattr(routes, "build_route_summary", summarize)
+    claim = _call_with_session(lambda session: routes.claim_commander("cmd_1", session=session))
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        assert client.get("/v1/me/navigation/route?destination=sh_1").status_code == 401
+        response = client.get(
+            "/v1/me/navigation/route?origin=current&destination=sh_1&allow_off_road=true",
+            headers={"Authorization": f"Bearer {claim['token']}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["destination"] == "Testfort"
+    assert response.json()["route_type"] == "fastest"
+    assert "h3" not in response.text.lower()
+    assert captured == {
+        "army_id": 1,
+        "origin": None,
+        "destination_id": 1,
+        "allow_off_road": True,
+    }
+
+
 def test_brief_endpoint_accepts_browser_cookie(sqlite_db, monkeypatch):
     monkeypatch.setenv("GAME_PASSWORD", "shared-secret")
     monkeypatch.setenv("SESSION_SECRET", "session-secret")

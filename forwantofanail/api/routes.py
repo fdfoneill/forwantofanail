@@ -71,6 +71,7 @@ from forwantofanail.mechanics.movement import (
     list_valid_destinations,
     list_valid_destinations_from_origin,
 )
+from forwantofanail.mechanics.navigation import RouteNotFoundError, build_route_summary
 from forwantofanail.mechanics.supply import (
     consume_supply_for_all_armies,
     noncombatant_count,
@@ -6276,6 +6277,41 @@ def get_historical_stronghold_map(
             status_code=503,
             detail="Historical stronghold map annotations are unavailable.",
         ) from exc
+
+
+@router.get("/me/navigation/route")
+def get_navigation_route_summary(
+    destination: str = Query(..., min_length=1, max_length=32),
+    origin: str = Query(default="current", min_length=1, max_length=32),
+    allow_off_road: bool = Query(default=False),
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+):
+    """Describe a static-world route without returning its underlying H3 cells."""
+    army = _find_commander_army(session, commander_id)
+    destination_id = _parse_stronghold_ref(destination.strip())
+    destination_stronghold = session.get(Stronghold, destination_id)
+    if destination_stronghold is None:
+        raise HTTPException(status_code=404, detail="Destination stronghold not found")
+
+    origin_value = origin.strip()
+    origin_stronghold = None
+    if origin_value.casefold() != "current":
+        origin_id = _parse_stronghold_ref(origin_value)
+        origin_stronghold = session.get(Stronghold, origin_id)
+        if origin_stronghold is None:
+            raise HTTPException(status_code=404, detail="Origin stronghold not found")
+
+    try:
+        return build_route_summary(
+            session,
+            army=army,
+            origin=origin_stronghold,
+            destination=destination_stronghold,
+            allow_off_road=allow_off_road,
+        )
+    except RouteNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @router.get("/me/army-management")
