@@ -78,7 +78,7 @@
       color: var(--muted);
       margin-bottom: 6px;
     }
-    input, button {
+    input, select, button {
       width: 100%;
       border: 1px solid var(--line);
       border-radius: 10px;
@@ -86,7 +86,7 @@
       font-size: 14px;
       background: #fff;
     }
-    input { margin-bottom: 10px; }
+    input, select { margin-bottom: 10px; }
     button {
       cursor: pointer;
       border-color: transparent;
@@ -236,6 +236,42 @@
     .muted {
       color: var(--muted);
     }
+    .route-result {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+    }
+    .route-result[hidden] {
+      display: none;
+    }
+    .route-summary {
+      margin: 0;
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 16px;
+      line-height: 1.5;
+    }
+    .route-instruction {
+      margin: 0;
+      color: var(--accent-2);
+      font-weight: 700;
+    }
+    .route-meta {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .route-legs {
+      display: grid;
+      gap: 4px;
+      margin: 0;
+      padding-left: 20px;
+      font-size: 13px;
+      line-height: 1.4;
+    }
     @media (max-width: 900px) {
       body { padding: 16px; }
       .grid { grid-template-columns: 1fr; }
@@ -281,13 +317,50 @@
       </section>
     </div>
 
-    <section class="panel">
-      <div class="title">Commander / Army Status</div>
-      <ul class="summary-list" id="summaryList">
-        <li class="summary-item summary-item-message muted">Loading army summary...</li>
-      </ul>
-      <div class="status" id="summaryStatus"></div>
-    </section>
+    <div class="stack">
+      <section class="panel">
+        <div class="title">Commander / Army Status</div>
+        <ul class="summary-list" id="summaryList">
+          <li class="summary-item summary-item-message muted">Loading army summary...</li>
+        </ul>
+        <div class="status" id="summaryStatus"></div>
+      </section>
+
+      <section class="panel">
+        <div class="title">Route Planner</div>
+        <form id="routePlannerForm">
+          <label for="routeArmy">Army / mobility profile</label>
+          <select id="routeArmy" required></select>
+
+          <label for="routeOriginMode">Start point</label>
+          <select id="routeOriginMode">
+            <option value="army">Army location</option>
+            <option value="stronghold">Stronghold</option>
+          </select>
+
+          <div id="routeOriginStrongholdGroup" hidden>
+            <label for="routeOriginStronghold">Starting stronghold</label>
+            <select id="routeOriginStronghold"></select>
+          </div>
+
+          <label for="routeDestinationStronghold">Destination stronghold</label>
+          <select id="routeDestinationStronghold" required></select>
+
+          <div class="toggle-row">
+            <input id="routeAllowOffRoad" type="checkbox" />
+            <label for="routeAllowOffRoad">Allow off-road travel</label>
+          </div>
+          <button id="routePlanButton" type="submit" disabled>Summarize Route</button>
+        </form>
+        <div class="status" id="routeStatus" aria-live="polite"></div>
+        <div class="route-result" id="routeResult" hidden>
+          <p class="route-summary" id="routeSummary"></p>
+          <p class="route-instruction" id="routeInstruction"></p>
+          <p class="route-meta" id="routeMeta"></p>
+          <ol class="route-legs" id="routeLegs"></ol>
+        </div>
+      </section>
+    </div>
   </div>
 
   <div class="modal-overlay" id="briefModalOverlay" hidden>
@@ -308,6 +381,7 @@
       lastAdvanceAt: null,
       briefRequestId: 0,
       briefTrigger: null,
+      navigationOptions: { armies: [], strongholds: [] },
     };
 
     const els = {
@@ -325,6 +399,20 @@
       advanceStatus: document.getElementById("advanceStatus"),
       summaryList: document.getElementById("summaryList"),
       summaryStatus: document.getElementById("summaryStatus"),
+      routePlannerForm: document.getElementById("routePlannerForm"),
+      routeArmy: document.getElementById("routeArmy"),
+      routeOriginMode: document.getElementById("routeOriginMode"),
+      routeOriginStrongholdGroup: document.getElementById("routeOriginStrongholdGroup"),
+      routeOriginStronghold: document.getElementById("routeOriginStronghold"),
+      routeDestinationStronghold: document.getElementById("routeDestinationStronghold"),
+      routeAllowOffRoad: document.getElementById("routeAllowOffRoad"),
+      routePlanButton: document.getElementById("routePlanButton"),
+      routeStatus: document.getElementById("routeStatus"),
+      routeResult: document.getElementById("routeResult"),
+      routeSummary: document.getElementById("routeSummary"),
+      routeInstruction: document.getElementById("routeInstruction"),
+      routeMeta: document.getElementById("routeMeta"),
+      routeLegs: document.getElementById("routeLegs"),
       briefModalOverlay: document.getElementById("briefModalOverlay"),
       briefModalTitle: document.getElementById("briefModalTitle"),
       briefModalClose: document.getElementById("briefModalClose"),
@@ -423,6 +511,111 @@
       setStatus(els.summaryStatus, `Updated ${new Date().toLocaleTimeString()}`);
     }
 
+    function replaceSelectOptions(select, rows, valueKey, labelForRow) {
+      const previousValue = select.value;
+      select.replaceChildren();
+      for (const row of rows) {
+        const option = document.createElement("option");
+        option.value = String(row[valueKey] || "");
+        option.textContent = labelForRow(row);
+        select.append(option);
+      }
+      if ([...select.options].some((option) => option.value === previousValue)) {
+        select.value = previousValue;
+      }
+    }
+
+    function renderNavigationOptions(options) {
+      const armies = Array.isArray(options?.armies) ? options.armies : [];
+      const strongholds = Array.isArray(options?.strongholds) ? options.strongholds : [];
+      state.navigationOptions = { armies, strongholds };
+      replaceSelectOptions(els.routeArmy, armies, "army_id", (row) => {
+        const commander = String(row.commander_name || "No commander");
+        const location = String(row.location || "unknown location");
+        return `${String(row.army_name || "Unnamed army")} — ${commander} (${location})`;
+      });
+      const strongholdLabel = (row) => {
+        const type = String(row.stronghold_type || "stronghold").toLowerCase();
+        return `${String(row.stronghold_name || "Unnamed stronghold")} (${type})`;
+      };
+      replaceSelectOptions(
+        els.routeOriginStronghold,
+        strongholds,
+        "stronghold_id",
+        strongholdLabel
+      );
+      replaceSelectOptions(
+        els.routeDestinationStronghold,
+        strongholds,
+        "stronghold_id",
+        strongholdLabel
+      );
+      const unavailable = !armies.length || !strongholds.length;
+      els.routePlanButton.disabled = unavailable;
+      if (unavailable) {
+        setStatus(els.routeStatus, "Route planning requires at least one army and one stronghold.", "error");
+      } else if (els.routeStatus.textContent.includes("requires at least")) {
+        setStatus(els.routeStatus, "");
+      }
+    }
+
+    async function refreshNavigationOptions() {
+      const options = await api("/v1/admin/navigation/options", { headers: adminHeaders() });
+      renderNavigationOptions(options);
+    }
+
+    function renderRouteResult(route) {
+      els.routeSummary.textContent = String(route?.summary || "No route summary is available.");
+      els.routeInstruction.textContent = String(route?.initial_instruction || "");
+      const leagues = Number(route?.total_leagues || 0);
+      const watches = Number(route?.estimated_watches || 0);
+      const routeType = route?.route_type === "road_only" ? "road only" : "fastest available";
+      els.routeMeta.textContent = `${leagues} league${leagues === 1 ? "" : "s"}; approximately ${watches} watch${watches === 1 ? "" : "es"}; ${routeType}.`;
+      els.routeLegs.replaceChildren();
+      const legs = Array.isArray(route?.legs) ? route.legs : [];
+      for (const leg of legs) {
+        const item = document.createElement("li");
+        const travel = String(leg.travel || "travel").replaceAll("_", "-");
+        const legLeagues = Number(leg.leagues || 0);
+        item.textContent = `${String(leg.from || "Start")} to ${String(leg.to || "destination")}: ${legLeagues} league${legLeagues === 1 ? "" : "s"} (${travel})`;
+        els.routeLegs.append(item);
+      }
+      els.routeLegs.hidden = !legs.length;
+      els.routeResult.hidden = false;
+    }
+
+    async function summarizeRoute() {
+      const armyId = els.routeArmy.value;
+      const destination = els.routeDestinationStronghold.value;
+      const origin = els.routeOriginMode.value === "stronghold"
+        ? els.routeOriginStronghold.value
+        : "current";
+      if (!armyId || !destination || !origin) {
+        setStatus(els.routeStatus, "Select an army, start point, and destination.", "error");
+        return;
+      }
+      const query = new URLSearchParams({
+        origin,
+        destination,
+        allow_off_road: String(els.routeAllowOffRoad.checked),
+      });
+      els.routePlanButton.disabled = true;
+      els.routeResult.hidden = true;
+      setStatus(els.routeStatus, "Calculating route...");
+      try {
+        const route = await api(
+          `/v1/admin/armies/${encodeURIComponent(armyId)}/navigation/route?${query.toString()}`,
+          { headers: adminHeaders() }
+        );
+        renderRouteResult(route);
+        setStatus(els.routeStatus, "Route summarized.", "ok");
+      } catch (err) {
+        setStatus(els.routeStatus, `Route error: ${readableErrorMessage(err)}`, "error");
+      } finally {
+        els.routePlanButton.disabled = !state.navigationOptions.armies.length || !state.navigationOptions.strongholds.length;
+      }
+    }
+
     async function openBriefModal(row, trigger) {
       const commanderId = String(row.commander_id || "").trim();
       if (!commanderId) {
@@ -477,6 +670,7 @@
       try {
         await refreshClock();
         await refreshSummary();
+        await refreshNavigationOptions();
       } catch (err) {
         setStatus(els.summaryStatus, `Refresh error: ${readableErrorMessage(err)}`, "error");
       }
@@ -567,6 +761,15 @@
     });
 
     els.refreshButton.addEventListener("click", refreshDashboard);
+    els.routeOriginMode.addEventListener("change", () => {
+      els.routeOriginStrongholdGroup.hidden = els.routeOriginMode.value !== "stronghold";
+      els.routeResult.hidden = true;
+      setStatus(els.routeStatus, "");
+    });
+    els.routePlannerForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      summarizeRoute();
+    });
     els.briefModalClose.addEventListener("click", closeBriefModal);
     els.briefModalOverlay.addEventListener("click", (event) => {
       if (event.target === els.briefModalOverlay) {

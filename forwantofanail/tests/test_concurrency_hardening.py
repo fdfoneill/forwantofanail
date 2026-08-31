@@ -1685,6 +1685,60 @@ def test_navigation_route_endpoint_requires_auth_and_uses_stronghold_refs(sqlite
     }
 
 
+def test_admin_navigation_routes_support_dev_dashboard(sqlite_db, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "navigation-admin")
+    captured = {}
+
+    def summarize(_session, *, army, origin, destination, allow_off_road):
+        captured.update(
+            army_id=army.army_id,
+            origin_id=origin.stronghold_id if origin else None,
+            destination_id=destination.stronghold_id,
+            allow_off_road=allow_off_road,
+        )
+        return {
+            "origin": origin.stronghold_name if origin else "your current position",
+            "destination": destination.stronghold_name,
+            "route_type": "road_only",
+            "summary": "A test route.",
+            "total_leagues": 1,
+            "estimated_watches": 1,
+            "legs": [],
+            "initial_direction": "east",
+            "initial_instruction": "Take the eastern road.",
+        }
+
+    monkeypatch.setattr(routes, "build_route_summary", summarize)
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        unauthorized = client.get("/v1/admin/navigation/options")
+        options = client.get(
+            "/v1/admin/navigation/options",
+            headers={"X-Admin-Token": "navigation-admin"},
+        )
+        route = client.get(
+            "/v1/admin/armies/army_1/navigation/route?origin=sh_1&destination=sh_1",
+            headers={"X-Admin-Token": "navigation-admin"},
+        )
+
+    assert unauthorized.status_code == 401
+    assert options.status_code == 200
+    assert options.json()["armies"][0]["army_id"] == "army_1"
+    assert options.json()["strongholds"][0] == {
+        "stronghold_id": "sh_1",
+        "stronghold_name": "Testfort",
+        "stronghold_type": "town",
+    }
+    assert route.status_code == 200
+    assert captured == {
+        "army_id": 1,
+        "origin_id": 1,
+        "destination_id": 1,
+        "allow_off_road": False,
+    }
+
+
 def test_brief_endpoint_accepts_browser_cookie(sqlite_db, monkeypatch):
     monkeypatch.setenv("GAME_PASSWORD", "shared-secret")
     monkeypatch.setenv("SESSION_SECRET", "session-secret")
@@ -1926,6 +1980,15 @@ def test_dev_dashboard_opens_commander_briefs_in_text_safe_modal(sqlite_db):
     assert "els.summaryList.innerHTML" not in response.text
     assert 'const location = String(row.location || "at an unknown location");' in response.text
     assert "row.strength" not in response.text
+    assert 'id="routePlannerForm"' in response.text
+    assert 'id="routeOriginMode"' in response.text
+    assert '<option value="army">Army location</option>' in response.text
+    assert '<option value="stronghold">Stronghold</option>' in response.text
+    assert 'id="routeDestinationStronghold"' in response.text
+    assert 'api("/v1/admin/navigation/options"' in response.text
+    assert "/v1/admin/armies/${encodeURIComponent(armyId)}/navigation/route?" in response.text
+    assert "els.routeSummary.textContent" in response.text
+    assert "els.routeLegs.replaceChildren();" in response.text
 
 
 def test_player_dashboard_csp_allows_h3_script_host(sqlite_db):

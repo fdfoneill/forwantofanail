@@ -5940,6 +5940,45 @@ def admin_armies_summary(
     return rows
 
 
+@router.get("/admin/navigation/options")
+def admin_navigation_options(
+    session: Session = Depends(_get_session),
+    x_admin_token: str | None = Header(default=None),
+):
+    _validate_admin_token(x_admin_token)
+    armies = (
+        session.query(Army)
+        .options(joinedload(Army.commander))
+        .filter(Army.commander_id.is_not(None), Army.is_garrison.is_(False))
+        .order_by(Army.army_name.asc(), Army.army_id.asc())
+        .all()
+    )
+    strongholds = (
+        session.query(Stronghold)
+        .order_by(Stronghold.stronghold_name.asc(), Stronghold.stronghold_id.asc())
+        .all()
+    )
+    return {
+        "armies": [
+            {
+                "army_id": _army_ref(int(army.army_id)),
+                "army_name": str(army.army_name),
+                "commander_name": _commander_display_name(army.commander) if army.commander else "",
+                "location": describe_army_location(session, str(army.location_id)),
+            }
+            for army in armies
+        ],
+        "strongholds": [
+            {
+                "stronghold_id": _stronghold_ref(int(stronghold.stronghold_id)),
+                "stronghold_name": str(stronghold.stronghold_name),
+                "stronghold_type": str(stronghold.stronghold_type),
+            }
+            for stronghold in strongholds
+        ],
+    }
+
+
 @router.get("/admin/commanders/{commander_id}/brief", response_class=PlainTextResponse)
 def admin_commander_brief(
     commander_id: str,
@@ -6289,6 +6328,23 @@ def get_navigation_route_summary(
 ):
     """Describe a static-world route without returning its underlying H3 cells."""
     army = _find_commander_army(session, commander_id)
+    return _navigation_route_response(
+        session,
+        army=army,
+        destination=destination,
+        origin=origin,
+        allow_off_road=allow_off_road,
+    )
+
+
+def _navigation_route_response(
+    session: Session,
+    *,
+    army: Army,
+    destination: str,
+    origin: str,
+    allow_off_road: bool,
+):
     destination_id = _parse_stronghold_ref(destination.strip())
     destination_stronghold = session.get(Stronghold, destination_id)
     if destination_stronghold is None:
@@ -6312,6 +6368,28 @@ def get_navigation_route_summary(
         )
     except RouteNotFoundError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get("/admin/armies/{army_id}/navigation/route")
+def get_admin_navigation_route_summary(
+    army_id: str,
+    destination: str = Query(..., min_length=1, max_length=32),
+    origin: str = Query(default="current", min_length=1, max_length=32),
+    allow_off_road: bool = Query(default=False),
+    session: Session = Depends(_get_session),
+    x_admin_token: str | None = Header(default=None),
+):
+    _validate_admin_token(x_admin_token)
+    army = session.get(Army, _parse_army_ref(army_id))
+    if army is None or bool(army.is_garrison) or army.commander_id is None:
+        raise HTTPException(status_code=404, detail="Commander-led field army not found")
+    return _navigation_route_response(
+        session,
+        army=army,
+        destination=destination,
+        origin=origin,
+        allow_off_road=allow_off_road,
+    )
 
 
 @router.get("/me/army-management")
