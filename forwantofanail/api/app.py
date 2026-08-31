@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from forwantofanail.api.routes import router
+from forwantofanail.agent_tools.mcp import router as mcp_router
 from sqlalchemy import text
 
 from forwantofanail.core.database import get_database_url, get_engine
@@ -33,6 +34,7 @@ app = FastAPI(
     redoc_url=None if app_env == "production" else "/redoc",
 )
 app.include_router(router)
+app.include_router(mcp_router)
 static_dir = Path(__file__).resolve().parents[1] / "web" / "static"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 

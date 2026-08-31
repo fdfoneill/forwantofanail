@@ -14,3 +14,6 @@ dependencies:
   - rasterio
   - pyshp
   - ffmpeg
+  - pip
+  - pip:
+      - "mcp>=2,<3"

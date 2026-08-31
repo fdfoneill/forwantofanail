@@ -180,6 +180,28 @@ unfinished watch, and `--help` for tick-range, dimensions, frame rate, marker du
 scenario-config overrides. The exporter only reads the database and rejects missing/non-final ticks
 instead of fabricating frames.
 
+## Commander tool facade
+
+Authenticated API sessions can discover the provider-neutral commander tools at
+`GET /v1/tools` and invoke one at `POST /v1/tools/{tool_name}`. Mutating tools
+require an `Idempotency-Key` header. The facade deliberately returns opaque,
+session-bound tactical handles rather than map cell identifiers.
+
+The same registry is available through stateless MCP at `POST /mcp`, using the
+same bearer session token. A local MCP host can bridge stdio to a running game:
+
+```bash
+FWOAN_API_URL=http://127.0.0.1:8000 \
+FWOAN_SESSION_TOKEN='<api-session-token>' \
+python -m forwantofanail.agent_tools.stdio_proxy
+```
+
+Export the canonical JSON Schema catalog for any other model/tool runtime with:
+
+```bash
+python -m forwantofanail.agent_tools.export commander-tools.json
+```
+
 # Data Structure
 
 Table: armies

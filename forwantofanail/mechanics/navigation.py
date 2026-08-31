@@ -374,3 +374,39 @@ def build_route_summary(
         "initial_direction": initial_direction,
         "initial_instruction": initial_instruction,
     }
+
+
+def find_route_path(
+    session: Session,
+    *,
+    army: Army,
+    origin: Stronghold | None,
+    destination: Stronghold,
+    allow_off_road: bool,
+) -> tuple[list[str], list[int]]:
+    """Return the internal cell path used by the public diegetic summary.
+
+    This is intentionally a domain helper rather than API output. Callers must
+    translate cells into opaque, session-bound options before returning them.
+    """
+    locations_list = (
+        session.query(Location)
+        .options(joinedload(Location.terrain_type))
+        .order_by(Location.location_id.asc())
+        .all()
+    )
+    locations = {str(location.location_id): location for location in locations_list}
+    strongholds = session.query(Stronghold).order_by(Stronghold.stronghold_id.asc()).all()
+    start_h3 = str(origin.location_id if origin is not None else army.location_id)
+    destination_h3 = str(destination.location_id)
+    if start_h3 not in locations or destination_h3 not in locations:
+        raise RouteNotFoundError("The route begins or ends outside the known map.")
+    path, edges = _shortest_path(
+        start_h3=start_h3,
+        destination_h3=destination_h3,
+        locations=locations,
+        stronghold_cells={str(stronghold.location_id) for stronghold in strongholds},
+        mobility=_mobility_profile(army),
+        allow_off_road=allow_off_road,
+    )
+    return path, [edge.watches for edge in edges]

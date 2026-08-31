@@ -16,7 +16,7 @@ import threading
 from typing import Any
 
 import h3
-from fastapi import APIRouter, Cookie, Depends, Header, HTTPException, Query, Response
+from fastapi import APIRouter, Body, Cookie, Depends, Header, HTTPException, Query, Response
 from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy import and_, case, or_, text
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -4588,13 +4588,7 @@ def _get_current_commander_id(
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
     session: Session = Depends(_get_session),
 ) -> int:
-    raw_token = ""
-    if authorization:
-        scheme, _, token = authorization.partition(" ")
-        if scheme.lower() == "bearer":
-            raw_token = token.strip().strip("\"")
-    if not raw_token and isinstance(session_cookie, str) and session_cookie:
-        raw_token = session_cookie.strip()
+    raw_token = _raw_session_token(authorization, session_cookie)
     if not raw_token:
         raise HTTPException(status_code=401, detail="Missing bearer token")
     auth_token = session.get(AuthToken, _token_hash(raw_token))
@@ -4606,6 +4600,17 @@ def _get_current_commander_id(
         auth_token.last_used_at = now
         session.commit()
     return auth_token.commander_id
+
+
+def _raw_session_token(authorization: str, session_cookie: str | None) -> str:
+    raw_token = ""
+    if authorization:
+        scheme, _, token = authorization.partition(" ")
+        if scheme.lower() == "bearer":
+            raw_token = token.strip().strip('"')
+    if not raw_token and isinstance(session_cookie, str) and session_cookie:
+        raw_token = session_cookie.strip()
+    return raw_token
 
 
 def _find_commander_army(session: Session, commander_id: int) -> Army:
@@ -7470,3 +7475,54 @@ def get_message(
         }
 
     return _run_world_mutation(session, operation)
+
+
+@router.get("/tools")
+def get_commander_tool_catalog(
+    _commander_id: int = Depends(_get_current_commander_id),
+):
+    """Return the canonical, provider-neutral JSON Schema tool catalog."""
+    from forwantofanail.agent_tools.registry import catalog
+
+    return catalog()
+
+
+@router.post("/tools/{tool_name}")
+def invoke_commander_tool(
+    tool_name: str,
+    arguments: dict[str, Any] = Body(default_factory=dict),
+    commander_id: int = Depends(_get_current_commander_id),
+    session: Session = Depends(_get_session),
+    authorization: str = Header(default=""),
+    session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
+    idempotency_key: str | None = Header(default=None, alias="Idempotency-Key"),
+):
+    from forwantofanail.agent_tools.registry import get_tool, invoke
+    from forwantofanail.agent_tools.security import token_binding
+    from forwantofanail.agent_tools.services import ToolContext, ToolInvocationError
+
+    definition = get_tool(tool_name)
+    if definition is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "not_found", "message": "Unknown commander tool."},
+        )
+    if definition.classification == "mutation" and not str(idempotency_key or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail={"code": "invalid_arguments", "message": "Idempotency-Key header is required."},
+        )
+    raw_token = _raw_session_token(authorization, session_cookie)
+    try:
+        return invoke(
+            tool_name,
+            arguments,
+            ToolContext(
+                session=session,
+                commander_id=commander_id,
+                session_binding=token_binding(raw_token),
+                idempotency_key=idempotency_key,
+            ),
+        )
+    except ToolInvocationError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.payload()) from exc
