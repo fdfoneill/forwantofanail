@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -176,28 +176,104 @@ class SummarizeRouteInput(StrictModel):
 
 
 class GetOrderOptionsInput(StrictModel):
-    state_token: str | None = Field(default=None, max_length=160)
-    staged_steps: list[str] = Field(default_factory=list, max_length=25)
-    route_goal_ref: str | None = Field(default=None, max_length=64)
-    allow_off_road: bool = False
+    state_token: str | None = Field(
+        default=None,
+        max_length=160,
+        description="Opaque state token from the current situation or prior order-options result.",
+    )
+    staged_steps: list[str] = Field(
+        default_factory=list,
+        max_length=25,
+        description="Opaque move options already selected, in travel order. Omit when beginning a new draft.",
+    )
+    route_goal_ref: str | None = Field(
+        default=None,
+        max_length=64,
+        description="Stable stronghold reference from stronghold search or route summary, used only to prepare a march draft.",
+    )
+    allow_off_road: bool = Field(
+        default=False,
+        description="Whether a requested route draft may leave roads.",
+    )
+
+
+class MarchOrderInput(StrictModel):
+    kind: Literal["march"]
+    steps: list[str] = Field(
+        min_length=1,
+        max_length=25,
+        description="Opaque move_option values copied, in order, from one fresh fwoan_get_order_options result.",
+    )
+
+
+class HoldOrderInput(StrictModel):
+    kind: Literal["hold"]
+
+
+class ForageOrderInput(StrictModel):
+    kind: Literal["forage"]
+
+
+class AttackOrderInput(StrictModel):
+    kind: Literal["attack"]
+    target_option: str = Field(
+        min_length=1,
+        max_length=160,
+        description="Opaque target option copied from a fresh fwoan_get_order_options result.",
+    )
+
+
+class AssaultOrderInput(StrictModel):
+    kind: Literal["assault"]
+    target_option: str = Field(
+        min_length=1,
+        max_length=160,
+        description="Opaque target option copied from a fresh fwoan_get_order_options result.",
+    )
+
+
+class SortieOrderInput(StrictModel):
+    kind: Literal["sortie"]
+    target_option: str = Field(
+        min_length=1,
+        max_length=160,
+        description="Opaque target option copied from a fresh fwoan_get_order_options result.",
+    )
+
+
+class BesiegeOrderInput(StrictModel):
+    kind: Literal["besiege"]
+    target_option: str = Field(
+        min_length=1,
+        max_length=160,
+        description="Opaque target option copied from a fresh fwoan_get_order_options result.",
+    )
+
+
+OrderInput = Annotated[
+    MarchOrderInput
+    | HoldOrderInput
+    | ForageOrderInput
+    | AttackOrderInput
+    | AssaultOrderInput
+    | SortieOrderInput
+    | BesiegeOrderInput,
+    Field(discriminator="kind"),
+]
 
 
 class SubmitOrderInput(StrictModel):
-    state_token: str = Field(min_length=1, max_length=160)
-    kind: Literal["march", "hold", "forage", "attack", "assault", "sortie", "besiege"]
-    steps: list[str] = Field(default_factory=list, max_length=25)
-    target_option: str | None = Field(default=None, max_length=160)
-
-    @model_validator(mode="after")
-    def validate_shape(self):
-        if self.kind == "march" and not self.steps:
-            raise ValueError("march requires at least one opaque step option")
-        if self.kind != "march" and self.steps:
-            raise ValueError("steps are accepted only for march orders")
-        needs_target = self.kind in {"attack", "assault", "sortie", "besiege"}
-        if needs_target != bool(self.target_option):
-            raise ValueError("target_option is required exactly for attack, assault, sortie, and besiege")
-        return self
+    state_token: str = Field(
+        min_length=1,
+        max_length=160,
+        description="Opaque state token from the same fresh fwoan_get_order_options result as the selected options.",
+    )
+    order: OrderInput = Field(
+        description=(
+            "Exactly one typed order. March uses steps; attack, assault, sortie, and besiege use target_option; "
+            "hold and forage require no additional fields."
+        ),
+    )
 
 
 class CancelOrderInput(StrictModel):

@@ -61,7 +61,16 @@ _DEFINITIONS = (
     ToolDefinition("fwoan_survey_map", "Survey static terrain, rivers, roads, and historical strongholds around the current army or a known stronghold.", SurveyMapInput, MapSurveyResult, "read"),
     ToolDefinition("fwoan_summarize_route", "Summarize a static, diegetic route to a stronghold without revealing map coordinates.", SummarizeRouteInput, RouteSummaryResult, "read"),
     ToolDefinition("fwoan_get_order_options", "Orient tactically: list legal orders and opaque next-step or target options, optionally drafting a march toward a route goal.", GetOrderOptionsInput, OrderOptionsResult, "read"),
-    ToolDefinition("fwoan_submit_order", "Submit a typed order using only options from a fresh order-options observation.", SubmitOrderInput, ReceiptResult, "mutation"),
+    ToolDefinition(
+        "fwoan_submit_order",
+        "Submit exactly one typed order using the state token and opaque options from a fresh order-options result. "
+        "Put the typed variant under order: march uses steps; attack, assault, sortie, and besiege use target_option; "
+        "hold and forage use neither. Call this only after reviewing the order-options result, and treat it as "
+        "successful only when the result says ok=true.",
+        SubmitOrderInput,
+        ReceiptResult,
+        "mutation",
+    ),
     ToolDefinition("fwoan_cancel_order", "Cancel one active or queued order after current-state revalidation.", CancelOrderInput, ReceiptResult, "mutation"),
     ToolDefinition("fwoan_set_standing_orders", "Atomically update follow-road and forced-march standing orders.", SetStandingOrdersInput, StandingOrdersResult, "mutation"),
     ToolDefinition("fwoan_inspect_organization", "Inspect exact detachments, supplies, commanders, colocated friendly armies, and organization constraints.", EmptyInput, OrganizationResult, "read"),
@@ -94,10 +103,19 @@ def invoke(name: str, raw_arguments: Any, ctx: ToolContext) -> dict[str, Any]:
     try:
         arguments = definition.input_model.model_validate(raw_arguments if raw_arguments is not None else {})
     except ValidationError as exc:
+        details = [
+            {
+                "field": ".".join(str(part) for part in error.get("loc", ())) or "arguments",
+                "message": str(error.get("msg", "Invalid value.")),
+                "type": str(error.get("type", "validation_error")),
+            }
+            for error in exc.errors(include_url=False, include_input=False, include_context=False)
+        ]
         raise ToolInvocationError(
             "invalid_arguments",
-            "Arguments do not match the tool schema.",
+            "Arguments do not match the tool schema. Correct the listed fields and retry only if the intended action has not succeeded.",
             status_code=422,
+            details=details,
         ) from exc
     def run_handler() -> dict[str, Any]:
         return HANDLERS[name](ctx, arguments)

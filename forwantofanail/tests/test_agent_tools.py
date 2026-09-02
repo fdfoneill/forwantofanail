@@ -102,6 +102,33 @@ def test_registry_is_deterministic_strict_and_has_fourteen_tools():
     assert all(tool.output_model.model_json_schema().get("additionalProperties") is False for tool in list_tools())
     with pytest.raises(ValidationError):
         get_tool("fwoan_get_situation").input_model.model_validate({"unexpected": True})
+    submit_schema = get_tool("fwoan_submit_order").input_model.model_json_schema()
+    variants = submit_schema["properties"]["order"]["oneOf"]
+    assert len(variants) == 7
+    assert submit_schema["properties"]["order"]["discriminator"]["propertyName"] == "kind"
+
+
+def test_submit_order_validation_is_variant_specific_and_actionable():
+    definition = get_tool("fwoan_submit_order")
+    with pytest.raises(ValidationError):
+        definition.input_model.model_validate({
+            "state_token": "state_example",
+            "order": {"kind": "march", "steps": ["move_option_example"], "target_option": "sh_115"},
+        })
+    with pytest.raises(ToolInvocationError) as rejected:
+        invoke(
+            "fwoan_submit_order",
+            {
+                "state_token": "state_example",
+                "order": {"kind": "march", "steps": ["move_option_example"], "target_option": "sh_115"},
+            },
+            ToolContext(session=None, commander_id=1, session_binding="bound", idempotency_key="invalid"),
+        )
+    payload = rejected.value.payload()
+    assert payload["code"] == "invalid_arguments"
+    assert payload["details"]
+    assert any("target_option" in detail["field"] for detail in payload["details"])
+    assert all("input" not in detail for detail in payload["details"])
 
 
 def test_opaque_handles_are_secret_bound_and_contain_no_hidden_value(monkeypatch):
@@ -138,7 +165,7 @@ def test_mutation_retry_is_recovered_before_stale_state_rejection(tool_db):
             session_binding="bound",
             idempotency_key="same-intent",
         )
-        arguments = {"state_token": state, "kind": "hold"}
+        arguments = {"state_token": state, "order": {"kind": "hold"}}
         first = invoke("fwoan_submit_order", arguments, mutation)
         second = invoke("fwoan_submit_order", arguments, mutation)
         assert second == first
@@ -157,7 +184,7 @@ def test_state_and_option_handles_reject_cross_session_and_stale_watch(tool_db):
         with pytest.raises(ToolInvocationError) as cross_session:
             invoke(
                 "fwoan_submit_order",
-                {"state_token": first_options["state_token"], "kind": "hold"},
+                {"state_token": first_options["state_token"], "order": {"kind": "hold"}},
                 ToolContext(
                     session=session,
                     commander_id=1,
@@ -175,7 +202,7 @@ def test_state_and_option_handles_reject_cross_session_and_stale_watch(tool_db):
         with pytest.raises(ToolInvocationError) as stale:
             invoke(
                 "fwoan_submit_order",
-                {"state_token": second_options["state_token"], "kind": "hold"},
+                {"state_token": second_options["state_token"], "order": {"kind": "hold"}},
                 ToolContext(
                     session=session,
                     commander_id=1,
@@ -205,8 +232,7 @@ def test_opaque_march_option_replays_to_normal_order_service(tool_db):
             "fwoan_submit_order",
             {
                 "state_token": options["state_token"],
-                "kind": "march",
-                "steps": [moves[0]["option"]],
+                "order": {"kind": "march", "steps": [moves[0]["option"]]},
             },
             mutation,
         )

@@ -58,6 +58,7 @@ def test_rules_profiles_and_dossiers_are_stable(agent_db):
     assert "## Combat and sieges" in rules
     assert len(digest) == 64
     assert load_profiles()["ollama_default"].available is True
+    assert load_profiles()["ollama_default"].temperature == 0.2
     session = create_session()
     original = ensure_dossier(session, session.get(Commander, 0))
     generated = ensure_dossier(session, session.get(Commander, 7))
@@ -200,6 +201,73 @@ def test_worker_completes_structured_heartbeat_and_persists_memory(agent_db, mon
     assert assignment.current_memory_revision == 2
     assert json.loads(finished.final_summary_json)["next_intent"] == "Reassess next watch."
     assert session.get(AgentMemoryRevision, (0, 2)).content.endswith("await reports.")
+    session.close()
+
+
+def test_worker_executes_only_one_tool_call_per_model_turn(agent_db, monkeypatch):
+    session = create_session()
+    assign_agent(session, 0, "ollama_default")
+    session.commit()
+    run = session.query(AgentRun).filter(AgentRun.commander_id == 0).one()
+    run.status = "running"
+    run.provider = "ollama"
+    run.model = "test-model"
+    run.started_at = datetime.now(timezone.utc)
+    session.commit()
+    run_id = run.run_id
+    session.close()
+
+    class BatchedAdapter:
+        def __init__(self):
+            self.turn = 0
+
+        def invoke(self, messages, tools, profile):
+            self.turn += 1
+            if self.turn == 1:
+                assert "Call exactly one tool per response" in messages[0]["content"]
+                assert "explicitly says ok=true" in messages[0]["content"]
+                return ModelTurn(tool_calls=[
+                    ModelToolCall("observe", "fwoan_get_order_options", {}),
+                    ModelToolCall("premature", "fwoan_submit_order", {
+                        "state_token": "invented",
+                        "order": {"kind": "march", "steps": ["invented"]},
+                    }),
+                ])
+            assert any(
+                message.get("role") == "user" and "Only the first tool call" in message.get("content", "")
+                for message in messages
+            )
+            return ModelTurn(tool_calls=[ModelToolCall(
+                "finish", "fwoan_finish_heartbeat",
+                {
+                    "assessment": "Options were reviewed; no order was issued.",
+                    "actions_taken": [],
+                    "unresolved_matters": ["Choose a destination"],
+                    "next_intent": "Choose a destination next watch.",
+                },
+            )])
+
+    invoked = []
+
+    def fake_gameplay(_token, name, _arguments, _identity):
+        invoked.append(name)
+        if name == "fwoan_get_situation":
+            return {"ok": True, "result": {"tool": name, "as_of": "May 20, Matin watch", "data": {"brief": "Quiet."}}}
+        return {"ok": True, "result": {"tool": name, "data": {}}}
+
+    monkeypatch.setattr(worker, "adapter_for", lambda _profile: BatchedAdapter())
+    monkeypatch.setattr(worker, "_invoke_gameplay_tool", fake_gameplay)
+    worker.execute_run(run_id, "run-token")
+
+    session = create_session()
+    finished = session.get(AgentRun, run_id)
+    events = session.query(worker.AgentRunEvent).filter(worker.AgentRunEvent.run_id == run_id).order_by(worker.AgentRunEvent.sequence).all()
+    assert finished.status == "completed"
+    assert finished.tool_calls == 2
+    assert invoked.count("fwoan_get_order_options") == 1
+    assert "fwoan_submit_order" not in invoked
+    ignored = next(event for event in events if event.event_kind == "tool_calls_ignored")
+    assert json.loads(ignored.payload_json)["calls"][0]["name"] == "fwoan_submit_order"
     session.close()
 
 

@@ -64,7 +64,7 @@ from .schemas import (
 from .security import find_matching_handle, matches, opaque_handle
 
 
-TOOLSET_VERSION = "1.0.0"
+TOOLSET_VERSION = "1.1.0"
 _H3_VALUE = re.compile(r"(?i)\b[0-9a-f]{15}\b")
 
 
@@ -85,6 +85,7 @@ class ToolInvocationError(Exception):
         *,
         status_code: int = 400,
         refresh_tool: str | None = None,
+        details: list[dict[str, str]] | None = None,
     ) -> None:
         message = _H3_VALUE.sub("[map reference omitted]", message)
         super().__init__(message)
@@ -92,11 +93,20 @@ class ToolInvocationError(Exception):
         self.message = message
         self.status_code = status_code
         self.refresh_tool = refresh_tool
+        self.details = None if not details else [
+            {
+                key: _H3_VALUE.sub("[map reference omitted]", str(item))
+                for key, item in detail.items()
+            }
+            for detail in details
+        ]
 
     def payload(self) -> dict[str, Any]:
         value: dict[str, Any] = {"code": self.code, "message": self.message}
         if self.refresh_tool:
             value["refresh_with"] = self.refresh_tool
+        if self.details:
+            value["details"] = self.details
         return value
 
 
@@ -783,25 +793,26 @@ def get_order_options(ctx: ToolContext, payload: GetOrderOptionsInput) -> dict[s
 
 def submit_order(ctx: ToolContext, payload: SubmitOrderInput) -> dict[str, Any]:
     state = _require_state(ctx, payload.state_token)
+    order = payload.order
     army = routes._find_commander_army(ctx.session, ctx.commander_id)
     key = _mutation_key(ctx)
     try:
-        if payload.kind == "march":
-            cells = _resolve_steps(ctx, army, state, payload.steps)
+        if order.kind == "march":
+            cells = _resolve_steps(ctx, army, state, order.steps)
             receipt = routes.plan_actions(
                 ActionPlanRequest(kind="march", path=cells),
                 commander_id=ctx.commander_id,
                 session=ctx.session,
                 idempotency_key=key,
             )
-        elif payload.kind == "hold":
+        elif order.kind == "hold":
             receipt = routes.plan_actions(
                 ActionPlanRequest(kind="march", path=[]),
                 commander_id=ctx.commander_id,
                 session=ctx.session,
                 idempotency_key=key,
             )
-        elif payload.kind == "forage":
+        elif order.kind == "forage":
             receipt = routes.plan_actions(
                 ActionPlanRequest(kind="forage", path=[]),
                 commander_id=ctx.commander_id,
@@ -810,9 +821,9 @@ def submit_order(ctx: ToolContext, payload: SubmitOrderInput) -> dict[str, Any]:
             )
         else:
             attacks, besieges = _target_options(ctx, state)
-            pool = besieges if payload.kind == "besiege" else attacks
+            pool = besieges if order.kind == "besiege" else attacks
             selected = find_matching_handle(
-                str(payload.target_option), [(item["option"], item["_hidden"]) for item in pool]
+                str(order.target_option), [(item["option"], item["_hidden"]) for item in pool]
             )
             if selected is None:
                 raise ToolInvocationError(
@@ -821,7 +832,7 @@ def submit_order(ctx: ToolContext, payload: SubmitOrderInput) -> dict[str, Any]:
             target_h3, entity_ref = selected
             request = (
                 ActionCreateRequest(kind="besiege", target_h3=target_h3, target_stronghold_id=entity_ref)
-                if payload.kind == "besiege"
+                if order.kind == "besiege"
                 else ActionCreateRequest(kind="attack", target_h3=target_h3, target_army_id=entity_ref)
             )
             receipt = routes.create_action(
