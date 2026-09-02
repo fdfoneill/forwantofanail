@@ -16,7 +16,7 @@ import threading
 from typing import Any
 
 import h3
-from fastapi import APIRouter, Body, Cookie, Depends, Header, HTTPException, Query, Response
+from fastapi import APIRouter, Body, Cookie, Depends, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, PlainTextResponse
 from sqlalchemy import and_, case, or_, text
 from sqlalchemy.exc import IntegrityError, OperationalError
@@ -36,6 +36,7 @@ from forwantofanail.api.schemas import (
 from forwantofanail.core.database import create_session
 from forwantofanail.core.models import (
     Action,
+    AgentAssignment,
     Alert,
     AlertRecipient,
     Army,
@@ -4584,6 +4585,7 @@ def _execute_action_tick(session: Session, clock: GameClock) -> dict[str, int]:
 
 
 def _get_current_commander_id(
+    request: Request = None,
     authorization: str = Header(default=""),
     session_cookie: str | None = Cookie(default=None, alias=SESSION_COOKIE_NAME),
     session: Session = Depends(_get_session),
@@ -4593,7 +4595,17 @@ def _get_current_commander_id(
         raise HTTPException(status_code=401, detail="Missing bearer token")
     auth_token = session.get(AuthToken, _token_hash(raw_token))
     if auth_token is None or auth_token.revoked_at is not None:
-        raise HTTPException(status_code=401, detail="Invalid token")
+        # Agent workers receive a short-lived bearer credential scoped to one
+        # commander and the currently running heartbeat. It is deliberately
+        # accepted by the tool facade but carries no claim or admin authority.
+        from forwantofanail.agent_runtime.service import authenticate_run_session
+
+        agent_commander_id = authenticate_run_session(session, raw_token)
+        if agent_commander_id is None:
+            raise HTTPException(status_code=401, detail="Invalid token")
+        if request is None or not request.url.path.startswith("/v1/tools"):
+            raise HTTPException(status_code=403, detail="Agent run credentials are restricted to commander tools")
+        return agent_commander_id
     now = datetime.now(timezone.utc)
     last_used = auth_token.last_used_at
     if last_used is None or (now.replace(tzinfo=None) - last_used.replace(tzinfo=None)).total_seconds() >= 300:
@@ -5506,6 +5518,9 @@ def _validate_and_apply_management_transaction(
         )
         session.add(created_army)
         session.flush()
+        from forwantofanail.agent_runtime.context import ensure_dossier
+
+        ensure_dossier(session, created_commander)
         right_existing = created_army
         right_commander_after_id = created_commander.commander_id
     if right_mode != "none":
@@ -5605,10 +5620,11 @@ def _get_current_action_row(session: Session, commander_id: int) -> Action | Non
 
 
 def _claimable_commanders(session: Session) -> list[Commander]:
+    assigned = session.query(AgentAssignment.commander_id).filter(AgentAssignment.enabled.is_(True))
     return (
         session.query(Commander)
         .join(Army, Army.commander_id == Commander.commander_id)
-        .filter(Army.is_garrison.is_(False))
+        .filter(Army.is_garrison.is_(False), ~Commander.commander_id.in_(assigned))
         .order_by(Commander.commander_id.asc())
         .all()
     )
@@ -5679,6 +5695,7 @@ def claim_session(
 
     def operation():
         commander_pk = _parse_commander_ref(payload.commander_id)
+        _lock_commander_scope(session, commander_pk)
         commander = session.get(Commander, commander_pk)
         if commander is None:
             raise HTTPException(status_code=404, detail="Commander not found")
@@ -5711,6 +5728,9 @@ def claim_session(
             return result
         if session.get(CommanderClaim, commander_pk) is not None:
             raise HTTPException(status_code=409, detail="Commander has already been claimed")
+        assignment = session.get(AgentAssignment, commander_pk)
+        if assignment is not None and assignment.enabled:
+            raise HTTPException(status_code=409, detail="Commander is controlled by an agent")
         raw_token, auth_token = _issue_session(session, commander_pk, payload.client_kind, raw_token=raw_token)
         claim = CommanderClaim(
             commander_id=commander_pk,
@@ -5922,6 +5942,10 @@ def admin_armies_summary(
     )
     rows = []
     claims = {claim.commander_id for claim in session.query(CommanderClaim.commander_id).all()}
+    agent_commanders = {
+        row.commander_id
+        for row in session.query(AgentAssignment.commander_id).filter(AgentAssignment.enabled.is_(True)).all()
+    }
     for army in armies:
         current_action = _get_current_action_row(session, int(army.commander_id))
         if current_action is None:
@@ -5938,6 +5962,7 @@ def admin_armies_summary(
                 "commander_name": _commander_display_name(army.commander) if army.commander else "",
                 "faction": army.army_faction,
                 "claimed": int(army.commander_id) in claims,
+                "agent_controlled": int(army.commander_id) in agent_commanders,
                 "location": describe_army_location(session, army.location_id),
                 "status": status,
             }
@@ -6012,9 +6037,17 @@ def advance_time_for_development(
     _validate_admin_token(x_admin_token)
 
     def operation():
+        from forwantofanail.agent_runtime.service import enforce_advance_barrier, enqueue_enabled_agents
+
         if session.bind is not None and session.bind.dialect.name == "postgresql":
             session.execute(text("SELECT pg_advisory_xact_lock(1180298062)"))
         clock = _get_or_create_clock(session, for_update="exclusive")
+        enabled_agents = session.query(AgentAssignment).filter(AgentAssignment.enabled.is_(True)).count()
+        if enabled_agents and payload.steps > 1 and not payload.skip_agent_heartbeats:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "agent_single_watch_required", "message": "Advance one watch at a time while agent commanders are enabled."},
+            )
         start = _clock_payload(clock)
         timeline = []
         actions_started = 0
@@ -6022,6 +6055,11 @@ def advance_time_for_development(
         actions_failed = 0
 
         for _ in range(payload.steps):
+            enforce_advance_barrier(
+                session,
+                int(clock.world_tick),
+                override=bool(payload.skip_agent_heartbeats),
+            )
             capture_world_snapshot(session, clock, is_final=True)
             # Compare the actual state immediately before and after this watch's
             # processing. Reconstructing the state at the start of the departing
@@ -6053,6 +6091,7 @@ def advance_time_for_development(
             # Transient conditions are derived in /me/view.status_signals rather
             # than appended to the durable event stream every watch.
             capture_world_snapshot(session, clock, is_final=False)
+            enqueue_enabled_agents(session, int(clock.world_tick), "watch")
             timeline.append(
                 {
                     "time": _clock_payload(clock),

@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from forwantofanail.api.routes import router
+from forwantofanail.api.agent_admin import router as agent_admin_router
 from forwantofanail.agent_tools.mcp import router as mcp_router
 from sqlalchemy import text
 
@@ -24,16 +25,17 @@ if app_env == "production":
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     except Exception as exc:
         raise RuntimeError("Production database schema is unavailable; run 'alembic upgrade head'") from exc
-    if revision != "20260819_0003":
-        raise RuntimeError(f"Database revision {revision!r} does not match required revision '20260819_0003'")
+    if revision != "20260831_0004":
+        raise RuntimeError(f"Database revision {revision!r} does not match required revision '20260831_0004'")
 
 app = FastAPI(
     title="For Want of a Nail API",
-    version="0.2.0",
+    version="0.3.0",
     docs_url=None if app_env == "production" else "/docs",
     redoc_url=None if app_env == "production" else "/redoc",
 )
 app.include_router(router)
+app.include_router(agent_admin_router)
 app.include_router(mcp_router)
 static_dir = Path(__file__).resolve().parents[1] / "web" / "static"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")

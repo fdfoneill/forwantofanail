@@ -1980,15 +1980,12 @@ def test_dev_dashboard_opens_commander_briefs_in_text_safe_modal(sqlite_db):
     assert "els.summaryList.innerHTML" not in response.text
     assert 'const location = String(row.location || "at an unknown location");' in response.text
     assert "row.strength" not in response.text
-    assert 'id="routePlannerForm"' in response.text
-    assert 'id="routeOriginMode"' in response.text
-    assert '<option value="army">Army location</option>' in response.text
-    assert '<option value="stronghold">Stronghold</option>' in response.text
-    assert 'id="routeDestinationStronghold"' in response.text
-    assert 'api("/v1/admin/navigation/options"' in response.text
-    assert "/v1/admin/armies/${encodeURIComponent(armyId)}/navigation/route?" in response.text
-    assert "els.routeSummary.textContent" in response.text
-    assert "els.routeLegs.replaceChildren();" in response.text
+    assert 'id="agentList"' in response.text
+    assert 'id="agentModalOverlay"' in response.text
+    assert 'id="agentMemory"' in response.text
+    assert 'api("/v1/admin/agents"' in response.text
+    assert "Route Planner" not in response.text
+    assert 'id="routePlannerForm"' not in response.text
 
 
 def test_player_dashboard_csp_allows_h3_script_host(sqlite_db):
