@@ -184,7 +184,7 @@ class GetOrderOptionsInput(StrictModel):
     staged_steps: list[str] = Field(
         default_factory=list,
         max_length=25,
-        description="Opaque move options already selected, in travel order. Omit when beginning a new draft.",
+        description="Opaque move options already selected, in travel order. Use an empty list when beginning a new draft.",
     )
     route_goal_ref: str | None = Field(
         default=None,

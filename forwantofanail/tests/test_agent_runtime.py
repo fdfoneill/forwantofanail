@@ -12,8 +12,16 @@ from forwantofanail.agent_runtime.service import (
     assign_agent, authenticate_run_session, barrier_state, disable_agent,
     enforce_advance_barrier, issue_run_session, replace_memory, skip_run,
 )
-from forwantofanail.agent_runtime.providers import ModelToolCall, ModelTurn, OllamaAdapter, OpenAIAdapter
+from forwantofanail.agent_runtime.providers import (
+    ModelToolCall,
+    ModelTurn,
+    OllamaAdapter,
+    OpenAIAdapter,
+    function_tools,
+    openai_function_tools,
+)
 from forwantofanail.agent_runtime import worker
+from forwantofanail.agent_tools.registry import catalog as gameplay_catalog
 from forwantofanail.api.app import app
 from forwantofanail.core.database import Base, create_session, get_engine, reset_database_runtime
 from forwantofanail.core.models import (
@@ -327,3 +335,46 @@ def test_provider_adapters_normalize_visible_outputs_without_thinking(agent_db):
     assert ollama_turn.content == "Visible answer"
     assert not hasattr(ollama_turn, "thinking")
     assert ollama_turn.input_tokens == 15
+
+
+def test_openai_tool_schema_compiler_is_strict_and_does_not_change_ollama_schema(agent_db):
+    canonical_tools = list(gameplay_catalog()["tools"]) + worker.RUNTIME_TOOLS
+    canonical_snapshot = json.loads(json.dumps(canonical_tools))
+    ollama_tools = function_tools(canonical_tools)
+    openai_tools = openai_function_tools(canonical_tools)
+
+    assert canonical_tools == canonical_snapshot
+    assert ollama_tools[1]["function"]["parameters"] == canonical_tools[1]["input_schema"]
+    canonical_submit = next(row for row in canonical_tools if row["name"] == "fwoan_submit_order")["input_schema"]
+    assert "oneOf" in canonical_submit["properties"]["order"]
+    assert "discriminator" in canonical_submit["properties"]["order"]
+
+    def assert_strict_schema(value):
+        if isinstance(value, list):
+            for item in value:
+                assert_strict_schema(item)
+            return
+        if not isinstance(value, dict):
+            return
+        assert "default" not in value
+        assert "discriminator" not in value
+        assert "oneOf" not in value
+        properties = value.get("properties")
+        if isinstance(properties, dict):
+            assert value.get("additionalProperties") is False
+            assert value.get("required") == list(properties)
+        for item in value.values():
+            assert_strict_schema(item)
+
+    for tool in openai_tools:
+        assert tool["strict"] is True
+        assert_strict_schema(tool["parameters"])
+
+    activity = next(row for row in openai_tools if row["name"] == "fwoan_list_activity")["parameters"]
+    assert "cursor" in activity["required"]
+    assert any(option.get("type") == "null" for option in activity["properties"]["cursor"]["anyOf"])
+    assert 'use "older"' in activity["properties"]["direction"]["description"]
+
+    submit = next(row for row in openai_tools if row["name"] == "fwoan_submit_order")["parameters"]
+    assert "anyOf" in submit["properties"]["order"]
+    assert "oneOf" not in submit["properties"]["order"]

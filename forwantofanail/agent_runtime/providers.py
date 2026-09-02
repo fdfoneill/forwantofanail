@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass, field
 import json
 from typing import Any
@@ -40,6 +41,63 @@ def function_tools(tool_schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     } for row in tool_schemas]
 
 
+def _describe_openai_default(schema: dict[str, Any], default: Any) -> None:
+    rendered = json.dumps(default, ensure_ascii=False, separators=(",", ":"))
+    instruction = f"When no alternative is intended, use {rendered}."
+    existing = str(schema.get("description") or "").strip()
+    schema["description"] = f"{existing} {instruction}".strip()
+
+
+def _openai_strict_schema(raw_schema: dict[str, Any]) -> dict[str, Any]:
+    """Compile canonical Pydantic JSON Schema for OpenAI strict tools.
+
+    The canonical schema remains untouched for HTTP, MCP, and Ollama. OpenAI
+    strict mode requires every object property to be required, represents
+    optional values with null, and does not use Pydantic's default annotations.
+    """
+
+    def normalize(value: Any) -> Any:
+        if isinstance(value, list):
+            return [normalize(item) for item in value]
+        if not isinstance(value, dict):
+            return value
+
+        original_required = set(value.get("required", []))
+        result: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in {"default", "discriminator"}:
+                continue
+            normalized_key = "anyOf" if key == "oneOf" else key
+            result[normalized_key] = normalize(item)
+
+        properties = result.get("properties")
+        if isinstance(properties, dict):
+            source_properties = value.get("properties", {})
+            for name, property_schema in properties.items():
+                if name in original_required or not isinstance(property_schema, dict):
+                    continue
+                source = source_properties.get(name, {})
+                if isinstance(source, dict) and "default" in source:
+                    _describe_openai_default(property_schema, source["default"])
+                elif property_schema.get("type") == "array":
+                    _describe_openai_default(property_schema, [])
+            result["required"] = list(properties)
+            result["additionalProperties"] = False
+        return result
+
+    return normalize(deepcopy(raw_schema))
+
+
+def openai_function_tools(tool_schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [{
+        "type": "function",
+        "name": row["name"],
+        "description": row["description"],
+        "parameters": _openai_strict_schema(row["input_schema"]),
+        "strict": True,
+    } for row in tool_schemas]
+
+
 class OpenAIAdapter(ModelAdapter):
     def __init__(self) -> None:
         try:
@@ -52,10 +110,7 @@ class OpenAIAdapter(ModelAdapter):
         response = self.client.responses.create(
             model=profile.model,
             input=_openai_input(messages),
-            tools=[{
-                "type": "function", "name": row["name"], "description": row["description"],
-                "parameters": row["input_schema"], "strict": True,
-            } for row in tool_schemas],
+            tools=openai_function_tools(tool_schemas),
             parallel_tool_calls=False,
             max_output_tokens=profile.max_output_tokens_per_turn,
             temperature=profile.temperature,
