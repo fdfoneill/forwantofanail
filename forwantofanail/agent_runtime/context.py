@@ -24,7 +24,7 @@ class AgentProfile:
     provider: str
     model_env: str
     model: str | None
-    temperature: float
+    temperature: float | None
     request_timeout_seconds: int
     wall_time_seconds: int
     max_model_turns: int
@@ -125,13 +125,14 @@ def load_profiles() -> dict[str, AgentProfile]:
         if provider not in {"openai", "ollama"} or not profile_id or profile_id in profiles:
             raise ValueError(f"Invalid or duplicate agent profile {profile_id!r}")
         model_env = str(row["model_env"]).strip()
+        raw_temperature = row.get("temperature", 0.7)
         profiles[profile_id] = AgentProfile(
             profile_id=profile_id,
             label=str(row.get("label") or profile_id),
             provider=provider,
             model_env=model_env,
             model=(os.getenv(model_env) or "").strip() or None,
-            temperature=float(row.get("temperature", 0.7)),
+            temperature=None if raw_temperature is None else float(raw_temperature),
             request_timeout_seconds=int(row.get("request_timeout_seconds", 180)),
             wall_time_seconds=int(row.get("wall_time_seconds", 600)),
             max_model_turns=int(row.get("max_model_turns", 24)),
@@ -143,7 +144,7 @@ def load_profiles() -> dict[str, AgentProfile]:
         if any(value <= 0 for value in (
             profile.request_timeout_seconds, profile.wall_time_seconds, profile.max_model_turns,
             profile.max_tool_calls, profile.max_output_tokens_per_turn, profile.max_total_output_tokens,
-        )) or not 0 <= profile.temperature <= 2:
+        )) or (profile.temperature is not None and not 0 <= profile.temperature <= 2):
             raise ValueError(f"Agent profile {profile_id!r} has invalid limits")
     return profiles
 

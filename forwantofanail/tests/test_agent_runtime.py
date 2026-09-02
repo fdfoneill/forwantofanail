@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 import json
 
@@ -67,6 +68,7 @@ def test_rules_profiles_and_dossiers_are_stable(agent_db):
     assert len(digest) == 64
     assert load_profiles()["ollama_default"].available is True
     assert load_profiles()["ollama_default"].temperature == 0.2
+    assert load_profiles()["openai_default"].temperature is None
     session = create_session()
     original = ensure_dossier(session, session.get(Commander, 0))
     generated = ensure_dossier(session, session.get(Commander, 7))
@@ -313,28 +315,43 @@ def test_provider_adapters_normalize_visible_outputs_without_thinking(agent_db):
         def __init__(self, **values):
             self.__dict__.update(values)
 
+    openai_request = {}
+
+    def create_response(**kwargs):
+        openai_request.update(kwargs)
+        return Object(
+            output=[Object(type="function_call", call_id="call-1", name="fwoan_get_situation", arguments="{}")],
+            output_text="Visible planning note", status="completed",
+            usage=Object(input_tokens=12, output_tokens=7),
+        )
+
     openai_adapter = OpenAIAdapter.__new__(OpenAIAdapter)
-    openai_adapter.client = Object(responses=Object(create=lambda **_kwargs: Object(
-        output=[Object(type="function_call", call_id="call-1", name="fwoan_get_situation", arguments="{}")],
-        output_text="Visible planning note", status="completed",
-        usage=Object(input_tokens=12, output_tokens=7),
-    )))
-    openai_turn = openai_adapter.invoke([{"role": "user", "content": "Act"}], [], profile)
+    openai_adapter.client = Object(responses=Object(create=create_response))
+    openai_profile = replace(profile, provider="openai", temperature=None)
+    openai_turn = openai_adapter.invoke([{"role": "user", "content": "Act"}], [], openai_profile)
     assert openai_turn.content == "Visible planning note"
     assert openai_turn.tool_calls[0].name == "fwoan_get_situation"
+    assert "temperature" not in openai_request
+
+    ollama_request = {}
+
+    def create_ollama_response(**kwargs):
+        ollama_request.update(kwargs)
+        return Object(
+            message=Object(
+                content="Visible answer", thinking="private reasoning",
+                tool_calls=[Object(function=Object(name="fwoan_get_situation", arguments={}))],
+            ),
+            prompt_eval_count=15, eval_count=9, done_reason="stop",
+        )
 
     ollama_adapter = OllamaAdapter.__new__(OllamaAdapter)
-    ollama_adapter.client = Object(chat=lambda **_kwargs: Object(
-        message=Object(
-            content="Visible answer", thinking="private reasoning",
-            tool_calls=[Object(function=Object(name="fwoan_get_situation", arguments={}))],
-        ),
-        prompt_eval_count=15, eval_count=9, done_reason="stop",
-    ))
+    ollama_adapter.client = Object(chat=create_ollama_response)
     ollama_turn = ollama_adapter.invoke([{"role": "user", "content": "Act"}], [], profile)
     assert ollama_turn.content == "Visible answer"
     assert not hasattr(ollama_turn, "thinking")
     assert ollama_turn.input_tokens == 15
+    assert ollama_request["options"]["temperature"] == 0.2
 
 
 def test_openai_tool_schema_compiler_is_strict_and_does_not_change_ollama_schema(agent_db):

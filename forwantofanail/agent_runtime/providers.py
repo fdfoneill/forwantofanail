@@ -107,16 +107,18 @@ class OpenAIAdapter(ModelAdapter):
         self.client = OpenAI()
 
     def invoke(self, messages: list[dict[str, Any]], tool_schemas: list[dict[str, Any]], profile: AgentProfile) -> ModelTurn:
-        response = self.client.responses.create(
+        request: dict[str, Any] = dict(
             model=profile.model,
             input=_openai_input(messages),
             tools=openai_function_tools(tool_schemas),
             parallel_tool_calls=False,
             max_output_tokens=profile.max_output_tokens_per_turn,
-            temperature=profile.temperature,
             store=False,
             timeout=profile.request_timeout_seconds,
         )
+        if profile.temperature is not None:
+            request["temperature"] = profile.temperature
+        response = self.client.responses.create(**request)
         calls: list[ModelToolCall] = []
         for item in response.output:
             if getattr(item, "type", None) == "function_call":
@@ -163,12 +165,15 @@ class OllamaAdapter(ModelAdapter):
         self.client = Client(host=host, timeout=timeout)
 
     def invoke(self, messages: list[dict[str, Any]], tool_schemas: list[dict[str, Any]], profile: AgentProfile) -> ModelTurn:
+        options: dict[str, Any] = {"num_predict": profile.max_output_tokens_per_turn}
+        if profile.temperature is not None:
+            options["temperature"] = profile.temperature
         response = self.client.chat(
             model=profile.model,
             messages=_ollama_messages(messages),
             tools=function_tools(tool_schemas),
             stream=False,
-            options={"temperature": profile.temperature, "num_predict": profile.max_output_tokens_per_turn},
+            options=options,
         )
         message = response.message
         calls = [ModelToolCall(
