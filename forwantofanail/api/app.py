@@ -25,8 +25,8 @@ if app_env == "production":
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     except Exception as exc:
         raise RuntimeError("Production database schema is unavailable; run 'alembic upgrade head'") from exc
-    if revision != "20260831_0004":
-        raise RuntimeError(f"Database revision {revision!r} does not match required revision '20260831_0004'")
+    if revision != "20260902_0005":
+        raise RuntimeError(f"Database revision {revision!r} does not match required revision '20260902_0005'")
 
 app = FastAPI(
     title="For Want of a Nail API",

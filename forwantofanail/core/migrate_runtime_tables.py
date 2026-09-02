@@ -104,6 +104,15 @@ def migrate_runtime_tables() -> None:
                     "created_day": "INTEGER",
                     "created_watch": "INTEGER",
                 },
+                "agent_assignments": {
+                    "consecutive_passive_watches": "INTEGER NOT NULL DEFAULT 0",
+                    "strategic_review_required": "BOOLEAN NOT NULL DEFAULT 1",
+                    "strategic_review_reason": "VARCHAR(120)",
+                    "plan_review_due_tick": "INTEGER",
+                },
+                "agent_memory_revisions": {
+                    "strategic_plan_json": "TEXT",
+                },
             }
             for table_name, table_additions in additions.items():
                 table_info = session.execute(text(f"PRAGMA table_info({table_name})")).all()

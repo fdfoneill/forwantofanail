@@ -13,6 +13,8 @@ dependencies:
   - pillow
   - rasterio
   - pyshp
+  - networkx>=3
+  - scipy
   - ffmpeg
   - pip
   - pip:

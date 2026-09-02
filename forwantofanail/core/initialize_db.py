@@ -124,6 +124,7 @@ def _default_scenario_manifest() -> dict[str, object]:
         "agent_rules": "agent_rules.md",
         "agent_commander_dossiers": "agent_commander_dossiers.json",
         "agent_profiles": "agent_profiles.json",
+        "agent_strategic_atlas": "agent_strategic_atlas.json",
         "stronghold_points": "assets/stronghold_points/copper_coast_strongholds_corrected.shp",
         "csv_files": {
             "terrain_types": "terrain_types.csv",
@@ -200,7 +201,7 @@ def _manifest_csv_path(manifest: dict[str, object], data_dir: Path, key: str, *,
 
 
 def _validate_scenario_manifest(manifest: dict[str, object], data_dir: Path) -> None:
-    for key in ("agent_rules", "agent_commander_dossiers", "agent_profiles"):
+    for key in ("agent_rules", "agent_commander_dossiers", "agent_profiles", "agent_strategic_atlas"):
         relative_path = manifest.get(key)
         if not relative_path:
             raise ValueError(f"Scenario manifest requires '{key}'.")

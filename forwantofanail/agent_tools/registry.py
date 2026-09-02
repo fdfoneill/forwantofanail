@@ -20,6 +20,8 @@ from .schemas import (
     ReceiptResult,
     ReorganizeArmiesInput,
     RouteSummaryResult,
+    StrategicOverviewInput,
+    StrategicOverviewResult,
     SearchStrongholdsInput,
     SendLetterInput,
     SetStandingOrdersInput,
@@ -60,6 +62,7 @@ _DEFINITIONS = (
     ToolDefinition("fwoan_search_strongholds", "Search scenario-known strongholds and their historical, non-live descriptions.", SearchStrongholdsInput, StrongholdSearchResult, "read"),
     ToolDefinition("fwoan_survey_map", "Survey static terrain, rivers, roads, and historical strongholds around the current army or a known stronghold.", SurveyMapInput, MapSurveyResult, "read"),
     ToolDefinition("fwoan_summarize_route", "Summarize a static, diegetic route to a stronghold without revealing map coordinates.", SummarizeRouteInput, RouteSummaryResult, "read"),
+    ToolDefinition("fwoan_get_strategic_overview", "Consult the scenario-static strategic atlas: historical faction regions, major cities and reviewed choke points, corridors, frontiers, and map edges. Use this before choosing a strategic destination.", StrategicOverviewInput, StrategicOverviewResult, "read"),
     ToolDefinition("fwoan_get_order_options", "Orient tactically: list legal orders and opaque next-step or target options, optionally drafting a march toward a route goal.", GetOrderOptionsInput, OrderOptionsResult, "read"),
     ToolDefinition(
         "fwoan_submit_order",

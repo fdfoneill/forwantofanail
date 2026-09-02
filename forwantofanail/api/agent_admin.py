@@ -12,7 +12,7 @@ from forwantofanail.api.routes import (
 )
 from forwantofanail.agent_runtime.context import load_profiles
 from forwantofanail.agent_runtime.service import (
-    admin_overview, assign_agent, cancel_and_requeue_run, disable_agent, replace_memory, retry_run, serialize_run, skip_run,
+    _display_tick, admin_overview, assign_agent, cancel_and_requeue_run, disable_agent, replace_memory, retry_run, serialize_run, skip_run,
 )
 from forwantofanail.core.models import (
     AgentAssignment, AgentCommanderDossier, AgentMemoryRevision, AgentRun, AgentRunEvent, GameClock,
@@ -164,8 +164,17 @@ def get_context(commander_id: str, _: None = Depends(_admin), session: Session =
         },
         "memory_revision": assignment.current_memory_revision if assignment else 0,
         "memory": memories[0].content if memories else None,
+        "strategic_plan": json.loads(memories[0].strategic_plan_json) if memories and memories[0].strategic_plan_json else None,
+        "strategic_review": None if assignment is None else {
+            "required": bool(assignment.strategic_review_required),
+            "reason": assignment.strategic_review_reason,
+            "consecutive_passive_watches": int(assignment.consecutive_passive_watches or 0),
+            "due_tick": assignment.plan_review_due_tick,
+            "due": _display_tick(assignment.plan_review_due_tick),
+        },
         "memory_history": [{
             "revision": row.revision, "content": row.content, "author_kind": row.author_kind,
+            "strategic_plan": json.loads(row.strategic_plan_json) if row.strategic_plan_json else None,
             "run_id": row.run_id, "created_at": row.created_at,
         } for row in memories],
     }

@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from forwantofanail.agent_runtime.context import ensure_dossier, load_profiles, load_rules
 from forwantofanail.agent_runtime.service import (
-    assign_agent, authenticate_run_session, barrier_state, disable_agent,
+    append_event, assign_agent, authenticate_run_session, barrier_state, disable_agent,
     enforce_advance_barrier, issue_run_session, replace_memory, skip_run,
 )
 from forwantofanail.agent_runtime.providers import (
@@ -176,10 +176,16 @@ def test_worker_completes_structured_heartbeat_and_persists_memory(agent_db, mon
     run.provider = "ollama"
     run.model = "test-model"
     run.started_at = datetime.now(timezone.utc)
+    assignment = session.get(AgentAssignment, 0)
+    assignment.strategic_review_required = False
+    session.get(AgentMemoryRevision, (0, 1)).strategic_plan_json = json.dumps({
+        "campaign_objective": "Hold the frontier", "operational_objective": "Secure the road",
+        "posture": "defend", "rationale": "The dossier requires defense", "immediate_next_step": "Observe",
+        "assumptions": [], "reconsideration_conditions": ["Enemy movement"], "review_interval_watches": 5,
+    })
     session.commit()
     run_id = run.run_id
     session.close()
-
     class FakeAdapter:
         def __init__(self):
             self.turn = 0
@@ -214,6 +220,114 @@ def test_worker_completes_structured_heartbeat_and_persists_memory(agent_db, mon
     session.close()
 
 
+def test_required_strategic_review_consults_atlas_and_persists_plan(agent_db, monkeypatch):
+    session = create_session()
+    assign_agent(session, 0, "ollama_default")
+    session.commit()
+    run = session.query(AgentRun).filter(AgentRun.commander_id == 0).one()
+    run.status = "running"
+    run.provider = "ollama"
+    run.model = "test-model"
+    run.started_at = datetime.now(timezone.utc)
+    run_id = run.run_id
+    session.commit()
+    session.close()
+    plan = {
+        "campaign_objective": "Protect Boonan independence",
+        "operational_objective": "Watch the southern approaches",
+        "posture": "defend",
+        "rationale": "The commander dossier prioritizes the Free State's defense.",
+        "immediate_next_step": "Consult correspondence and observe the road.",
+        "assumptions": [],
+        "reconsideration_conditions": ["Enemy forces appear", "Orders arrive from high command"],
+        "review_interval_watches": 5,
+    }
+
+    class ReviewingAdapter:
+        turn = 0
+
+        def invoke(self, messages, tools, profile):
+            self.turn += 1
+            if self.turn == 1:
+                assert "STRATEGIC THEATER" in messages[1]["content"]
+                assert "STRATEGIC REVIEW IS REQUIRED" in messages[1]["content"]
+                return ModelTurn(tool_calls=[ModelToolCall("atlas", "fwoan_get_strategic_overview", {})])
+            if self.turn == 2:
+                return ModelTurn(tool_calls=[ModelToolCall("plan", "fwoan_update_scratchpad", {
+                    "expected_revision": 1, "content": "Defend the southern approaches.", "strategic_plan": plan,
+                })])
+            return ModelTurn(tool_calls=[ModelToolCall("finish", "fwoan_finish_heartbeat", {
+                "assessment": "A defensive watch is appropriate.", "actions_taken": [],
+                "unresolved_matters": [], "next_intent": "Watch for enemy movement.",
+            })])
+
+    def fake_gameplay(_token, name, _arguments, _identity):
+        if name == "fwoan_get_strategic_overview":
+            return {"ok": True, "result": {"tool": name, "data": {
+                "artifact_hash": "a" * 64, "prose": "Boonan lies south.", "major_destinations": [], "corridors": [],
+            }}}
+        return {"ok": True, "result": {"tool": name, "data": {"brief": "Quiet."}}}
+
+    monkeypatch.setattr(worker, "adapter_for", lambda _profile: ReviewingAdapter())
+    monkeypatch.setattr(worker, "_invoke_gameplay_tool", fake_gameplay)
+    worker.execute_run(run_id, "run-token")
+    session = create_session()
+    finished = session.get(AgentRun, run_id)
+    assignment = session.get(AgentAssignment, 0)
+    memory = session.get(AgentMemoryRevision, (0, 2))
+    assert finished.status == "completed"
+    assert assignment.strategic_review_required is False
+    assert assignment.plan_review_due_tick == 5
+    assert json.loads(memory.strategic_plan_json)["posture"] == "defend"
+    event_kinds = {row.event_kind for row in finished.events}
+    assert {"atlas_loaded", "strategic_plan_revision", "passive_counter_changed"} <= event_kinds
+    session.close()
+
+
+def test_fifth_passive_watch_requires_review_and_hold_does_not_evade_it(agent_db):
+    session = create_session()
+    assignment = assign_agent(session, 0, "ollama_default")
+    memory = session.get(AgentMemoryRevision, (0, 1))
+    memory.strategic_plan_json = json.dumps({
+        "campaign_objective": "Defend Boonan", "operational_objective": "Hold the road",
+        "posture": "defend", "rationale": "Guard the frontier", "immediate_next_step": "Observe",
+        "assumptions": [], "reconsideration_conditions": ["Enemy sighted"], "review_interval_watches": 5,
+    })
+    assignment.strategic_review_required = False
+    first = session.query(AgentRun).filter(AgentRun.commander_id == 0).one()
+    now = datetime.now(timezone.utc)
+    runs = [first]
+    for tick in range(1, 5):
+        row = AgentRun(
+            commander_id=0, world_tick=tick, attempt=1, trigger="watch", status="running",
+            profile_id="ollama_default", starting_memory_revision=1, created_at=now,
+        )
+        session.add(row)
+        session.flush()
+        runs.append(row)
+    for row in runs:
+        row.status = "running"
+        append_event(session, row, "tool_call", {
+            "identity": f"hold-{row.world_tick}", "call_id": "hold", "name": "fwoan_submit_order",
+            "arguments": {"order": {"kind": "hold"}},
+        })
+        append_event(session, row, "tool_result", {
+            "identity": f"hold-{row.world_tick}", "call_id": "hold", "name": "fwoan_submit_order",
+            "result": {"ok": True},
+        })
+        session.commit()
+        result, finished = worker._runtime_call(row.run_id, ModelToolCall("finish", "fwoan_finish_heartbeat", {
+            "assessment": "Holding.", "actions_taken": ["Held position"],
+            "unresolved_matters": [], "next_intent": "Continue observing.",
+        }))
+        assert result["ok"] is True and finished is True
+        session.expire_all()
+        assert assignment.consecutive_passive_watches == int(row.world_tick) + 1
+        assert assignment.strategic_review_required is (row.world_tick == 4)
+    assert assignment.strategic_review_reason == "five_passive_watches"
+    session.close()
+
+
 def test_worker_executes_only_one_tool_call_per_model_turn(agent_db, monkeypatch):
     session = create_session()
     assign_agent(session, 0, "ollama_default")
@@ -223,6 +337,13 @@ def test_worker_executes_only_one_tool_call_per_model_turn(agent_db, monkeypatch
     run.provider = "ollama"
     run.model = "test-model"
     run.started_at = datetime.now(timezone.utc)
+    assignment = session.get(AgentAssignment, 0)
+    assignment.strategic_review_required = False
+    session.get(AgentMemoryRevision, (0, 1)).strategic_plan_json = json.dumps({
+        "campaign_objective": "Hold the frontier", "operational_objective": "Choose a destination",
+        "posture": "reconnoiter", "rationale": "Strategic uncertainty", "immediate_next_step": "Observe",
+        "assumptions": [], "reconsideration_conditions": ["New intelligence"], "review_interval_watches": 5,
+    })
     session.commit()
     run_id = run.run_id
     session.close()

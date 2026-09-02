@@ -132,6 +132,10 @@ def assign_agent(session: Session, commander_id: int, profile_id: str) -> AgentA
             profile_id=profile_id,
             enabled=True,
             current_memory_revision=0,
+            consecutive_passive_watches=0,
+            strategic_review_required=True,
+            strategic_review_reason="new_assignment",
+            plan_review_due_tick=None,
             created_at=now,
             updated_at=now,
         )
@@ -147,12 +151,16 @@ def assign_agent(session: Session, commander_id: int, profile_id: str) -> AgentA
         ))
         assignment.current_memory_revision = 1
     else:
+        was_enabled = bool(assignment.enabled)
         active = _latest_run(session, commander_id, int(session.get(GameClock, 1).world_tick))
         if active is not None and active.status == "running":
             raise HTTPException(status_code=409, detail={"code": "agent_run_active", "message": "Cannot change an assignment while its heartbeat is running."})
         assignment.profile_id = profile_id
         assignment.enabled = True
         assignment.updated_at = now
+        if not was_enabled:
+            assignment.strategic_review_required = True
+            assignment.strategic_review_reason = "new_assignment"
         if active is not None and active.status == "queued":
             active.profile_id = profile_id
     session.flush()
@@ -292,7 +300,10 @@ def authenticate_run_session(session: Session, raw: str) -> int | None:
     return row.commander_id
 
 
-def replace_memory(session: Session, commander_id: int, expected_revision: int, content: str, *, author_kind: str, run_id: int | None = None) -> AgentMemoryRevision:
+def replace_memory(
+    session: Session, commander_id: int, expected_revision: int, content: str, *,
+    author_kind: str, run_id: int | None = None, strategic_plan_json: str | None = None,
+) -> AgentMemoryRevision:
     content = content.strip()
     if not content or len(content) > 12000:
         raise HTTPException(status_code=422, detail="Scratchpad must contain 1 to 12,000 characters")
@@ -302,8 +313,10 @@ def replace_memory(session: Session, commander_id: int, expected_revision: int, 
     if int(assignment.current_memory_revision) != int(expected_revision):
         raise HTTPException(status_code=409, detail={"code": "stale_memory", "message": "Scratchpad revision is stale."})
     revision = expected_revision + 1
+    previous = session.get(AgentMemoryRevision, (commander_id, expected_revision))
     row = AgentMemoryRevision(
         commander_id=commander_id, revision=revision, content=content,
+        strategic_plan_json=(previous.strategic_plan_json if strategic_plan_json is None and previous else strategic_plan_json),
         author_kind=author_kind, run_id=run_id, created_at=utcnow(),
     )
     session.add(row)
@@ -347,6 +360,11 @@ def admin_overview(session: Session) -> dict[str, Any]:
             "control": "human" if commander.commander_id in claims else ("agent" if assignment and assignment.enabled else "unclaimed"),
             "profile_id": assignment.profile_id if assignment else None,
             "memory_revision": assignment.current_memory_revision if assignment else 0,
+            "strategic_plan": _current_plan(session, assignment),
+            "consecutive_passive_watches": int(assignment.consecutive_passive_watches or 0) if assignment else 0,
+            "strategic_review_required": bool(assignment.strategic_review_required) if assignment else False,
+            "strategic_review_reason": assignment.strategic_review_reason if assignment else None,
+            "plan_review_due": _display_tick(assignment.plan_review_due_tick) if assignment else None,
             "run": serialize_run(run) if run else None,
         })
     cutoff = utcnow() - timedelta(seconds=30)
@@ -361,3 +379,24 @@ def admin_overview(session: Session) -> dict[str, Any]:
         "workers": [{"worker_id": row.worker_id, "concurrency": row.concurrency, "last_seen_at": row.last_seen_at} for row in workers],
         "commanders": rows,
     }
+
+
+def _current_plan(session: Session, assignment: AgentAssignment | None) -> dict[str, Any] | None:
+    if assignment is None or not assignment.current_memory_revision:
+        return None
+    row = session.get(AgentMemoryRevision, (assignment.commander_id, assignment.current_memory_revision))
+    if row is None or not row.strategic_plan_json:
+        return None
+    try:
+        return json.loads(row.strategic_plan_json)
+    except ValueError:
+        return None
+
+
+def _display_tick(world_tick: int | None) -> dict[str, Any] | None:
+    if world_tick is None:
+        return None
+    from forwantofanail.mechanics.time import from_world_tick
+    day, watch = from_world_tick(int(world_tick))
+    labels = {1: "Matin", 2: "Prime", 3: "Sixbell", 4: "Vesper", 0: "Night"}
+    return {"world_tick": int(world_tick), "day": day, "watch": labels[int(watch)]}

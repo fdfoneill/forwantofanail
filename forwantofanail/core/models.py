@@ -505,6 +505,10 @@ class AgentAssignment(Base):
     profile_id = Column(String(80), nullable=False)
     enabled = Column(Boolean, nullable=False, default=True, index=True)
     current_memory_revision = Column(Integer, nullable=False, default=0)
+    consecutive_passive_watches = Column(Integer, nullable=False, default=0)
+    strategic_review_required = Column(Boolean, nullable=False, default=True)
+    strategic_review_reason = Column(String(120), nullable=True)
+    plan_review_due_tick = Column(Integer, nullable=True)
     created_at = Column(DateTime, nullable=False)
     updated_at = Column(DateTime, nullable=False)
 
@@ -585,6 +589,7 @@ class AgentMemoryRevision(Base):
     commander_id = Column(Integer, ForeignKey("agent_assignments.commander_id", ondelete="CASCADE"), nullable=False)
     revision = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
+    strategic_plan_json = Column(Text, nullable=True)
     author_kind = Column(String(20), nullable=False)
     run_id = Column(Integer, ForeignKey("agent_runs.run_id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime, nullable=False)

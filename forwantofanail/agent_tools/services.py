@@ -59,12 +59,13 @@ from .schemas import (
     SetStandingOrdersInput,
     SubmitOrderInput,
     SummarizeRouteInput,
+    StrategicOverviewInput,
     SurveyMapInput,
 )
 from .security import find_matching_handle, matches, opaque_handle
 
 
-TOOLSET_VERSION = "1.1.0"
+TOOLSET_VERSION = "1.2.0"
 _H3_VALUE = re.compile(r"(?i)\b[0-9a-f]{15}\b")
 
 
@@ -609,6 +610,121 @@ def summarize_route(ctx: ToolContext, payload: SummarizeRouteInput) -> dict[str,
     return _result(ctx, "fwoan_summarize_route", {"route": value})
 
 
+def _atlas_payload() -> dict[str, Any]:
+    from forwantofanail.agent_runtime.strategic_atlas import DATA_DIR
+
+    manifest = json.loads((DATA_DIR / "scenario_manifest.json").read_text(encoding="utf-8"))
+    path = (DATA_DIR / str(manifest["agent_strategic_atlas"])).resolve()
+    if DATA_DIR.resolve() not in (path, *path.parents):
+        raise ToolInvocationError("not_found", "The strategic atlas is unavailable.", status_code=503)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ToolInvocationError("not_found", "The strategic atlas is unavailable.", status_code=503) from exc
+    if payload.get("schema_version") != 1 or not payload.get("artifact_hash"):
+        raise ToolInvocationError("not_found", "The strategic atlas has an unsupported format.", status_code=503)
+    return payload
+
+
+def strategic_overview(ctx: ToolContext, payload: StrategicOverviewInput) -> dict[str, Any]:
+    atlas = _atlas_payload()
+    army = routes._find_commander_army(ctx.session, ctx.commander_id)
+    if payload.origin_ref == "current":
+        origin_h3 = str(army.location_id)
+        origin_name = describe_army_location(ctx.session, origin_h3)
+    else:
+        known_refs = {str(row["id"]) for row in _catalog_rows()}
+        if payload.origin_ref not in known_refs:
+            raise ToolInvocationError("not_found", "That origin is not part of the scenario-known strategic atlas.", status_code=404)
+        try:
+            origin = ctx.session.get(Stronghold, routes._parse_stronghold_ref(payload.origin_ref))
+        except HTTPException as exc:
+            raise _from_http(exc, default_code="not_found") from exc
+        if origin is None:
+            raise ToolInvocationError("not_found", "Stronghold not found.", status_code=404)
+        origin_h3 = str(origin.location_id)
+        origin_name = str(origin.stronghold_name)
+
+    def stronghold_for(ref: str) -> Stronghold | None:
+        try:
+            return ctx.session.get(Stronghold, routes._parse_stronghold_ref(ref))
+        except HTTPException:
+            return None
+
+    factions = []
+    for row in atlas.get("faction_regions", []):
+        representative = stronghold_for(str(row.get("centroid_stronghold_ref", "")))
+        if representative is None:
+            continue
+        factions.append({
+            "faction": row["faction"],
+            "general_direction": _bearing_word(origin_h3, representative.location_id) or "around this position",
+            "represented_by": representative.stronghold_name,
+        })
+    destinations = []
+    for row in atlas.get("major_strongholds", []):
+        stronghold = stronghold_for(str(row["stronghold_ref"]))
+        if stronghold is None:
+            continue
+        try:
+            distance = int(h3.grid_distance(origin_h3, stronghold.location_id))
+        except Exception:
+            distance = None
+        destinations.append({
+            "destination_ref": row["stronghold_ref"], "name": row["name"], "type": row["type"],
+            "historical_faction": row["historical_faction"], "strategic_role": row["role"],
+            "bearing": "here" if distance == 0 else _bearing_word(origin_h3, stronghold.location_id), "approximate_distance_leagues": distance,
+        })
+    destinations.sort(key=lambda row: (row["approximate_distance_leagues"] is None, row["approximate_distance_leagues"] or 0, row["name"]))
+    destination_refs = {row["destination_ref"] for row in destinations[:12]}
+    corridors = []
+    for row in atlas.get("corridors", []):
+        if row["from_ref"] not in destination_refs and row["to_ref"] not in destination_refs:
+            continue
+        corridors.append({
+            "from": row["from"], "from_ref": row["from_ref"], "to": row["to"], "to_ref": row["to_ref"],
+            "distance_leagues": row["distance_leagues"], "initial_direction": row["initial_bearing"],
+            "historical_faction_transitions": row["historical_faction_transitions"],
+            "frontier_gateway": bool(row.get("frontier_crossing")),
+        })
+        if len(corridors) == 20:
+            break
+    nearest_edge = None
+    known_cells = {str(row[0]) for row in ctx.session.query(Location.location_id).all()}
+    edge_cells = []
+    for cell in sorted(known_cells):
+        try:
+            if len([value for value in h3.grid_ring(cell, 1) if str(value) in known_cells]) < 6:
+                edge_cells.append(cell)
+        except Exception:
+            continue
+    edge_distances = []
+    for edge in edge_cells:
+        try:
+            edge_distances.append((int(h3.grid_distance(origin_h3, edge)), edge))
+        except Exception:
+            continue
+    if edge_distances:
+        distance, edge = min(edge_distances, key=lambda item: (item[0], item[1]))
+        nearest_edge = {
+            "direction": _bearing_word(origin_h3, edge), "distance_leagues": distance,
+            "nearby": distance <= 10,
+        }
+    phrases = [f"From {origin_name}, the historical theater extends " + ", ".join(f"{item['faction']} generally {item['general_direction']}" for item in factions) + "."]
+    if destinations:
+        phrases.append("Major destinations include " + ", ".join(f"{row['name']} to the {row['bearing']}" if row["bearing"] != "here" else f"{row['name']} here" for row in destinations[:6]) + ".")
+    if nearest_edge:
+        phrases.append(f"The known map edge lies about {nearest_edge['distance_leagues']} leagues to the {nearest_edge['direction']}.")
+    data = {
+        "artifact_hash": atlas["artifact_hash"], "prose": " ".join(phrases), "origin": origin_name, "focus": payload.focus,
+        "faction_regions": factions if payload.focus in {"all", "factions"} else [],
+        "major_destinations": destinations[:20],
+        "corridors": [row for row in corridors if payload.focus != "frontiers" or row["frontier_gateway"]] if payload.focus in {"all", "corridors", "frontiers"} else [],
+        "edge_context": nearest_edge, "information_scope": "scenario_static",
+    }
+    return _result(ctx, "fwoan_get_strategic_overview", data, dynamic=False)
+
+
 def _move_handle(ctx: ToolContext, state: str, prefix: list[str], destination: str) -> str:
     return opaque_handle("move_option", ctx.session_binding, ctx.commander_id, state, prefix, destination)
 
@@ -1069,6 +1185,7 @@ HANDLERS: dict[str, Callable[[ToolContext, Any], dict[str, Any]]] = {
     "fwoan_search_strongholds": search_strongholds,
     "fwoan_survey_map": survey_map,
     "fwoan_summarize_route": summarize_route,
+    "fwoan_get_strategic_overview": strategic_overview,
     "fwoan_get_order_options": get_order_options,
     "fwoan_submit_order": submit_order,
     "fwoan_cancel_order": cancel_order,

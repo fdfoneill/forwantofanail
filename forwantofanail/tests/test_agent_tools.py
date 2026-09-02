@@ -93,9 +93,11 @@ def tool_db(tmp_path, monkeypatch):
     reset_database_runtime()
 
 
-def test_registry_is_deterministic_strict_and_has_fourteen_tools():
+def test_registry_is_deterministic_strict_and_has_fifteen_tools():
     names = [tool.name for tool in list_tools()]
-    assert len(names) == 14
+    assert len(names) == 15
+    assert "fwoan_get_strategic_overview" in names
+    assert catalog()["version"] == "1.2.0"
     assert names == list(dict.fromkeys(names))
     assert catalog() == catalog()
     assert all(tool.input_model.model_json_schema().get("additionalProperties") is False for tool in list_tools())
@@ -150,6 +152,10 @@ def test_situation_and_order_options_do_not_expose_h3(tool_db):
         assert not re.search(r"\b[0-9a-f]{15}\b", rendered, flags=re.IGNORECASE)
         assert situation["data"]["army"]["name"] == "The Test Host"
         assert options["state_token"].startswith("state_")
+        strategic = invoke("fwoan_get_strategic_overview", {}, context)
+        assert strategic["data"]["information_scope"] == "scenario_static"
+        assert strategic["state_token"] is None
+        assert not re.search(r"\b[0-9a-f]{15}\b", json.dumps(strategic), flags=re.IGNORECASE)
     finally:
         session.close()
 

@@ -69,6 +69,18 @@ class RouteSummaryData(StrictModel):
     route: dict[str, Any]
 
 
+class StrategicOverviewData(StrictModel):
+    artifact_hash: str
+    prose: str
+    origin: str
+    focus: Literal["all", "factions", "frontiers", "corridors"]
+    faction_regions: list[dict[str, Any]]
+    major_destinations: list[dict[str, Any]]
+    corridors: list[dict[str, Any]]
+    edge_context: dict[str, Any] | None
+    information_scope: Literal["scenario_static"]
+
+
 class OrderOptionsData(StrictModel):
     current_order: dict[str, Any] | None
     active_and_queued_orders: list[dict[str, Any] | None]
@@ -125,6 +137,10 @@ class RouteSummaryResult(ToolResult):
     data: RouteSummaryData
 
 
+class StrategicOverviewResult(ToolResult):
+    data: StrategicOverviewData
+
+
 class OrderOptionsResult(ToolResult):
     data: OrderOptionsData
 
@@ -173,6 +189,11 @@ class SummarizeRouteInput(StrictModel):
     destination_ref: str = Field(min_length=1, max_length=64)
     origin_ref: str = Field(default="current", min_length=1, max_length=64)
     allow_off_road: bool = False
+
+
+class StrategicOverviewInput(StrictModel):
+    origin_ref: str = Field(default="current", min_length=1, max_length=64)
+    focus: Literal["all", "factions", "frontiers", "corridors"] = "all"
 
 
 class GetOrderOptionsInput(StrictModel):

@@ -209,6 +209,28 @@ mutually exclusive with a human commander claim. Each enabled agent receives
 one queued heartbeat per watch. Time advancement waits for those heartbeats to
 complete or be explicitly skipped.
 
+The scenario-owned strategic atlas is generated during scenario authoring, not
+at API startup. After changing locations, roads, or strongholds, regenerate it:
+
+```bash
+python -m forwantofanail.agent_runtime.strategic_atlas
+```
+
+Review `forwantofanail/data/agent_strategic_atlas.json`, set `selected: true`
+only on non-city choke-point candidates that should be promoted, rerun the
+generator to build their corridors, and commit the artifact. CI/deployment can
+verify that it is current without rewriting it:
+
+```bash
+python -m forwantofanail.agent_runtime.strategic_atlas --check
+```
+
+Every agent heartbeat receives a compact static atlas. The detailed
+`fwoan_get_strategic_overview` tool exposes the same scenario-static material
+without current remote control, army, garrison, or siege information. New
+assignments must establish a structured strategic plan; plans and passive-watch
+review state are persisted alongside revisioned scratchpad memory.
+
 Configure either or both provider profiles:
 
 ```bash
@@ -223,6 +245,14 @@ Run the API, then start one or more independent workers:
 
 ```bash
 python -m forwantofanail.agent_runtime.worker --concurrency 4
+```
+
+Optional, non-CI provider evaluations can review a completed transcript with
+either a configured OpenAI or Ollama profile. The report includes six rubric
+scores and source/evaluator token usage:
+
+```bash
+python -m forwantofanail.agent_runtime.evaluate_strategy --run-id 42 --profile openai_default
 ```
 
 The scenario owns `agent_rules.md`, `agent_commander_dossiers.json`, and
