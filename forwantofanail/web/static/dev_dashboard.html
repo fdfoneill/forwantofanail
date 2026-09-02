@@ -366,6 +366,7 @@
       <div class="status" id="agentModalStatus" aria-live="polite"></div>
       <div class="agent-context-grid">
         <section><h3>Dossier</h3><pre id="agentDossier"></pre></section>
+        <section><h3>Strategic Plan</h3><pre id="agentStrategicPlan"></pre></section>
         <section>
           <h3>Scratchpad</h3>
           <textarea class="memory-editor" id="agentMemory"></textarea>
@@ -427,6 +428,7 @@
       agentModalClose: document.getElementById("agentModalClose"),
       agentModalStatus: document.getElementById("agentModalStatus"),
       agentDossier: document.getElementById("agentDossier"),
+      agentStrategicPlan: document.getElementById("agentStrategicPlan"),
       agentMemory: document.getElementById("agentMemory"),
       agentMemorySave: document.getElementById("agentMemorySave"),
       agentRunSelect: document.getElementById("agentRunSelect"),
@@ -673,6 +675,7 @@
       state.agentCommanderId = row.commander_id;
       els.agentModalTitle.textContent = `${row.commander_name} — Agent Context`;
       els.agentDossier.textContent = "";
+      els.agentStrategicPlan.textContent = "";
       els.agentMemory.value = "";
       els.agentRunSelect.replaceChildren();
       els.agentTranscript.replaceChildren();
@@ -683,6 +686,15 @@
         const context = await api(`/v1/admin/agents/${encodeURIComponent(row.commander_id)}/context`, { headers: adminHeaders() });
         state.agentMemoryRevision = Number(context.memory_revision || 0);
         els.agentDossier.textContent = context.dossier ? JSON.stringify(context.dossier.content, null, 2) : "No dossier available.";
+        const review = context.strategic_review || {};
+        const planDisplay = {
+          plan: context.strategic_plan,
+          review_required: !!review.required,
+          review_reason: review.reason || null,
+          review_due: review.due || null,
+          consecutive_passive_watches: Number(review.consecutive_passive_watches || 0),
+        };
+        els.agentStrategicPlan.textContent = JSON.stringify(planDisplay, null, 2);
         els.agentMemory.value = context.memory || "";
         const history = await api(`/v1/admin/agents/${encodeURIComponent(row.commander_id)}/runs`, { headers: adminHeaders() });
         for (const run of history.runs || []) {
