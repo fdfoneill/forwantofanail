@@ -100,6 +100,12 @@ class Commander(Base):
         uselist=False,
         cascade="all, delete-orphan",
     )
+    agent_assignment = relationship(
+        "AgentAssignment", back_populates="commander", uselist=False, cascade="all, delete-orphan"
+    )
+    agent_dossier = relationship(
+        "AgentCommanderDossier", back_populates="commander", uselist=False, cascade="all, delete-orphan"
+    )
 
 
 class CommanderTrait(Base):
@@ -476,6 +482,138 @@ class IdempotencyRecord(Base):
     request_hash = Column(String(64), nullable=False)
     response_json = Column(Text, nullable=False)
     created_at = Column(DateTime, nullable=False, index=True)
+
+
+class AgentCommanderDossier(Base):
+    __tablename__ = "agent_commander_dossiers"
+
+    commander_id = Column(Integer, ForeignKey("commanders.commander_id", ondelete="CASCADE"), primary_key=True)
+    source_kind = Column(String(20), nullable=False)
+    revision = Column(Integer, nullable=False, default=1)
+    content_json = Column(Text, nullable=False)
+    content_hash = Column(String(64), nullable=False)
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False)
+
+    commander = relationship("Commander", back_populates="agent_dossier")
+
+
+class AgentAssignment(Base):
+    __tablename__ = "agent_assignments"
+
+    commander_id = Column(Integer, ForeignKey("commanders.commander_id", ondelete="CASCADE"), primary_key=True)
+    profile_id = Column(String(80), nullable=False)
+    enabled = Column(Boolean, nullable=False, default=True, index=True)
+    current_memory_revision = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, nullable=False)
+    updated_at = Column(DateTime, nullable=False)
+
+    commander = relationship("Commander", back_populates="agent_assignment")
+    runs = relationship("AgentRun", back_populates="assignment", cascade="all, delete-orphan")
+    memories = relationship("AgentMemoryRevision", back_populates="assignment", cascade="all, delete-orphan")
+
+
+class AgentRun(Base):
+    __tablename__ = "agent_runs"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('queued', 'running', 'completed', 'failed', 'timed_out', 'skipped', 'obsolete')",
+            name="ck_agent_runs_status",
+        ),
+        CheckConstraint("trigger IN ('watch', 'assignment', 'retry', 'reconcile')", name="ck_agent_runs_trigger"),
+        CheckConstraint("world_tick >= 0", name="ck_agent_runs_world_tick"),
+        CheckConstraint("attempt >= 1", name="ck_agent_runs_attempt"),
+        UniqueConstraint("commander_id", "world_tick", "attempt", name="uq_agent_runs_commander_tick_attempt"),
+        Index("ix_agent_runs_queue", "status", "created_at", "run_id"),
+    )
+
+    run_id = Column(Integer, primary_key=True, autoincrement=True)
+    commander_id = Column(Integer, ForeignKey("agent_assignments.commander_id", ondelete="CASCADE"), nullable=False, index=True)
+    world_tick = Column(Integer, nullable=False, index=True)
+    attempt = Column(Integer, nullable=False, default=1)
+    trigger = Column(String(20), nullable=False)
+    status = Column(String(20), nullable=False, default="queued", index=True)
+    profile_id = Column(String(80), nullable=False)
+    provider = Column(String(30), nullable=True)
+    model = Column(String(160), nullable=True)
+    rules_hash = Column(String(64), nullable=True)
+    dossier_hash = Column(String(64), nullable=True)
+    starting_memory_revision = Column(Integer, nullable=False, default=0)
+    ending_memory_revision = Column(Integer, nullable=True)
+    lease_owner = Column(String(120), nullable=True)
+    lease_expires_at = Column(DateTime, nullable=True, index=True)
+    started_at = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, nullable=False)
+    model_turns = Column(Integer, nullable=False, default=0)
+    tool_calls = Column(Integer, nullable=False, default=0)
+    input_tokens = Column(Integer, nullable=False, default=0)
+    output_tokens = Column(Integer, nullable=False, default=0)
+    final_summary_json = Column(Text, nullable=True)
+    error_code = Column(String(80), nullable=True)
+    error_message = Column(Text, nullable=True)
+
+    assignment = relationship("AgentAssignment", back_populates="runs")
+    events = relationship("AgentRunEvent", back_populates="run", cascade="all, delete-orphan")
+    sessions = relationship("AgentRunSession", back_populates="run", cascade="all, delete-orphan")
+
+
+class AgentRunEvent(Base):
+    __tablename__ = "agent_run_events"
+    __table_args__ = (
+        UniqueConstraint("run_id", "sequence", name="uq_agent_run_events_sequence"),
+        Index("ix_agent_run_events_run_sequence", "run_id", "sequence"),
+    )
+
+    event_id = Column(Integer, primary_key=True, autoincrement=True)
+    run_id = Column(Integer, ForeignKey("agent_runs.run_id", ondelete="CASCADE"), nullable=False)
+    sequence = Column(Integer, nullable=False)
+    event_kind = Column(String(40), nullable=False)
+    payload_json = Column(Text, nullable=False, default="{}")
+    created_at = Column(DateTime, nullable=False)
+    duration_ms = Column(Integer, nullable=True)
+
+    run = relationship("AgentRun", back_populates="events")
+
+
+class AgentMemoryRevision(Base):
+    __tablename__ = "agent_memory_revisions"
+    __table_args__ = (
+        PrimaryKeyConstraint("commander_id", "revision"),
+    )
+
+    commander_id = Column(Integer, ForeignKey("agent_assignments.commander_id", ondelete="CASCADE"), nullable=False)
+    revision = Column(Integer, nullable=False)
+    content = Column(Text, nullable=False)
+    author_kind = Column(String(20), nullable=False)
+    run_id = Column(Integer, ForeignKey("agent_runs.run_id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime, nullable=False)
+
+    assignment = relationship("AgentAssignment", back_populates="memories")
+
+
+class AgentRunSession(Base):
+    __tablename__ = "agent_run_sessions"
+
+    token_hash = Column(String(64), primary_key=True)
+    run_id = Column(Integer, ForeignKey("agent_runs.run_id", ondelete="CASCADE"), nullable=False, index=True)
+    commander_id = Column(Integer, ForeignKey("commanders.commander_id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False)
+    last_used_at = Column(DateTime, nullable=False)
+    expires_at = Column(DateTime, nullable=False, index=True)
+    revoked_at = Column(DateTime, nullable=True)
+
+    run = relationship("AgentRun", back_populates="sessions")
+
+
+class AgentWorkerHeartbeat(Base):
+    __tablename__ = "agent_worker_heartbeats"
+
+    worker_id = Column(String(120), primary_key=True)
+    concurrency = Column(Integer, nullable=False, default=1)
+    started_at = Column(DateTime, nullable=False)
+    last_seen_at = Column(DateTime, nullable=False, index=True)
+    runtime_version = Column(String(30), nullable=False, default="1")
 
 
 # Cross-process invariants. Partial unique indexes are supported by both

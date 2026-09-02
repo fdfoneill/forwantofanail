@@ -202,6 +202,35 @@ Export the canonical JSON Schema catalog for any other model/tool runtime with:
 python -m forwantofanail.agent_tools.export commander-tools.json
 ```
 
+## Agent commanders
+
+Agent control is assigned by an administrator from the dev dashboard and is
+mutually exclusive with a human commander claim. Each enabled agent receives
+one queued heartbeat per watch. Time advancement waits for those heartbeats to
+complete or be explicitly skipped.
+
+Configure either or both provider profiles:
+
+```bash
+export OPENAI_API_KEY='...'
+export OPENAI_AGENT_MODEL='your-tool-capable-model'
+
+export OLLAMA_BASE_URL='http://127.0.0.1:11434'
+export OLLAMA_AGENT_MODEL='your-installed-tool-capable-model'
+```
+
+Run the API, then start one or more independent workers:
+
+```bash
+python -m forwantofanail.agent_runtime.worker --concurrency 4
+```
+
+The scenario owns `agent_rules.md`, `agent_commander_dossiers.json`, and
+`agent_profiles.json`. Original commanders use authored dossiers; subcommanders
+receive deterministic dossiers when they are created. The database stores
+versioned scratchpads and append-only visible run transcripts. Hidden provider
+reasoning is neither stored nor displayed.
+
 # Data Structure
 
 Table: armies

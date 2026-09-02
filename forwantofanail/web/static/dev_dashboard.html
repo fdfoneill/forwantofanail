@@ -236,41 +236,62 @@
     .muted {
       color: var(--muted);
     }
-    .route-result {
+    .agent-list {
       display: grid;
       gap: 8px;
-      margin-top: 12px;
-      padding: 12px;
+      margin: 10px 0 0;
+      padding: 0;
+      list-style: none;
+    }
+    .agent-row {
+      display: grid;
+      grid-template-columns: minmax(180px, 1fr) minmax(140px, 0.7fr) auto;
+      gap: 8px;
+      align-items: center;
+      padding: 10px;
       border: 1px solid var(--line);
       border-radius: 10px;
       background: #fff;
     }
-    .route-result[hidden] {
-      display: none;
+    .agent-row select, .agent-row button { margin: 0; }
+    .agent-row button { width: auto; }
+    .agent-name { font-weight: 800; }
+    .agent-meta, .agent-barrier { color: var(--muted); font-size: 13px; }
+    .agent-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+    .agent-actions button { padding: 7px 9px; font-size: 12px; }
+    .agent-badge {
+      display: inline-block;
+      margin-left: 6px;
+      border-radius: 999px;
+      padding: 2px 7px;
+      background: #e8e1d6;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .04em;
     }
-    .route-summary {
+    .agent-badge.completed { color: var(--ok); background: #e0efe6; }
+    .agent-badge.failed, .agent-badge.timed_out { color: var(--error); background: #f5dfdc; }
+    .agent-badge.running { color: #6b4b00; background: #f7e9b9; }
+    .agent-context-grid { display: grid; gap: 14px; }
+    .agent-context-grid h3 { margin: 0 0 6px; font-size: 14px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+    .agent-context-grid pre {
       margin: 0;
-      font-family: Georgia, "Times New Roman", serif;
-      font-size: 16px;
-      line-height: 1.5;
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
     }
-    .route-instruction {
-      margin: 0;
-      color: var(--accent-2);
-      font-weight: 700;
-    }
-    .route-meta {
-      margin: 0;
-      color: var(--muted);
-      font-size: 13px;
-    }
-    .route-legs {
-      display: grid;
-      gap: 4px;
-      margin: 0;
-      padding-left: 20px;
-      font-size: 13px;
-      line-height: 1.4;
+    .agent-transcript { display: grid; gap: 8px; }
+    .agent-event { padding: 9px; border-left: 4px solid var(--line); background: #fff; font-size: 13px; }
+    .agent-event strong { display: block; margin-bottom: 4px; }
+    .agent-event pre { border: 0; padding: 0; }
+    .memory-editor { min-height: 150px; width: 100%; resize: vertical; }
+    @media (max-width: 700px) {
+      .agent-row { grid-template-columns: 1fr; }
+      .agent-actions { justify-content: flex-start; }
     }
     @media (max-width: 900px) {
       body { padding: 16px; }
@@ -306,6 +327,7 @@
         <label for="stepCount">Manual Advance Watches</label>
         <input id="stepCount" type="number" min="1" value="1" />
         <button id="advanceButton" type="button">Advance Time</button>
+        <button id="forceAdvanceButton" class="danger" type="button">Force Advance / Skip Agents</button>
 
         <div class="toggle-row">
           <input id="autoAdvanceEnabled" type="checkbox" />
@@ -327,40 +349,35 @@
       </section>
 
       <section class="panel">
-        <div class="title">Route Planner</div>
-        <form id="routePlannerForm">
-          <label for="routeArmy">Army / mobility profile</label>
-          <select id="routeArmy" required></select>
-
-          <label for="routeOriginMode">Start point</label>
-          <select id="routeOriginMode">
-            <option value="army">Army location</option>
-            <option value="stronghold">Stronghold</option>
-          </select>
-
-          <div id="routeOriginStrongholdGroup" hidden>
-            <label for="routeOriginStronghold">Starting stronghold</label>
-            <select id="routeOriginStronghold"></select>
-          </div>
-
-          <label for="routeDestinationStronghold">Destination stronghold</label>
-          <select id="routeDestinationStronghold" required></select>
-
-          <div class="toggle-row">
-            <input id="routeAllowOffRoad" type="checkbox" />
-            <label for="routeAllowOffRoad">Allow off-road travel</label>
-          </div>
-          <button id="routePlanButton" type="submit" disabled>Summarize Route</button>
-        </form>
-        <div class="status" id="routeStatus" aria-live="polite"></div>
-        <div class="route-result" id="routeResult" hidden>
-          <p class="route-summary" id="routeSummary"></p>
-          <p class="route-instruction" id="routeInstruction"></p>
-          <p class="route-meta" id="routeMeta"></p>
-          <ol class="route-legs" id="routeLegs"></ol>
-        </div>
+        <div class="title">Agent Commanders</div>
+        <div class="agent-barrier" id="agentBarrier">No agent status loaded.</div>
+        <ul class="agent-list" id="agentList"></ul>
+        <div class="status" id="agentStatus" aria-live="polite"></div>
       </section>
     </div>
+  </div>
+
+  <div class="modal-overlay" id="agentModalOverlay" hidden>
+    <section class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="agentModalTitle">
+      <div class="modal-header">
+        <h2 class="modal-title" id="agentModalTitle">Agent Commander</h2>
+        <button class="modal-close" id="agentModalClose" type="button">Close</button>
+      </div>
+      <div class="status" id="agentModalStatus" aria-live="polite"></div>
+      <div class="agent-context-grid">
+        <section><h3>Dossier</h3><pre id="agentDossier"></pre></section>
+        <section>
+          <h3>Scratchpad</h3>
+          <textarea class="memory-editor" id="agentMemory"></textarea>
+          <button id="agentMemorySave" type="button">Save Admin Revision</button>
+        </section>
+        <section>
+          <h3>Run Transcript</h3>
+          <select id="agentRunSelect" aria-label="Agent run history"></select>
+          <div class="agent-transcript" id="agentTranscript"></div>
+        </section>
+      </div>
+    </section>
   </div>
 
   <div class="modal-overlay" id="briefModalOverlay" hidden>
@@ -381,7 +398,9 @@
       lastAdvanceAt: null,
       briefRequestId: 0,
       briefTrigger: null,
-      navigationOptions: { armies: [], strongholds: [] },
+      agentOverview: null,
+      agentCommanderId: null,
+      agentMemoryRevision: 0,
     };
 
     const els = {
@@ -394,25 +413,24 @@
       adminStatus: document.getElementById("adminStatus"),
       stepCount: document.getElementById("stepCount"),
       advanceButton: document.getElementById("advanceButton"),
+      forceAdvanceButton: document.getElementById("forceAdvanceButton"),
       autoAdvanceEnabled: document.getElementById("autoAdvanceEnabled"),
       autoIntervalSeconds: document.getElementById("autoIntervalSeconds"),
       advanceStatus: document.getElementById("advanceStatus"),
       summaryList: document.getElementById("summaryList"),
       summaryStatus: document.getElementById("summaryStatus"),
-      routePlannerForm: document.getElementById("routePlannerForm"),
-      routeArmy: document.getElementById("routeArmy"),
-      routeOriginMode: document.getElementById("routeOriginMode"),
-      routeOriginStrongholdGroup: document.getElementById("routeOriginStrongholdGroup"),
-      routeOriginStronghold: document.getElementById("routeOriginStronghold"),
-      routeDestinationStronghold: document.getElementById("routeDestinationStronghold"),
-      routeAllowOffRoad: document.getElementById("routeAllowOffRoad"),
-      routePlanButton: document.getElementById("routePlanButton"),
-      routeStatus: document.getElementById("routeStatus"),
-      routeResult: document.getElementById("routeResult"),
-      routeSummary: document.getElementById("routeSummary"),
-      routeInstruction: document.getElementById("routeInstruction"),
-      routeMeta: document.getElementById("routeMeta"),
-      routeLegs: document.getElementById("routeLegs"),
+      agentBarrier: document.getElementById("agentBarrier"),
+      agentList: document.getElementById("agentList"),
+      agentStatus: document.getElementById("agentStatus"),
+      agentModalOverlay: document.getElementById("agentModalOverlay"),
+      agentModalTitle: document.getElementById("agentModalTitle"),
+      agentModalClose: document.getElementById("agentModalClose"),
+      agentModalStatus: document.getElementById("agentModalStatus"),
+      agentDossier: document.getElementById("agentDossier"),
+      agentMemory: document.getElementById("agentMemory"),
+      agentMemorySave: document.getElementById("agentMemorySave"),
+      agentRunSelect: document.getElementById("agentRunSelect"),
+      agentTranscript: document.getElementById("agentTranscript"),
       briefModalOverlay: document.getElementById("briefModalOverlay"),
       briefModalTitle: document.getElementById("briefModalTitle"),
       briefModalClose: document.getElementById("briefModalClose"),
@@ -441,8 +459,17 @@
         if (parsed && typeof parsed === "object" && typeof parsed.detail === "string" && parsed.detail.trim()) {
           return parsed.detail.trim();
         }
+        if (parsed?.detail?.message) return String(parsed.detail.message);
       } catch (_) {}
       return raw;
+    }
+
+    function structuredErrorCode(err) {
+      try {
+        return JSON.parse(String(err?.message || ""))?.detail?.code || "";
+      } catch (_) {
+        return "";
+      }
     }
 
     async function api(path, options = {}) {
@@ -484,8 +511,9 @@
         const location = String(row.location || "at an unknown location");
         const status = String(row.status || "unknown");
         const claimed = !!row.claimed;
+        const agentControlled = !!row.agent_controlled;
         const item = document.createElement("li");
-        item.className = `summary-item${claimed ? "" : " unclaimed"}`;
+        item.className = `summary-item${claimed || agentControlled ? "" : " unclaimed"}`;
         const button = document.createElement("button");
         button.className = "summary-button";
         button.type = "button";
@@ -493,11 +521,16 @@
         const armyName = document.createElement("strong");
         armyName.textContent = army;
         button.append(armyName, document.createTextNode(` (${commander}, ${faction}): ${location}, ${status}`));
-        if (!claimed) {
+        if (!claimed && !agentControlled) {
           const claimStatus = document.createElement("span");
           claimStatus.className = "muted";
           claimStatus.textContent = " (unclaimed)";
           button.append(claimStatus);
+        } else if (agentControlled) {
+          const controlStatus = document.createElement("span");
+          controlStatus.className = "muted";
+          controlStatus.textContent = " (agent)";
+          button.append(controlStatus);
         }
         button.addEventListener("click", () => openBriefModal(row, button));
         item.append(button);
@@ -511,109 +544,182 @@
       setStatus(els.summaryStatus, `Updated ${new Date().toLocaleTimeString()}`);
     }
 
-    function replaceSelectOptions(select, rows, valueKey, labelForRow) {
-      const previousValue = select.value;
-      select.replaceChildren();
-      for (const row of rows) {
-        const option = document.createElement("option");
-        option.value = String(row[valueKey] || "");
-        option.textContent = labelForRow(row);
-        select.append(option);
-      }
-      if ([...select.options].some((option) => option.value === previousValue)) {
-        select.value = previousValue;
-      }
+    function profileOption(select, profile) {
+      const option = document.createElement("option");
+      option.value = profile.id;
+      option.disabled = !profile.available;
+      option.textContent = `${profile.label}${profile.model ? ` — ${profile.model}` : ""}${profile.available ? "" : " (unavailable)"}`;
+      select.append(option);
     }
 
-    function renderNavigationOptions(options) {
-      const armies = Array.isArray(options?.armies) ? options.armies : [];
-      const strongholds = Array.isArray(options?.strongholds) ? options.strongholds : [];
-      state.navigationOptions = { armies, strongholds };
-      replaceSelectOptions(els.routeArmy, armies, "army_id", (row) => {
-        const commander = String(row.commander_name || "No commander");
-        const location = String(row.location || "unknown location");
-        return `${String(row.army_name || "Unnamed army")} — ${commander} (${location})`;
-      });
-      const strongholdLabel = (row) => {
-        const type = String(row.stronghold_type || "stronghold").toLowerCase();
-        return `${String(row.stronghold_name || "Unnamed stronghold")} (${type})`;
-      };
-      replaceSelectOptions(
-        els.routeOriginStronghold,
-        strongholds,
-        "stronghold_id",
-        strongholdLabel
-      );
-      replaceSelectOptions(
-        els.routeDestinationStronghold,
-        strongholds,
-        "stronghold_id",
-        strongholdLabel
-      );
-      const unavailable = !armies.length || !strongholds.length;
-      els.routePlanButton.disabled = unavailable;
-      if (unavailable) {
-        setStatus(els.routeStatus, "Route planning requires at least one army and one stronghold.", "error");
-      } else if (els.routeStatus.textContent.includes("requires at least")) {
-        setStatus(els.routeStatus, "");
-      }
+    async function agentMutation(path, body = {}) {
+      await api(path, { method: "POST", headers: adminHeaders(), body: JSON.stringify(body) });
+      await refreshAgents();
     }
 
-    async function refreshNavigationOptions() {
-      const options = await api("/v1/admin/navigation/options", { headers: adminHeaders() });
-      renderNavigationOptions(options);
-    }
-
-    function renderRouteResult(route) {
-      els.routeSummary.textContent = String(route?.summary || "No route summary is available.");
-      els.routeInstruction.textContent = String(route?.initial_instruction || "");
-      const leagues = Number(route?.total_leagues || 0);
-      const watches = Number(route?.estimated_watches || 0);
-      const routeType = route?.route_type === "road_only" ? "road only" : "fastest available";
-      els.routeMeta.textContent = `${leagues} league${leagues === 1 ? "" : "s"}; approximately ${watches} watch${watches === 1 ? "" : "es"}; ${routeType}.`;
-      els.routeLegs.replaceChildren();
-      const legs = Array.isArray(route?.legs) ? route.legs : [];
-      for (const leg of legs) {
+    function renderAgents(overview) {
+      state.agentOverview = overview;
+      const barrier = overview?.barrier || {};
+      const workerText = overview?.workers?.length
+        ? `${overview.workers.length} worker${overview.workers.length === 1 ? "" : "s"} online. `
+        : "No workers online. ";
+      els.agentBarrier.textContent = workerText + (barrier.enabled
+        ? `${barrier.ready || 0} of ${barrier.enabled} current-watch heartbeats ready; ${barrier.pending?.length || 0} pending; ${barrier.needs_resolution?.length || 0} need resolution.`
+        : "No agent commanders are enabled.");
+      els.agentList.replaceChildren();
+      const profiles = Array.isArray(overview?.profiles) ? overview.profiles : [];
+      for (const row of overview?.commanders || []) {
         const item = document.createElement("li");
-        const travel = String(leg.travel || "travel").replaceAll("_", "-");
-        const legLeagues = Number(leg.leagues || 0);
-        item.textContent = `${String(leg.from || "Start")} to ${String(leg.to || "destination")}: ${legLeagues} league${legLeagues === 1 ? "" : "s"} (${travel})`;
-        els.routeLegs.append(item);
+        item.className = "agent-row";
+        const identity = document.createElement("div");
+        const name = document.createElement("div");
+        name.className = "agent-name";
+        name.textContent = row.commander_name;
+        const meta = document.createElement("div");
+        meta.className = "agent-meta";
+        meta.textContent = `${row.army_name || "No field army"} · ${row.control}`;
+        if (row.run?.status) {
+          const badge = document.createElement("span");
+          badge.className = `agent-badge ${row.run.status}`;
+          badge.textContent = row.run.status.replaceAll("_", " ");
+          meta.append(badge);
+        }
+        identity.append(name, meta);
+        const select = document.createElement("select");
+        select.setAttribute("aria-label", `Agent profile for ${row.commander_name}`);
+        for (const profile of profiles) profileOption(select, profile);
+        if (row.profile_id) select.value = row.profile_id;
+        else if (profiles.some((profile) => profile.available)) {
+          select.value = profiles.find((profile) => profile.available).id;
+        }
+        select.disabled = row.control === "human" || row.run?.status === "running";
+        if (row.control === "agent") {
+          select.addEventListener("change", async () => {
+            try {
+              await agentMutation(`/v1/admin/agents/${encodeURIComponent(row.commander_id)}/assign`, { profile_id: select.value });
+            } catch (err) {
+              setStatus(els.agentStatus, `Profile error: ${readableErrorMessage(err)}`, "error");
+              await refreshAgents();
+            }
+          });
+        }
+        const actions = document.createElement("div");
+        actions.className = "agent-actions";
+        if (row.control === "agent") {
+          const disable = document.createElement("button");
+          disable.type = "button";
+          disable.className = "danger";
+          disable.textContent = "Disable";
+          disable.addEventListener("click", () => agentMutation(`/v1/admin/agents/${encodeURIComponent(row.commander_id)}/disable`));
+          actions.append(disable);
+          if (["failed", "timed_out", "skipped", "obsolete"].includes(row.run?.status)) {
+            const retry = document.createElement("button");
+            retry.type = "button";
+            retry.textContent = "Retry";
+            retry.addEventListener("click", () => agentMutation(`/v1/admin/agents/${encodeURIComponent(row.commander_id)}/retry`));
+            actions.append(retry);
+          }
+          if (["queued", "running", "failed", "timed_out"].includes(row.run?.status)) {
+            const skip = document.createElement("button");
+            skip.type = "button";
+            skip.className = "secondary";
+            skip.textContent = "Skip";
+            skip.addEventListener("click", () => agentMutation(`/v1/admin/agents/${encodeURIComponent(row.commander_id)}/skip`));
+            actions.append(skip);
+          }
+          if (["queued", "running"].includes(row.run?.status)) {
+            const cancel = document.createElement("button");
+            cancel.type = "button";
+            cancel.className = "secondary";
+            cancel.textContent = "Restart";
+            cancel.addEventListener("click", () => agentMutation(`/v1/admin/agents/${encodeURIComponent(row.commander_id)}/cancel`));
+            actions.append(cancel);
+          }
+        } else if (row.control === "unclaimed") {
+          const assign = document.createElement("button");
+          assign.type = "button";
+          assign.textContent = "Assign";
+          assign.disabled = !select.value || select.selectedOptions[0]?.disabled;
+          select.addEventListener("change", () => {
+            assign.disabled = !select.value || select.selectedOptions[0]?.disabled;
+          });
+          assign.addEventListener("click", async () => {
+            const profile = profiles.find((value) => value.id === select.value);
+            if (profile?.provider === "openai" && !window.confirm("This profile sends the commander's context and correspondence to the configured OpenAI account. Continue?")) return;
+            await agentMutation(`/v1/admin/agents/${encodeURIComponent(row.commander_id)}/assign`, { profile_id: select.value });
+          });
+          actions.append(assign);
+        }
+        if (row.profile_id) {
+          const details = document.createElement("button");
+          details.type = "button";
+          details.className = "secondary";
+          details.textContent = "Details";
+          details.addEventListener("click", () => openAgentModal(row));
+          actions.append(details);
+        }
+        item.append(identity, select, actions);
+        els.agentList.append(item);
       }
-      els.routeLegs.hidden = !legs.length;
-      els.routeResult.hidden = false;
     }
 
-    async function summarizeRoute() {
-      const armyId = els.routeArmy.value;
-      const destination = els.routeDestinationStronghold.value;
-      const origin = els.routeOriginMode.value === "stronghold"
-        ? els.routeOriginStronghold.value
-        : "current";
-      if (!armyId || !destination || !origin) {
-        setStatus(els.routeStatus, "Select an army, start point, and destination.", "error");
-        return;
-      }
-      const query = new URLSearchParams({
-        origin,
-        destination,
-        allow_off_road: String(els.routeAllowOffRoad.checked),
-      });
-      els.routePlanButton.disabled = true;
-      els.routeResult.hidden = true;
-      setStatus(els.routeStatus, "Calculating route...");
+    async function refreshAgents() {
+      const overview = await api("/v1/admin/agents", { headers: adminHeaders() });
+      renderAgents(overview);
+      setStatus(els.agentStatus, `Updated ${new Date().toLocaleTimeString()}`);
+    }
+
+    async function openAgentModal(row) {
+      state.agentCommanderId = row.commander_id;
+      els.agentModalTitle.textContent = `${row.commander_name} — Agent Context`;
+      els.agentDossier.textContent = "";
+      els.agentMemory.value = "";
+      els.agentRunSelect.replaceChildren();
+      els.agentTranscript.replaceChildren();
+      setStatus(els.agentModalStatus, "Loading agent context...");
+      els.agentModalOverlay.hidden = false;
+      document.body.classList.add("modal-open");
       try {
-        const route = await api(
-          `/v1/admin/armies/${encodeURIComponent(armyId)}/navigation/route?${query.toString()}`,
-          { headers: adminHeaders() }
-        );
-        renderRouteResult(route);
-        setStatus(els.routeStatus, "Route summarized.", "ok");
+        const context = await api(`/v1/admin/agents/${encodeURIComponent(row.commander_id)}/context`, { headers: adminHeaders() });
+        state.agentMemoryRevision = Number(context.memory_revision || 0);
+        els.agentDossier.textContent = context.dossier ? JSON.stringify(context.dossier.content, null, 2) : "No dossier available.";
+        els.agentMemory.value = context.memory || "";
+        const history = await api(`/v1/admin/agents/${encodeURIComponent(row.commander_id)}/runs`, { headers: adminHeaders() });
+        for (const run of history.runs || []) {
+          const option = document.createElement("option");
+          option.value = String(run.run_id);
+          option.textContent = `Tick ${run.world_tick}, attempt ${run.attempt} — ${run.status}`;
+          els.agentRunSelect.append(option);
+        }
+        els.agentRunSelect.hidden = !els.agentRunSelect.options.length;
+        if (els.agentRunSelect.value) await loadAgentRun(els.agentRunSelect.value);
+        else els.agentTranscript.textContent = "No run transcript yet.";
+        setStatus(els.agentModalStatus, "");
       } catch (err) {
-        setStatus(els.routeStatus, `Route error: ${readableErrorMessage(err)}`, "error");
-      } finally {
-        els.routePlanButton.disabled = !state.navigationOptions.armies.length || !state.navigationOptions.strongholds.length;
+        setStatus(els.agentModalStatus, `Agent detail error: ${readableErrorMessage(err)}`, "error");
       }
+    }
+
+    async function loadAgentRun(runId) {
+      els.agentTranscript.replaceChildren();
+      const detail = await api(`/v1/admin/agents/runs/${encodeURIComponent(runId)}`, { headers: adminHeaders() });
+      for (const event of detail.events || []) {
+        const block = document.createElement("div");
+        block.className = "agent-event";
+        const label = document.createElement("strong");
+        label.textContent = `${event.sequence}. ${String(event.kind).replaceAll("_", " ")}`;
+        const payload = document.createElement("pre");
+        payload.textContent = JSON.stringify(event.payload, null, 2);
+        block.append(label, payload);
+        els.agentTranscript.append(block);
+      }
+      if (!els.agentTranscript.children.length) els.agentTranscript.textContent = "No events recorded.";
+    }
+
+    function closeAgentModal() {
+      els.agentModalOverlay.hidden = true;
+      state.agentCommanderId = null;
+      document.body.classList.remove("modal-open");
     }
 
     async function openBriefModal(row, trigger) {
@@ -670,13 +776,13 @@
       try {
         await refreshClock();
         await refreshSummary();
-        await refreshNavigationOptions();
+        await refreshAgents();
       } catch (err) {
         setStatus(els.summaryStatus, `Refresh error: ${readableErrorMessage(err)}`, "error");
       }
     }
 
-    async function advanceTime(steps, { automatic = false } = {}) {
+    async function advanceTime(steps, { automatic = false, skipAgents = false } = {}) {
       if (!Number.isFinite(steps) || steps < 1) {
         setStatus(els.advanceStatus, "Steps must be >= 1", "error");
         return;
@@ -690,7 +796,7 @@
         const result = await api("/v1/admin/time/advance", {
           method: "POST",
           headers: adminHeaders(),
-          body: JSON.stringify({ steps, execute_actions: true }),
+          body: JSON.stringify({ steps, execute_actions: true, skip_agent_heartbeats: skipAgents }),
         });
         state.lastAdvanceAt = new Date();
         const prefix = automatic ? "Auto-advanced" : "Advanced";
@@ -702,8 +808,14 @@
         );
         await refreshDashboard();
       } catch (err) {
-        setStatus(els.advanceStatus, `Advance error: ${readableErrorMessage(err)}`, "error");
-        if (automatic) {
+        const code = structuredErrorCode(err);
+        if (automatic && code === "agent_runs_pending") {
+          setStatus(els.advanceStatus, "Automatic advancement is waiting for agent heartbeats.");
+          await refreshAgents();
+        } else {
+          setStatus(els.advanceStatus, `Advance error: ${readableErrorMessage(err)}`, "error");
+        }
+        if (automatic && code !== "agent_runs_pending") {
           stopAutoAdvance();
         }
       } finally {
@@ -739,6 +851,11 @@
     els.advanceButton.addEventListener("click", () => {
       advanceTime(Number(els.stepCount.value || "1"));
     });
+    els.forceAdvanceButton.addEventListener("click", () => {
+      if (window.confirm("Skip every unfinished agent heartbeat for the departing watch and advance time?")) {
+        advanceTime(Number(els.stepCount.value || "1"), { skipAgents: true });
+      }
+    });
 
     els.resetClaimsButton.addEventListener("click", async () => {
       const confirmed = window.confirm("Reset all commander claims and invalidate those player tokens?");
@@ -761,14 +878,30 @@
     });
 
     els.refreshButton.addEventListener("click", refreshDashboard);
-    els.routeOriginMode.addEventListener("change", () => {
-      els.routeOriginStrongholdGroup.hidden = els.routeOriginMode.value !== "stronghold";
-      els.routeResult.hidden = true;
-      setStatus(els.routeStatus, "");
+    els.agentModalClose.addEventListener("click", closeAgentModal);
+    els.agentModalOverlay.addEventListener("click", (event) => {
+      if (event.target === els.agentModalOverlay) closeAgentModal();
     });
-    els.routePlannerForm.addEventListener("submit", (event) => {
-      event.preventDefault();
-      summarizeRoute();
+    els.agentMemorySave.addEventListener("click", async () => {
+      if (!state.agentCommanderId) return;
+      try {
+        const result = await api(`/v1/admin/agents/${encodeURIComponent(state.agentCommanderId)}/memory`, {
+          method: "PUT",
+          headers: adminHeaders(),
+          body: JSON.stringify({ expected_revision: state.agentMemoryRevision, content: els.agentMemory.value }),
+        });
+        state.agentMemoryRevision = Number(result.revision);
+        setStatus(els.agentModalStatus, `Saved scratchpad revision ${result.revision}.`, "ok");
+      } catch (err) {
+        setStatus(els.agentModalStatus, `Memory error: ${readableErrorMessage(err)}`, "error");
+      }
+    });
+    els.agentRunSelect.addEventListener("change", async () => {
+      try {
+        await loadAgentRun(els.agentRunSelect.value);
+      } catch (err) {
+        setStatus(els.agentModalStatus, `Transcript error: ${readableErrorMessage(err)}`, "error");
+      }
     });
     els.briefModalClose.addEventListener("click", closeBriefModal);
     els.briefModalOverlay.addEventListener("click", (event) => {
@@ -779,6 +912,8 @@
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !els.briefModalOverlay.hidden) {
         closeBriefModal();
+      } else if (event.key === "Escape" && !els.agentModalOverlay.hidden) {
+        closeAgentModal();
       }
     });
 

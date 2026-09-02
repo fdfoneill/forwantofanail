@@ -17,3 +17,5 @@ dependencies:
   - pip
   - pip:
       - "mcp>=2,<3"
+      - "openai>=1,<3"
+      - "ollama>=0.4,<1"

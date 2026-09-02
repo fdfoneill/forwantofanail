@@ -121,6 +121,9 @@ def _load_csv(model_cls, csv_path: Path, converters: dict[str, callable], *, ign
 def _default_scenario_manifest() -> dict[str, object]:
     return {
         "history_export_config": "history_export.json",
+        "agent_rules": "agent_rules.md",
+        "agent_commander_dossiers": "agent_commander_dossiers.json",
+        "agent_profiles": "agent_profiles.json",
         "stronghold_points": "assets/stronghold_points/copper_coast_strongholds_corrected.shp",
         "csv_files": {
             "terrain_types": "terrain_types.csv",
@@ -197,6 +200,13 @@ def _manifest_csv_path(manifest: dict[str, object], data_dir: Path, key: str, *,
 
 
 def _validate_scenario_manifest(manifest: dict[str, object], data_dir: Path) -> None:
+    for key in ("agent_rules", "agent_commander_dossiers", "agent_profiles"):
+        relative_path = manifest.get(key)
+        if not relative_path:
+            raise ValueError(f"Scenario manifest requires '{key}'.")
+        path = _resolve_scenario_file(data_dir, str(relative_path))
+        if not path.exists():
+            raise FileNotFoundError(f"Scenario agent context file not found at '{path}'.")
     history_export_config = manifest.get("history_export_config")
     if not history_export_config:
         raise ValueError("Scenario manifest requires 'history_export_config'.")
@@ -465,6 +475,14 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
         if clock is None:
             clock = GameClock(singleton_id=1, day=1, watch=1, world_tick=0)
             session.add(clock)
+
+        # The four scenario commanders receive authored dossiers at reset.
+        # Runtime-created subcommanders are generated transactionally when
+        # their commander row and field army are created.
+        from forwantofanail.agent_runtime.context import ensure_dossier
+
+        for commander in session.query(Commander).order_by(Commander.commander_id).all():
+            ensure_dossier(session, commander)
 
         capture_world_snapshot(session, clock, is_final=False)
 
