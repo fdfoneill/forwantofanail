@@ -75,6 +75,15 @@ python -m forwantofanail.core.initialize_db --reset
 
 Reset validates and reads the configured package directly. It never copies assets into `web/static` or writes into the scenario. The scenario map is served from the allowlisted `display_map`; portraits are served from `portraits_dir`.
 
+The convenient local working package may live at the ignored `forwantofanail/data/` path. Create a validated, deterministic versioned backup outside the repository with:
+
+```bash
+export SCENARIO_ARCHIVE_DIR=/absolute/path/to/scenario-archives
+python scripts/export_scenario.py --label release-1
+```
+
+Omit `--label` for a name containing the manifest version and UTC timestamp. The command refuses overwrites, excludes hidden metadata, normalizes archive ordering and timestamps, and writes a matching `.sha256` file.
+
 This reset also auto-generates one garrison army for every stronghold based on its type.
 It also creates the provisional authoritative history snapshot for tick 0. The scenario manifest
 references `history_export.json`, which owns the georeferenced basemap and faction colors used by

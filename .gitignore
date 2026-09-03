@@ -204,6 +204,7 @@ cython_debug/
 .cursorindexingignore
 
 # External scenario packages and runtime output
+/.codex/
 /forwantofanail/data/
 /forwantofanail/web/static/map_diegetic.*
 /var/

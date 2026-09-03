@@ -200,7 +200,6 @@ def test_default_history_config_uses_half_transparent_geotiff_overlay():
     from forwantofanail.core.scenario import get_scenario_package
     config, _ = load_export_config(get_scenario_package().resolve("history_export_config"))
     assert config["basemap"]["resolved_path"].endswith("assets/map_diegetic.tif")
-    assert "forwantofanail/data" not in config["basemap"]["resolved_path"]
     assert config["basemap"]["control_overlay_opacity"] == 0.5
 
 

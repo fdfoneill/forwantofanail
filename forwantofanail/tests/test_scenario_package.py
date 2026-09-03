@@ -12,6 +12,7 @@ from forwantofanail.core.scenario import (
     load_scenario_package,
     scenario_root,
 )
+from forwantofanail.core.scenario_archive import create_scenario_archive
 
 
 def _package(root: Path) -> Path:
@@ -98,3 +99,25 @@ def test_repository_tracks_core_terrain_but_not_scenario_or_runtime_data():
         if 'parents[1] / "data"' in text or "forwantofanail/data" in text:
             offenders.append(str(path.relative_to(repository)))
     assert offenders == []
+
+
+def test_scenario_archive_is_deterministic_and_refuses_overwrite(tmp_path):
+    package = _package(tmp_path / "scenario")
+    first, checksum = create_scenario_archive(
+        scenario_dir=package, output_dir=tmp_path / "archives-a", label="release-1"
+    )
+    second, _ = create_scenario_archive(
+        scenario_dir=package, output_dir=tmp_path / "archives-b", label="release-1"
+    )
+    assert first.read_bytes() == second.read_bytes()
+    assert checksum.read_text().endswith(f"  {first.name}\n")
+    with pytest.raises(FileExistsError, match="Refusing to overwrite"):
+        create_scenario_archive(
+            scenario_dir=package, output_dir=tmp_path / "archives-a", label="release-1"
+        )
+
+
+def test_scenario_archive_rejects_output_inside_package(tmp_path):
+    package = _package(tmp_path / "scenario")
+    with pytest.raises(ValueError, match="outside"):
+        create_scenario_archive(scenario_dir=package, output_dir=package / "archives")
