@@ -328,6 +328,46 @@ def test_fifth_passive_watch_requires_review_and_hold_does_not_evade_it(agent_db
     session.close()
 
 
+def test_plan_destination_reference_round_trips_and_bad_reference_is_recoverable(agent_db):
+    legacy = worker._diegetic_plan({
+        "posture": "advance", "destination": "Brialgon", "destination_stronghold_id": 43,
+    })
+    assert legacy["destination_stronghold_ref"] == "sh_43"
+    assert "destination_stronghold_id" not in legacy
+
+    session = create_session()
+    assignment = assign_agent(session, 0, "ollama_default")
+    assignment.strategic_review_required = False
+    run = session.query(AgentRun).filter(AgentRun.commander_id == 0).one()
+    run.status = "running"
+    session.commit()
+    run_id = run.run_id
+    session.close()
+    result, finished = worker._runtime_call(run_id, ModelToolCall("bad-plan", "fwoan_update_scratchpad", {
+        "expected_revision": 1,
+        "content": "Advance toward Brialgon.",
+        "strategic_plan": {
+            "campaign_objective": "Win the campaign",
+            "operational_objective": "Advance toward Brialgon",
+            "posture": "advance",
+            "destination_stronghold_ref": "sh_bri algon",
+            "rationale": "Brialgon is strategically important.",
+            "immediate_next_step": "Review the route.",
+            "assumptions": [],
+            "reconsideration_conditions": ["The route becomes blocked"],
+            "review_interval_watches": 2,
+        },
+    }))
+    assert finished is False
+    assert result["ok"] is False
+    assert result["error"] == "invalid_destination"
+    assert result["refresh_with"] == "fwoan_get_strategic_overview"
+    session = create_session()
+    assert session.get(AgentRun, run_id).status == "running"
+    assert session.get(AgentAssignment, 0).current_memory_revision == 1
+    session.close()
+
+
 def test_worker_executes_only_one_tool_call_per_model_turn(agent_db, monkeypatch):
     session = create_session()
     assign_agent(session, 0, "ollama_default")

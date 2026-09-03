@@ -9,6 +9,7 @@ import time
 from typing import Any, Literal
 
 import httpx
+from fastapi import HTTPException
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from sqlalchemy import or_
 
@@ -47,7 +48,14 @@ class StrategicPlanInput(BaseModel):
     campaign_objective: str = Field(min_length=1, max_length=1000)
     operational_objective: str = Field(min_length=1, max_length=1000)
     posture: Literal["advance", "defend", "sustain", "reconnoiter", "coordinate"]
-    destination_stronghold_ref: str | None = Field(default=None, max_length=64)
+    destination_stronghold_ref: str | None = Field(
+        default=None,
+        max_length=64,
+        description=(
+            "Stable sh_<id> reference copied exactly from strategic overview, stronghold search, or route summary. "
+            "Never construct a reference from a stronghold name."
+        ),
+    )
     rationale: str = Field(min_length=1, max_length=2000)
     immediate_next_step: str = Field(min_length=1, max_length=1000)
     assumptions: list[str] = Field(default_factory=list, max_length=20)
@@ -224,7 +232,15 @@ def _atlas_compact(result: dict[str, Any]) -> str:
 def _diegetic_plan(plan: dict[str, Any] | None) -> dict[str, Any] | None:
     if plan is None:
         return None
-    return {key: value for key, value in plan.items() if key != "destination_stronghold_id"}
+    visible = {key: value for key, value in plan.items() if key != "destination_stronghold_id"}
+    # Plans written before stable references were retained stored only the
+    # database identity. Derive the sanctioned tool reference so retries and
+    # later revisions can still copy it exactly.
+    if visible.get("destination") and not visible.get("destination_stronghold_ref"):
+        destination_id = plan.get("destination_stronghold_id")
+        if isinstance(destination_id, int):
+            visible["destination_stronghold_ref"] = f"sh_{destination_id}"
+    return visible
 
 
 def _current_plan(session, assignment: AgentAssignment) -> dict[str, Any] | None:
@@ -478,12 +494,31 @@ def _runtime_call(run_id: int, call: ModelToolCall) -> tuple[dict[str, Any], boo
             plan_payload = None
             if value.strategic_plan is not None:
                 raw_plan = value.strategic_plan.model_dump()
-                destination_ref = raw_plan.pop("destination_stronghold_ref", None)
+                destination_ref = raw_plan.get("destination_stronghold_ref")
                 if destination_ref:
                     from forwantofanail.api.routes import _parse_stronghold_ref
-                    destination = session.get(Stronghold, _parse_stronghold_ref(destination_ref))
+                    try:
+                        destination_id = _parse_stronghold_ref(destination_ref)
+                    except HTTPException:
+                        return {
+                            "ok": False,
+                            "error": "invalid_destination",
+                            "message": (
+                                "destination_stronghold_ref must be an exact sh_<id> reference copied from "
+                                "strategic overview, stronghold search, or route summary. Refresh one of those "
+                                "tools and retry the plan update."
+                            ),
+                            "refresh_with": "fwoan_get_strategic_overview",
+                        }, False
+                    destination = session.get(Stronghold, destination_id)
                     if destination is None:
-                        return {"ok": False, "error": "invalid_destination"}, False
+                        return {
+                            "ok": False, "error": "invalid_destination",
+                            "message": "That destination no longer exists. Refresh the strategic overview and choose a current reference.",
+                            "refresh_with": "fwoan_get_strategic_overview",
+                        }, False
+                    destination_ref = f"sh_{int(destination.stronghold_id)}"
+                    raw_plan["destination_stronghold_ref"] = destination_ref
                     raw_plan["destination_stronghold_id"] = int(destination.stronghold_id)
                     raw_plan["destination"] = str(destination.stronghold_name)
                 plan_payload = json.dumps(raw_plan, sort_keys=True, ensure_ascii=False)

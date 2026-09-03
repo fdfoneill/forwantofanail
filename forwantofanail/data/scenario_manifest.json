@@ -16,6 +16,7 @@
   "agent_rules": "agent_rules.md",
   "agent_commander_dossiers": "agent_commander_dossiers.json",
   "agent_profiles": "agent_profiles.json",
+  "agent_strategic_atlas": "agent_strategic_atlas.json",
   "stronghold_points": "assets/stronghold_points/copper_coast_strongholds_corrected.shp",
   "static_assets": [
     {
