@@ -12,7 +12,7 @@ from typing import Any
 import h3
 
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
+
 ALGORITHM_VERSION = "current-flow-atlas-v1"
 CITY_TYPE = "city"
 
@@ -148,7 +148,10 @@ def _shortest(graph: dict[str, set[str]], start: str, end: str) -> list[str] | N
     return None
 
 
-def generate_atlas(data_dir: Path = DATA_DIR) -> dict[str, Any]:
+def generate_atlas(data_dir: Path | None = None) -> dict[str, Any]:
+    if data_dir is None:
+        from forwantofanail.core.scenario import get_scenario_package
+        data_dir = get_scenario_package().root
     manifest_path = data_dir / "scenario_manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     csv_files = manifest["csv_files"]
@@ -297,12 +300,13 @@ def generate_atlas(data_dir: Path = DATA_DIR) -> dict[str, Any]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Generate the scenario strategic atlas used by agent commanders.")
-    parser.add_argument("--data-dir", type=Path, default=DATA_DIR)
+    parser.add_argument("--scenario-dir", type=Path)
     parser.add_argument("--check", action="store_true")
     args = parser.parse_args()
-    generated = generate_atlas(args.data_dir)
-    manifest = json.loads((args.data_dir / "scenario_manifest.json").read_text())
-    output = args.data_dir / manifest["agent_strategic_atlas"]
+    from forwantofanail.core.scenario import load_scenario_package
+    package = load_scenario_package(args.scenario_dir)
+    generated = generate_atlas(package.root)
+    output = package.resolve("agent_strategic_atlas")
     if args.check:
         if not output.exists():
             raise SystemExit("Strategic atlas is missing; run the generator.")

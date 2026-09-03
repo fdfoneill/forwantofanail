@@ -611,12 +611,8 @@ def summarize_route(ctx: ToolContext, payload: SummarizeRouteInput) -> dict[str,
 
 
 def _atlas_payload() -> dict[str, Any]:
-    from forwantofanail.agent_runtime.strategic_atlas import DATA_DIR
-
-    manifest = json.loads((DATA_DIR / "scenario_manifest.json").read_text(encoding="utf-8"))
-    path = (DATA_DIR / str(manifest["agent_strategic_atlas"])).resolve()
-    if DATA_DIR.resolve() not in (path, *path.parents):
-        raise ToolInvocationError("not_found", "The strategic atlas is unavailable.", status_code=503)
+    from forwantofanail.core.scenario import get_scenario_package
+    path = get_scenario_package().resolve("agent_strategic_atlas")
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError) as exc:

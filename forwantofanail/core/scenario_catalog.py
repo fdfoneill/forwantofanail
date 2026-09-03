@@ -9,8 +9,6 @@ from typing import Any
 import h3
 
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
-STATIC_DIR = Path(__file__).resolve().parents[1] / "web" / "static"
 REQUIRED_STRONGHOLD_COLUMNS = {
     "stronghold_id",
     "location_id",
@@ -43,7 +41,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     return payload
 
 
-def _configured_paths(data_dir: Path, static_dir: Path) -> tuple[Path, Path, Path, Path]:
+def _configured_paths(data_dir: Path) -> tuple[Path, Path, Path, Path]:
     manifest = _read_json(data_dir / "scenario_manifest.json")
     csv_files = manifest.get("csv_files")
     if not isinstance(csv_files, dict) or not csv_files.get("strongholds"):
@@ -63,15 +61,10 @@ def _configured_paths(data_dir: Path, static_dir: Path) -> tuple[Path, Path, Pat
         raise ScenarioCatalogError("History export configuration is missing the georeferenced basemap path.")
     geotiff_path = _resolve_beneath(data_dir, str(basemap["path"]))
 
-    png_target = None
-    static_assets = manifest.get("static_assets")
-    for asset in static_assets if isinstance(static_assets, list) else []:
-        if isinstance(asset, dict) and str(asset.get("target") or "") == "map_diegetic.png":
-            png_target = str(asset["target"])
-            break
-    if not png_target:
+    png_target = manifest.get("display_map")
+    if not isinstance(png_target, str) or not png_target:
         raise ScenarioCatalogError("Scenario manifest is missing the displayed diegetic map asset.")
-    png_path = _resolve_beneath(static_dir, png_target)
+    png_path = _resolve_beneath(data_dir, png_target)
     return strongholds_path, stronghold_points_path, geotiff_path, png_path
 
 
@@ -223,11 +216,11 @@ def build_historical_stronghold_catalog(
 
 def build_historical_stronghold_catalog_for_scenario(
     data_dir: Path,
-    static_dir: Path = STATIC_DIR,
 ) -> dict[str, Any]:
-    return build_historical_stronghold_catalog(*_configured_paths(data_dir, static_dir))
+    return build_historical_stronghold_catalog(*_configured_paths(data_dir))
 
 
 @lru_cache(maxsize=1)
 def load_historical_stronghold_catalog() -> dict[str, Any]:
-    return build_historical_stronghold_catalog_for_scenario(DATA_DIR, STATIC_DIR)
+    from forwantofanail.core.scenario import get_scenario_package
+    return build_historical_stronghold_catalog_for_scenario(get_scenario_package().root)

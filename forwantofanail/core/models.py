@@ -271,6 +271,17 @@ class GameClock(Base):
     world_tick = Column(Integer, nullable=False, default=0)
 
 
+class ScenarioRuntime(Base):
+    __tablename__ = "scenario_runtime"
+    __table_args__ = (CheckConstraint("singleton_id = 1", name="ck_scenario_runtime_singleton"),)
+
+    singleton_id = Column(Integer, primary_key=True, default=1)
+    scenario_id = Column(String(100), nullable=False)
+    scenario_version = Column(String(100), nullable=False)
+    database_source_fingerprint = Column(String(64), nullable=False)
+    bound_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
 class AuthToken(Base):
     __tablename__ = "auth_tokens"
     __table_args__ = (CheckConstraint("client_kind IN ('browser', 'api')", name="ck_auth_tokens_client_kind"),)

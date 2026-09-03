@@ -12,6 +12,7 @@ from forwantofanail.agent_tools.mcp import router as mcp_router
 from sqlalchemy import text
 
 from forwantofanail.core.database import get_database_url, get_engine
+from forwantofanail.core.scenario import get_scenario_package, validate_database_binding
 
 app_env = os.getenv("APP_ENV", "development").strip().lower()
 if app_env == "production":
@@ -25,8 +26,8 @@ if app_env == "production":
             revision = connection.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
     except Exception as exc:
         raise RuntimeError("Production database schema is unavailable; run 'alembic upgrade head'") from exc
-    if revision != "20260902_0005":
-        raise RuntimeError(f"Database revision {revision!r} does not match required revision '20260902_0005'")
+    if revision != "20260903_0006":
+        raise RuntimeError(f"Database revision {revision!r} does not match required revision '20260903_0006'")
 
 app = FastAPI(
     title="For Want of a Nail API",
@@ -39,6 +40,21 @@ app.include_router(agent_admin_router)
 app.include_router(mcp_router)
 static_dir = Path(__file__).resolve().parents[1] / "web" / "static"
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
+
+
+@app.on_event("startup")
+def validate_scenario_startup() -> None:
+    get_scenario_package()
+    # Unit-test/runtime-created SQLite schemas do not carry Alembic state. All
+    # deployed databases do, and are required to carry a matching binding.
+    from sqlalchemy import inspect
+    if app_env == "production" or "alembic_version" in inspect(get_engine()).get_table_names():
+        validate_database_binding()
+
+
+@app.get("/v1/scenario/map-image", include_in_schema=False)
+def scenario_map_image():
+    return FileResponse(get_scenario_package().resolve("display_map"))
 
 
 @app.middleware("http")

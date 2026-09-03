@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
-import json
-import shutil
+import os
 from datetime import date
 from pathlib import Path
 
@@ -18,11 +17,13 @@ from forwantofanail.core.models import (
     Location,
     Movement,
     Siege,
+    ScenarioRuntime,
     Stronghold,
     TerrainType,
 )
 from forwantofanail.history.snapshots import capture_world_snapshot
 from forwantofanail.core.scenario_catalog import build_historical_stronghold_catalog_for_scenario
+from forwantofanail.core.scenario import clear_scenario_cache, get_scenario_package, load_scenario_package
 
 
 def _drop_all_tables_for_reset(engine) -> None:
@@ -118,73 +119,6 @@ def _load_csv(model_cls, csv_path: Path, converters: dict[str, callable], *, ign
             yield model_cls(**payload)
 
 
-def _default_scenario_manifest() -> dict[str, object]:
-    return {
-        "history_export_config": "history_export.json",
-        "agent_rules": "agent_rules.md",
-        "agent_commander_dossiers": "agent_commander_dossiers.json",
-        "agent_profiles": "agent_profiles.json",
-        "agent_strategic_atlas": "agent_strategic_atlas.json",
-        "stronghold_points": "assets/stronghold_points/copper_coast_strongholds_corrected.shp",
-        "csv_files": {
-            "terrain_types": "terrain_types.csv",
-            "locations": "locations.csv",
-            "commanders": "commanders.csv",
-            "armies": "armies.csv",
-            "detachments": "detachments.csv",
-            "detachment_specials": "detachment_specials.csv",
-            "commander_traits": "commander_traits.csv",
-            "strongholds": "strongholds.csv",
-        },
-        "optional_csv_files": {
-            "movements": "movements.csv",
-        },
-        "static_assets": [
-            {
-                "source": "assets/map_diegetic.png",
-                "target": "map_diegetic.png",
-                "allow_existing_target": True,
-            },
-            {"source": "assets/terrain/open_ground.svg", "target": "terrain/open_ground.svg"},
-            {"source": "assets/terrain/forest.svg", "target": "terrain/forest.svg"},
-            {"source": "assets/terrain/rainforest.svg", "target": "terrain/rainforest.svg"},
-            {"source": "assets/terrain/mountainous.svg", "target": "terrain/mountainous.svg"},
-            {"source": "assets/terrain/desert.svg", "target": "terrain/desert.svg"},
-            {"source": "assets/terrain/river.svg", "target": "terrain/river.svg"},
-            {"source": "assets/terrain/open_water.svg", "target": "terrain/open_water.svg"},
-        ],
-    }
-
-
-def _load_scenario_manifest(data_dir: Path) -> dict[str, object]:
-    manifest_path = data_dir / "scenario_manifest.json"
-    if not manifest_path.exists():
-        return _default_scenario_manifest()
-    with manifest_path.open("r", encoding="utf-8") as handle:
-        payload = json.load(handle)
-    if not isinstance(payload, dict):
-        raise ValueError(f"Scenario manifest must be a JSON object: '{manifest_path}'.")
-    manifest = _default_scenario_manifest()
-    manifest.update(payload)
-    return manifest
-
-
-def _resolve_scenario_file(data_dir: Path, relative_path: str) -> Path:
-    candidate = (data_dir / str(relative_path)).resolve()
-    data_root = data_dir.resolve()
-    if data_root not in (candidate, *candidate.parents):
-        raise ValueError(f"Scenario path escapes data directory: '{relative_path}'.")
-    return candidate
-
-
-def _resolve_static_target(relative_path: str) -> Path:
-    static_root = Path(__file__).resolve().parents[1] / "web" / "static"
-    candidate = (static_root / str(relative_path)).resolve()
-    if static_root.resolve() not in (candidate, *candidate.parents):
-        raise ValueError(f"Static asset target escapes static directory: '{relative_path}'.")
-    return candidate
-
-
 def _manifest_csv_path(manifest: dict[str, object], data_dir: Path, key: str, *, optional: bool = False) -> Path | None:
     section_name = "optional_csv_files" if optional else "csv_files"
     section = manifest.get(section_name)
@@ -197,80 +131,24 @@ def _manifest_csv_path(manifest: dict[str, object], data_dir: Path, key: str, *,
         if optional:
             return None
         raise KeyError(f"Scenario manifest missing required csv mapping '{key}'.")
-    return _resolve_scenario_file(data_dir, str(relative_path))
+    candidate = (data_dir / str(relative_path)).resolve()
+    if data_dir.resolve() not in (candidate, *candidate.parents):
+        raise ValueError(f"Scenario path escapes package: {relative_path!r}")
+    return candidate
 
 
-def _validate_scenario_manifest(manifest: dict[str, object], data_dir: Path) -> None:
-    for key in ("agent_rules", "agent_commander_dossiers", "agent_profiles", "agent_strategic_atlas"):
-        relative_path = manifest.get(key)
-        if not relative_path:
-            raise ValueError(f"Scenario manifest requires '{key}'.")
-        path = _resolve_scenario_file(data_dir, str(relative_path))
-        if not path.exists():
-            raise FileNotFoundError(f"Scenario agent context file not found at '{path}'.")
-    history_export_config = manifest.get("history_export_config")
-    if not history_export_config:
-        raise ValueError("Scenario manifest requires 'history_export_config'.")
-    history_export_path = _resolve_scenario_file(data_dir, str(history_export_config))
-    if not history_export_path.exists():
-        raise FileNotFoundError(f"Scenario history export config not found at '{history_export_path}'.")
-    stronghold_points = manifest.get("stronghold_points")
-    if not stronghold_points:
-        raise ValueError("Scenario manifest requires 'stronghold_points'.")
-    stronghold_points_path = _resolve_scenario_file(data_dir, str(stronghold_points))
-    for suffix in (".shp", ".shx", ".dbf", ".prj"):
-        component = stronghold_points_path.with_suffix(suffix)
-        if not component.exists():
-            raise FileNotFoundError(f"Scenario stronghold point component not found at '{component}'.")
-    required_section = manifest.get("csv_files")
-    if not isinstance(required_section, dict):
-        raise ValueError("Scenario manifest section 'csv_files' must be an object.")
-    for key in required_section:
-        csv_path = _manifest_csv_path(manifest, data_dir, str(key), optional=False)
-        if csv_path is None or not csv_path.exists():
-            raise FileNotFoundError(f"Scenario reset requires CSV '{key}' at '{csv_path}'.")
-    optional_section = manifest.get("optional_csv_files", {})
-    if optional_section is not None and not isinstance(optional_section, dict):
-        raise ValueError("Scenario manifest section 'optional_csv_files' must be an object.")
-    static_assets = manifest.get("static_assets", [])
-    if static_assets is None:
-        static_assets = []
-    if not isinstance(static_assets, list):
-        raise ValueError("Scenario manifest section 'static_assets' must be a list.")
-    for row in static_assets:
-        if not isinstance(row, dict):
-            raise ValueError("Each scenario static asset entry must be an object.")
-        source = row.get("source")
-        target = row.get("target")
-        if not source or not target:
-            raise ValueError("Each scenario static asset entry requires 'source' and 'target'.")
-        _resolve_scenario_file(data_dir, str(source))
-        _resolve_static_target(str(target))
-
-
-def _prepare_scenario_static_assets(manifest: dict[str, object], data_dir: Path) -> None:
-    static_assets = manifest.get("static_assets", [])
-    for row in static_assets if isinstance(static_assets, list) else []:
-        source_path = _resolve_scenario_file(data_dir, str(row["source"]))
-        target_path = _resolve_static_target(str(row["target"]))
-        allow_existing_target = bool(row.get("allow_existing_target"))
-        if source_path.exists():
-            target_path.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(source_path, target_path)
-            continue
-        if allow_existing_target and target_path.exists():
-            continue
-        raise FileNotFoundError(
-            f"Scenario reset requires asset at either '{source_path}' or existing target '{target_path}'."
-        )
-
-
-def initialize_database(data_dir: Path, reset: bool = False) -> None:
-    manifest = _load_scenario_manifest(data_dir)
-    _validate_scenario_manifest(manifest, data_dir)
+def initialize_database(data_dir: Path | None = None, reset: bool = False) -> None:
+    if data_dir is not None:
+        package = load_scenario_package(data_dir)
+        os.environ["SCENARIO_DIR"] = str(package.root)
+        clear_scenario_cache()
+        package = get_scenario_package()
+    else:
+        package = get_scenario_package()
+    data_dir = package.root
+    manifest = package.manifest
     engine = get_engine()
     if reset:
-        _prepare_scenario_static_assets(manifest, data_dir)
         build_historical_stronghold_catalog_for_scenario(data_dir)
         _drop_all_tables_for_reset(engine)
     Base.metadata.create_all(engine)
@@ -487,6 +365,12 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
 
         capture_world_snapshot(session, clock, is_final=False)
 
+        binding = session.get(ScenarioRuntime, 1) or ScenarioRuntime(singleton_id=1)
+        binding.scenario_id = package.scenario_id
+        binding.scenario_version = package.scenario_version
+        binding.database_source_fingerprint = package.database_source_fingerprint
+        session.add(binding)
+
         session.commit()
     except Exception:
         session.rollback()
@@ -497,11 +381,11 @@ def initialize_database(data_dir: Path, reset: bool = False) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Initialize the game database from CSV data.")
-    parser.add_argument("--data-dir", type=Path, default=Path(__file__).resolve().parents[1] / "data")
+    parser.add_argument("--scenario-dir", type=Path, help="Absolute scenario package (overrides SCENARIO_DIR).")
     parser.add_argument("--reset", action="store_true", help="Drop and recreate tables before loading.")
     args = parser.parse_args()
 
-    initialize_database(args.data_dir, reset=args.reset)
+    initialize_database(args.scenario_dir, reset=args.reset)
 
 
 if __name__ == "__main__":

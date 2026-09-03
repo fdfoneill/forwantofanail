@@ -1,16 +1,27 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
-from forwantofanail.agent_runtime.strategic_atlas import DATA_DIR, generate_atlas
+import pytest
+
+from forwantofanail.agent_runtime.strategic_atlas import generate_atlas
+
+
+def _copper_coast_dir() -> Path:
+    value = os.getenv("COPPER_COAST_SCENARIO_DIR")
+    if not value:
+        pytest.skip("Set COPPER_COAST_SCENARIO_DIR for the optional authored-scenario smoke test")
+    return Path(value)
 
 
 def test_checked_in_atlas_is_deterministic_and_contains_only_reviewed_majors():
-    path = DATA_DIR / "agent_strategic_atlas.json"
+    data_dir = _copper_coast_dir()
+    path = data_dir / "agent_strategic_atlas.json"
     existing = json.loads(path.read_text(encoding="utf-8"))
-    regenerated = generate_atlas(DATA_DIR)
+    regenerated = generate_atlas(data_dir)
     assert regenerated == existing
     assert regenerated["source_hashes"] == existing["source_hashes"]
     assert regenerated["artifact_hash"] == existing["artifact_hash"]
@@ -21,7 +32,7 @@ def test_checked_in_atlas_is_deterministic_and_contains_only_reviewed_majors():
 
 
 def test_public_atlas_contains_no_h3_identifiers():
-    payload = json.loads((DATA_DIR / "agent_strategic_atlas.json").read_text(encoding="utf-8"))
+    payload = json.loads((_copper_coast_dir() / "agent_strategic_atlas.json").read_text(encoding="utf-8"))
     values = []
 
     def visit(value):

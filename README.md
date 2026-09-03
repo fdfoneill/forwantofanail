@@ -23,6 +23,7 @@ forwantofanail/
     │   └── schemas.py            # Request schemas
     ├── core/
     │   ├── database.py           # SQLAlchemy engine/session helpers
+    │   ├── scenario.py           # External scenario resolver and binding
     │   ├── models.py             # World + runtime DB models
     │   ├── initialize_db.py      # Reset/load scenario data from CSV
     │   ├── migrate_runtime_tables.py
@@ -31,14 +32,11 @@ forwantofanail/
     │   ├── movement.py           # Adjacency + movement rules
     │   ├── supply.py             # Supply capacity + consumption
     │   └── time.py               # Watch progression
-    ├── data/
-    │   ├── scenario_manifest.json
-    │   ├── *.csv                 # Scenario source data
-    │   └── assets/               # Scenario-specific images copied into runtime locations on reset
     └── web/
         └── static/
             ├── dev_dashboard.html
             ├── player_dashboard.html
+            ├── terrain/          # Engine-owned terrain textures
             └── icons/
                 ├── strongholds/
                 ├── armies/
@@ -56,6 +54,13 @@ conda activate forwantofanail
 
 ## 2) Apply schema and initialize/reset database
 
+Set `SCENARIO_DIR` to the absolute path of an external scenario package. There is no repository-data fallback. Validate it before use:
+
+```bash
+export SCENARIO_DIR=/absolute/path/to/copper-coast
+python -m forwantofanail.core.scenario validate
+```
+
 Application startup never applies DDL. Apply the Alembic schema first:
 
 ```bash
@@ -68,28 +73,19 @@ Run this when starting a new game state from CSVs or after schema changes:
 python -m forwantofanail.core.initialize_db --reset
 ```
 
-This reset now reads [forwantofanail/data/scenario_manifest.json](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/data/scenario_manifest.json), validates the scenario package, copies any declared static assets into `web/static`, and then loads the scenario tables.
-
-The default scenario package currently expects:
-
-* CSVs in [forwantofanail/data](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/data)
-* diegetic map image in [forwantofanail/data/assets/map_diegetic.png](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/data/assets/map_diegetic.png)
-
-If the diegetic map is missing from `data/assets`, reset will accept an already-existing [forwantofanail/web/static/map_diegetic.png](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/web/static/map_diegetic.png). If neither file exists, reset fails before any tables are dropped.
+Reset validates and reads the configured package directly. It never copies assets into `web/static` or writes into the scenario. The scenario map is served from the allowlisted `display_map`; portraits are served from `portraits_dir`.
 
 This reset also auto-generates one garrison army for every stronghold based on its type.
 It also creates the provisional authoritative history snapshot for tick 0. The scenario manifest
 references `history_export.json`, which owns the georeferenced basemap and faction colors used by
-historical exports. The default history basemap is `data/assets/map_diegetic.tif`.
+historical exports. Its georeferenced basemap remains external scenario data.
 The player map uses the manifest's `stronghold_points` shapefile and that GeoTIFF to position
 globally known historical stronghold hotspots. The point layer must include `.shp`, `.shx`, `.dbf`,
 and `.prj` components and exactly one `GRID_ID` point for every scenario stronghold. Immutable
 faction/type metadata still comes from `strongholds.csv`; optional card prose belongs in its
 `historical_gloss` column and is omitted from the card when blank.
 
-Army-management suggestions live in:
-
-* [forwantofanail/data/army_management_templates.json](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/data/army_management_templates.json)
+Army-management suggestions live at the manifest's `army_management_templates` path.
 
 That file is keyed by faction name and supports:
 
@@ -98,6 +94,12 @@ That file is keyed by faction name and supports:
 * `army_names`: random unused army-name suggestions
 
 If all configured names in a field have already been used, the modal leaves that field blank.
+
+To adopt an ongoing database after applying the scenario-binding migration, validate its immutable identities and bind it without resetting:
+
+```bash
+python -m forwantofanail.core.scenario bind-existing
+```
 
 If you want to keep existing scenario/world rows and only ensure runtime tables exist:
 
@@ -216,7 +218,7 @@ at API startup. After changing locations, roads, or strongholds, regenerate it:
 python -m forwantofanail.agent_runtime.strategic_atlas
 ```
 
-Review `forwantofanail/data/agent_strategic_atlas.json`, set `selected: true`
+Review the configured package's `agent_strategic_atlas.json`, set `selected: true`
 only on non-city choke-point candidates that should be promoted, rerun the
 generator to build their corridors, and commit the artifact. CI/deployment can
 verify that it is current without rewriting it:

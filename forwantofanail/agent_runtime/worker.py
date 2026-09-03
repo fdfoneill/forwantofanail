@@ -736,6 +736,9 @@ def main() -> None:
     parser.add_argument("--poll-seconds", type=float, default=1.0)
     parser.add_argument("--once", action="store_true")
     args = parser.parse_args()
+    from forwantofanail.core.scenario import get_scenario_package, validate_database_binding
+    get_scenario_package()
+    validate_database_binding()
     if args.concurrency < 1:
         parser.error("--concurrency must be at least 1")
     worker_id = _worker_id()

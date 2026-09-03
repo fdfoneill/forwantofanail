@@ -22,7 +22,6 @@ from forwantofanail.core.models import (
     WorldSnapshot,
 )
 from forwantofanail.history.export import (
-    DEFAULT_CONFIG,
     _is_open_water_terrain,
     export_history,
     load_export_config,
@@ -198,8 +197,10 @@ def test_event_markers_persist_for_three_available_frames():
 
 
 def test_default_history_config_uses_half_transparent_geotiff_overlay():
-    config, _ = load_export_config(DEFAULT_CONFIG)
-    assert config["basemap"]["resolved_path"].endswith("data/assets/map_diegetic.tif")
+    from forwantofanail.core.scenario import get_scenario_package
+    config, _ = load_export_config(get_scenario_package().resolve("history_export_config"))
+    assert config["basemap"]["resolved_path"].endswith("assets/map_diegetic.tif")
+    assert "forwantofanail/data" not in config["basemap"]["resolved_path"]
     assert config["basemap"]["control_overlay_opacity"] == 0.5
 
 
@@ -257,7 +258,12 @@ def test_frames_only_export_has_dimensions_manifest_and_does_not_mutate_db(histo
         transform=rasterio.transform.from_bounds(west, south, east, north, 160, 120),
     ) as destination:
         destination.write(raster_data)
-    config = json.loads(DEFAULT_CONFIG.read_text(encoding="utf-8"))
+    config = {
+        "version": 1,
+        "basemap": {"path": "unused.tif", "opacity": 1.0, "control_overlay_opacity": 0.5, "resampling": "lanczos"},
+        "colors": {"background": "#1B1916", "neutral": "#7B776D", "text": "#F3E8CF"},
+        "faction_colors": {"Alpha": "#8F3426", "Beta": "#0F6868"},
+    }
     config["basemap"]["path"] = basemap_path.name
     config_path = history_db["tmp_path"] / "history_export.json"
     config_path.write_text(json.dumps(config), encoding="utf-8")

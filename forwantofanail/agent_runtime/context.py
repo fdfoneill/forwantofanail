@@ -5,7 +5,6 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -13,7 +12,6 @@ from sqlalchemy.orm import Session
 from forwantofanail.core.models import AgentCommanderDossier, Commander
 
 
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 INITIAL_MEMORY = "## Current plan\n\nNo plan recorded yet.\n\n## Commitments\n\nNone recorded.\n\n## Intelligence to revisit\n\nNone recorded."
 
 
@@ -50,17 +48,16 @@ class AgentProfile:
 
 
 def _manifest() -> dict[str, Any]:
-    return json.loads((DATA_DIR / "scenario_manifest.json").read_text(encoding="utf-8"))
+    from forwantofanail.core.scenario import get_scenario_package
+    return get_scenario_package().manifest
 
 
 def _scenario_path(key: str) -> Path:
     value = _manifest().get(key)
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"Scenario manifest requires {key!r}")
-    path = (DATA_DIR / value).resolve()
-    if DATA_DIR.resolve() not in (path, *path.parents):
-        raise ValueError(f"Scenario path for {key!r} escapes the data directory")
-    return path
+    from forwantofanail.core.scenario import get_scenario_package
+    return get_scenario_package().resolve(key)
 
 
 def canonical_json(value: Any) -> str:
@@ -109,7 +106,7 @@ def load_dossier_source() -> dict[str, Any]:
 
 
 def load_faction_overview(faction: str) -> str:
-    payload = json.loads((DATA_DIR / "faction_overviews.json").read_text(encoding="utf-8"))
+    payload = json.loads(_scenario_path("faction_overviews").read_text(encoding="utf-8"))
     value = payload.get(faction)
     return str(value).strip() if value else f"No additional historical overview is recorded for {faction}."
 

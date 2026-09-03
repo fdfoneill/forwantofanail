@@ -86,10 +86,19 @@ from forwantofanail.history.snapshots import (
 )
 
 router = APIRouter(prefix="/v1")
-ARMY_MANAGEMENT_TEMPLATE_PATH = Path(__file__).resolve().parents[1] / "data" / "army_management_templates.json"
-COMMANDER_OVERVIEWS_PATH = Path(__file__).resolve().parents[1] / "data" / "commander_overviews.json"
-FACTION_OVERVIEWS_PATH = Path(__file__).resolve().parents[1] / "data" / "faction_overviews.json"
-COMMANDER_PORTRAIT_DIR = Path(__file__).resolve().parents[1] / "data" / "assets"
+def _scenario_path(key: str) -> Path:
+    from forwantofanail.core.scenario import get_scenario_package
+    return get_scenario_package().resolve(key)
+
+
+ARMY_MANAGEMENT_TEMPLATE_PATH: Path | None = None
+COMMANDER_OVERVIEWS_PATH: Path | None = None
+FACTION_OVERVIEWS_PATH: Path | None = None
+COMMANDER_PORTRAIT_DIR: Path | None = None
+
+
+def _portrait_dir() -> Path:
+    return COMMANDER_PORTRAIT_DIR or _scenario_path("portraits_dir")
 SESSION_COOKIE_NAME = "fwoan_session"
 _SQLITE_MUTATION_LOCK = threading.RLock()
 
@@ -101,7 +110,6 @@ WATCH_LABELS = {
     Watch.VESPER: "vesper",
 }
 ACTIVE_ACTION_STATES = {"queued", "in_progress"}
-SCENARIO_EPOCH = date(1410, 5, 20)
 MESSAGE_LOSS_PROBABILITY = 0.0
 MAX_FOLLOW_ROAD_STEPS = 4
 ALERT_TYPES = {"world event", "action", "report", "violence", "morale"}
@@ -242,13 +250,13 @@ def _faction_portrait_filename(faction: str) -> str | None:
     if not faction_slug:
         return None
     filename = f"portrait_{faction_slug}.png"
-    return filename if (COMMANDER_PORTRAIT_DIR / filename).is_file() else None
+    return filename if (_portrait_dir() / filename).is_file() else None
 
 
 def _commander_portrait_filename(commander: Commander, faction: str = "") -> str | None:
     display_name = _commander_display_name(commander)
     normalized_display = "".join(ch for ch in display_name.lower() if ch.isalnum())
-    for path in COMMANDER_PORTRAIT_DIR.glob("Portrait - *"):
+    for path in _portrait_dir().glob("Portrait - *"):
         if not path.is_file():
             continue
         stem = path.stem.removeprefix("Portrait - ")
@@ -291,7 +299,7 @@ def _load_overview_mapping(path: Path) -> dict[str, str]:
 
 
 def _lookup_commander_overview(commander: Commander) -> str:
-    overviews = _load_overview_mapping(COMMANDER_OVERVIEWS_PATH)
+    overviews = _load_overview_mapping(COMMANDER_OVERVIEWS_PATH or _scenario_path("commander_overviews"))
     keys = [
         _commander_ref(int(commander.commander_id)),
         _commander_display_name(commander),
@@ -314,7 +322,7 @@ def _generated_commander_overview(session: Session, commander: Commander) -> str
 
 
 def _commander_overview_payload(session: Session, commander: Commander, faction: str) -> dict[str, str]:
-    faction_overviews = _load_overview_mapping(FACTION_OVERVIEWS_PATH)
+    faction_overviews = _load_overview_mapping(FACTION_OVERVIEWS_PATH or _scenario_path("faction_overviews"))
     faction_overview = faction_overviews.get(str(faction or "").strip(), "")
     commander_overview = _lookup_commander_overview(commander) or _generated_commander_overview(session, commander)
     parts = [part for part in [commander_overview, faction_overview] if part]
@@ -2040,7 +2048,8 @@ def _long_column_completion_blocked(army: Army, watch: int) -> bool:
 
 
 def _scenario_date_for_day(day: int) -> date:
-    return SCENARIO_EPOCH + timedelta(days=max(day, 0))
+    from forwantofanail.core.scenario import get_scenario_package
+    return get_scenario_package().calendar_start_date + timedelta(days=max(day - 1, 0))
 
 
 def _get_destination_h3(action: Action) -> str | None:
@@ -4730,10 +4739,11 @@ def _serialize_management_commander(commander: Commander | None) -> dict[str, An
 
 
 def _load_army_management_templates() -> dict[str, Any]:
-    if not ARMY_MANAGEMENT_TEMPLATE_PATH.exists():
+    template_path = ARMY_MANAGEMENT_TEMPLATE_PATH or _scenario_path("army_management_templates")
+    if not template_path.exists():
         return {}
     try:
-        return json.loads(ARMY_MANAGEMENT_TEMPLATE_PATH.read_text(encoding="utf-8"))
+        return json.loads(template_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError):
         return {}
 
@@ -5832,12 +5842,12 @@ def commander_portrait(filename: str):
     safe_names = {
         path.name
         for pattern in ("Portrait - *", "portrait_*.png")
-        for path in COMMANDER_PORTRAIT_DIR.glob(pattern)
+        for path in _portrait_dir().glob(pattern)
         if path.is_file()
     }
     if filename not in safe_names:
         raise HTTPException(status_code=404, detail="Portrait not found")
-    return FileResponse(COMMANDER_PORTRAIT_DIR / filename)
+    return FileResponse(_portrait_dir() / filename)
 
 
 def list_commanders(session: Session = Depends(_get_session)):

@@ -203,8 +203,15 @@ cython_debug/
 .cursorignore
 .cursorindexingignore
 
-# Generated game-history frames and video
-exports/game-history/
+# External scenario packages and runtime output
+/forwantofanail/data/
+/forwantofanail/web/static/map_diegetic.*
+/var/
+/logs/
+/exports/
+*.db-wal
+*.db-shm
+.DS_Store
 
 # Marimo
 marimo/_static/

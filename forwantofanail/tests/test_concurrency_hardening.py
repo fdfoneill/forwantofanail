@@ -1914,7 +1914,7 @@ def test_brief_renders_action_target_and_eta_without_internal_ids(sqlite_db, mon
 
         assert "ORDERS\nThe army is currently holding." in brief
         assert "Its next ordered stage will lead toward an undescribed destination." in brief
-        assert "The present stage is expected during the prime watch on May 22, 1410." in brief
+        assert "The present stage is expected during the prime watch on May 21, 1410." in brief
         assert "1 stage remains in the ordered route." in brief
         assert "origin_2" not in brief
         assert "destination_h3" not in brief
