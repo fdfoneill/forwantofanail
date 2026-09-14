@@ -1640,6 +1640,105 @@ def test_brief_endpoint_requires_auth_and_returns_plain_text_for_bearer(sqlite_d
     )
 
 
+def test_navigation_route_endpoint_requires_auth_and_uses_stronghold_refs(sqlite_db, monkeypatch):
+    captured = {}
+
+    def summarize(_session, *, army, origin, destination, allow_off_road):
+        captured.update(
+            army_id=army.army_id,
+            origin=origin,
+            destination_id=destination.stronghold_id,
+            allow_off_road=allow_off_road,
+        )
+        return {
+            "origin": "your current position",
+            "destination": destination.stronghold_name,
+            "route_type": "fastest",
+            "summary": "From your current position, travel 2 leagues by road to Testfort.",
+            "total_leagues": 2,
+            "estimated_watches": 2,
+            "legs": [],
+            "initial_direction": "east",
+            "initial_instruction": "Take the eastern road toward Testfort.",
+        }
+
+    monkeypatch.setattr(routes, "build_route_summary", summarize)
+    claim = _call_with_session(lambda session: routes.claim_commander("cmd_1", session=session))
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        assert client.get("/v1/me/navigation/route?destination=sh_1").status_code == 401
+        response = client.get(
+            "/v1/me/navigation/route?origin=current&destination=sh_1&allow_off_road=true",
+            headers={"Authorization": f"Bearer {claim['token']}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["destination"] == "Testfort"
+    assert response.json()["route_type"] == "fastest"
+    assert "h3" not in response.text.lower()
+    assert captured == {
+        "army_id": 1,
+        "origin": None,
+        "destination_id": 1,
+        "allow_off_road": True,
+    }
+
+
+def test_admin_navigation_routes_support_dev_dashboard(sqlite_db, monkeypatch):
+    monkeypatch.setenv("ADMIN_TOKEN", "navigation-admin")
+    captured = {}
+
+    def summarize(_session, *, army, origin, destination, allow_off_road):
+        captured.update(
+            army_id=army.army_id,
+            origin_id=origin.stronghold_id if origin else None,
+            destination_id=destination.stronghold_id,
+            allow_off_road=allow_off_road,
+        )
+        return {
+            "origin": origin.stronghold_name if origin else "your current position",
+            "destination": destination.stronghold_name,
+            "route_type": "road_only",
+            "summary": "A test route.",
+            "total_leagues": 1,
+            "estimated_watches": 1,
+            "legs": [],
+            "initial_direction": "east",
+            "initial_instruction": "Take the eastern road.",
+        }
+
+    monkeypatch.setattr(routes, "build_route_summary", summarize)
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        unauthorized = client.get("/v1/admin/navigation/options")
+        options = client.get(
+            "/v1/admin/navigation/options",
+            headers={"X-Admin-Token": "navigation-admin"},
+        )
+        route = client.get(
+            "/v1/admin/armies/army_1/navigation/route?origin=sh_1&destination=sh_1",
+            headers={"X-Admin-Token": "navigation-admin"},
+        )
+
+    assert unauthorized.status_code == 401
+    assert options.status_code == 200
+    assert options.json()["armies"][0]["army_id"] == "army_1"
+    assert options.json()["strongholds"][0] == {
+        "stronghold_id": "sh_1",
+        "stronghold_name": "Testfort",
+        "stronghold_type": "town",
+    }
+    assert route.status_code == 200
+    assert captured == {
+        "army_id": 1,
+        "origin_id": 1,
+        "destination_id": 1,
+        "allow_off_road": False,
+    }
+
+
 def test_brief_endpoint_accepts_browser_cookie(sqlite_db, monkeypatch):
     monkeypatch.setenv("GAME_PASSWORD", "shared-secret")
     monkeypatch.setenv("SESSION_SECRET", "session-secret")
@@ -1659,6 +1758,88 @@ def test_brief_endpoint_accepts_browser_cookie(sqlite_db, monkeypatch):
     assert response.status_code == 200
     assert response.text.startswith("ARMY\nUnder your command is the Alpha Host")
     assert "The army is in open ground terrain." in response.text
+
+
+def test_historical_stronghold_map_requires_auth_and_ignores_live_control(sqlite_db, monkeypatch):
+    catalog = {
+        "map_width": 3837,
+        "map_height": 2953,
+        "strongholds": [
+            {
+                "id": "sh_1",
+                "name": "Testfort",
+                "historical_faction": "Beta",
+                "stronghold_type": "Town",
+                "historical_gloss": None,
+                "map_x": 100.5,
+                "map_y": 200.5,
+            }
+        ],
+    }
+    monkeypatch.setattr(routes, "load_historical_stronghold_catalog", lambda: catalog)
+    session = create_session()
+    try:
+        session.get(Stronghold, 1).control = "Alpha"
+        session.commit()
+    finally:
+        session.close()
+    claim = _call_with_session(lambda session: routes.claim_commander("cmd_1", session=session))
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        assert client.get("/v1/me/map/strongholds").status_code == 401
+        response = client.get(
+            "/v1/me/map/strongholds",
+            headers={"Authorization": f"Bearer {claim['token']}"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == catalog
+    serialized = response.json()["strongholds"][0]
+    assert serialized["historical_faction"] == "Beta"
+    assert not ({"control", "current_controller", "siege", "garrison", "armies"} & set(serialized))
+
+
+def test_historical_stronghold_map_accepts_browser_cookie(sqlite_db, monkeypatch):
+    monkeypatch.setenv("GAME_PASSWORD", "shared-secret")
+    monkeypatch.setenv("SESSION_SECRET", "session-secret")
+    monkeypatch.setattr(
+        routes,
+        "load_historical_stronghold_catalog",
+        lambda: {"map_width": 1, "map_height": 1, "strongholds": []},
+    )
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        claim = client.post(
+            "/v1/auth/claim",
+            headers={"Idempotency-Key": "map-browser-claim"},
+            json={"commander_id": "cmd_1", "game_password": "shared-secret", "client_kind": "browser"},
+        )
+        response = client.get("/v1/me/map/strongholds")
+
+    assert claim.status_code == 200
+    assert response.status_code == 200
+
+
+def test_historical_stronghold_map_returns_503_when_catalog_is_invalid(sqlite_db, monkeypatch):
+    from forwantofanail.core.scenario_catalog import ScenarioCatalogError
+
+    def fail_catalog():
+        raise ScenarioCatalogError("bad map")
+
+    monkeypatch.setattr(routes, "load_historical_stronghold_catalog", fail_catalog)
+    claim = _call_with_session(lambda session: routes.claim_commander("cmd_1", session=session))
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get(
+            "/v1/me/map/strongholds",
+            headers={"Authorization": f"Bearer {claim['token']}"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Historical stronghold map annotations are unavailable."
 
 
 def test_brief_attention_counts_do_not_mark_letters_or_alerts_read(sqlite_db, monkeypatch):
@@ -1733,7 +1914,7 @@ def test_brief_renders_action_target_and_eta_without_internal_ids(sqlite_db, mon
 
         assert "ORDERS\nThe army is currently holding." in brief
         assert "Its next ordered stage will lead toward an undescribed destination." in brief
-        assert "The present stage is expected during the prime watch on May 22, 1410." in brief
+        assert "The present stage is expected during the prime watch on May 21, 1410." in brief
         assert "1 stage remains in the ordered route." in brief
         assert "origin_2" not in brief
         assert "destination_h3" not in brief
@@ -1799,6 +1980,12 @@ def test_dev_dashboard_opens_commander_briefs_in_text_safe_modal(sqlite_db):
     assert "els.summaryList.innerHTML" not in response.text
     assert 'const location = String(row.location || "at an unknown location");' in response.text
     assert "row.strength" not in response.text
+    assert 'id="agentList"' in response.text
+    assert 'id="agentModalOverlay"' in response.text
+    assert 'id="agentMemory"' in response.text
+    assert 'api("/v1/admin/agents"' in response.text
+    assert "Route Planner" not in response.text
+    assert 'id="routePlannerForm"' not in response.text
 
 
 def test_player_dashboard_csp_allows_h3_script_host(sqlite_db):
@@ -1810,6 +1997,25 @@ def test_player_dashboard_csp_allows_h3_script_host(sqlite_db):
     assert response.status_code == 200
     assert "https://cdn.jsdelivr.net" in response.headers["content-security-policy"]
     assert "https://cdn.jsdelivr.net/npm/h3-js@4.1.0/dist/h3-js.umd.js" in response.text
+
+
+def test_player_dashboard_uses_text_safe_pinned_historical_stronghold_cards(sqlite_db):
+    from forwantofanail.api.app import app
+
+    with TestClient(app) as client:
+        response = client.get("/player/dashboard")
+
+    assert response.status_code == 200
+    assert 'id="diegeticStrongholdHotspots"' in response.text
+    assert 'api("/v1/me/map/strongholds", {}, true)' in response.text
+    assert 'button.className = "diegetic-stronghold-hotspot"' in response.text
+    assert 'button.style.left = `${Number(stronghold.map_x)}px`' in response.text
+    assert 'button.style.top = `${Number(stronghold.map_y)}px`' in response.text
+    assert 'historyLine.textContent = `Historically ${String(stronghold?.historical_faction' in response.text
+    assert 'glossLine.textContent = gloss;' in response.text
+    assert 'state.activeHistoricalStrongholdId' in response.text
+    assert 'hideHoverCard({ restoreHistoricalFocus: true })' in response.text
+    assert 'Historical stronghold annotations unavailable.' in response.text
 
 
 def test_player_dashboard_serializes_staged_path_h3_values(sqlite_db):

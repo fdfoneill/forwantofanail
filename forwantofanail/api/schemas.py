@@ -45,6 +45,7 @@ class MessageCreateRequest(BaseModel):
 class TimeAdvanceRequest(BaseModel):
     steps: int = Field(default=1, ge=1, le=25)
     execute_actions: bool = True
+    skip_agent_heartbeats: bool = False
 
 
 class TimePayload(BaseModel):

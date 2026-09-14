@@ -417,6 +417,7 @@ Runtime/controller tables in current implementation:
 | POST   | /v1/me/actions             | Create new action         |
 | POST   | /v1/me/actions/plan        | Replace queue with plan   |
 | GET    | /v1/me/actions/valid-next  | Valid next move cells     |
+| GET    | /v1/me/navigation/route    | Diegetic strategic route summary |
 | GET    | /v1/me/actions/current     | View active action        |
 | POST   | /v1/me/actions/{id}/cancel | Cancel action             |
 | POST   | /v1/me/messages            | Send letter               |

@@ -23,6 +23,7 @@ forwantofanail/
     │   └── schemas.py            # Request schemas
     ├── core/
     │   ├── database.py           # SQLAlchemy engine/session helpers
+    │   ├── scenario.py           # External scenario resolver and binding
     │   ├── models.py             # World + runtime DB models
     │   ├── initialize_db.py      # Reset/load scenario data from CSV
     │   ├── migrate_runtime_tables.py
@@ -31,14 +32,11 @@ forwantofanail/
     │   ├── movement.py           # Adjacency + movement rules
     │   ├── supply.py             # Supply capacity + consumption
     │   └── time.py               # Watch progression
-    ├── data/
-    │   ├── scenario_manifest.json
-    │   ├── *.csv                 # Scenario source data
-    │   └── assets/               # Scenario-specific images copied into runtime locations on reset
     └── web/
         └── static/
             ├── dev_dashboard.html
             ├── player_dashboard.html
+            ├── terrain/          # Engine-owned terrain textures
             └── icons/
                 ├── strongholds/
                 ├── armies/
@@ -56,6 +54,13 @@ conda activate forwantofanail
 
 ## 2) Apply schema and initialize/reset database
 
+Set `SCENARIO_DIR` to the absolute path of an external scenario package. There is no repository-data fallback. Validate it before use:
+
+```bash
+export SCENARIO_DIR=/absolute/path/to/copper-coast
+python -m forwantofanail.core.scenario validate
+```
+
 Application startup never applies DDL. Apply the Alembic schema first:
 
 ```bash
@@ -68,23 +73,28 @@ Run this when starting a new game state from CSVs or after schema changes:
 python -m forwantofanail.core.initialize_db --reset
 ```
 
-This reset now reads [forwantofanail/data/scenario_manifest.json](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/data/scenario_manifest.json), validates the scenario package, copies any declared static assets into `web/static`, and then loads the scenario tables.
+Reset validates and reads the configured package directly. It never copies assets into `web/static` or writes into the scenario. The scenario map is served from the allowlisted `display_map`; portraits are served from `portraits_dir`.
 
-The default scenario package currently expects:
+The convenient local working package may live at the ignored `forwantofanail/data/` path. Create a validated, deterministic versioned backup outside the repository with:
 
-* CSVs in [forwantofanail/data](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/data)
-* diegetic map image in [forwantofanail/data/assets/map_diegetic.png](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/data/assets/map_diegetic.png)
+```bash
+export SCENARIO_ARCHIVE_DIR=/absolute/path/to/scenario-archives
+python scripts/export_scenario.py --label release-1
+```
 
-If the diegetic map is missing from `data/assets`, reset will accept an already-existing [forwantofanail/web/static/map_diegetic.png](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/web/static/map_diegetic.png). If neither file exists, reset fails before any tables are dropped.
+Omit `--label` for a name containing the manifest version and UTC timestamp. The command refuses overwrites, excludes hidden metadata, normalizes archive ordering and timestamps, and writes a matching `.sha256` file.
 
 This reset also auto-generates one garrison army for every stronghold based on its type.
 It also creates the provisional authoritative history snapshot for tick 0. The scenario manifest
 references `history_export.json`, which owns the georeferenced basemap and faction colors used by
-historical exports. The default history basemap is `data/assets/map_diegetic.tif`.
+historical exports. Its georeferenced basemap remains external scenario data.
+The player map uses the manifest's `stronghold_points` shapefile and that GeoTIFF to position
+globally known historical stronghold hotspots. The point layer must include `.shp`, `.shx`, `.dbf`,
+and `.prj` components and exactly one `GRID_ID` point for every scenario stronghold. Immutable
+faction/type metadata still comes from `strongholds.csv`; optional card prose belongs in its
+`historical_gloss` column and is omitted from the card when blank.
 
-Army-management suggestions live in:
-
-* [forwantofanail/data/army_management_templates.json](/Users/DanO/Documents/Games/Cataphract/forwantofanail/forwantofanail/data/army_management_templates.json)
+Army-management suggestions live at the manifest's `army_management_templates` path.
 
 That file is keyed by faction name and supports:
 
@@ -93,6 +103,12 @@ That file is keyed by faction name and supports:
 * `army_names`: random unused army-name suggestions
 
 If all configured names in a field have already been used, the modal leaves that field blank.
+
+To adopt an ongoing database after applying the scenario-binding migration, validate its immutable identities and bind it without resetting:
+
+```bash
+python -m forwantofanail.core.scenario bind-existing
+```
 
 If you want to keep existing scenario/world rows and only ensure runtime tables exist:
 
@@ -128,6 +144,7 @@ Production additionally requires PostgreSQL, `APP_ENV=production`, and the canon
 
 * `GET /v1/auth/commanders` returns claimable commander summaries; `POST /v1/auth/claim` requires the shared game password.
 * `GET /v1/me/brief` returns a labeled, plain-text snapshot of the authenticated army's current condition, orders, attention items, and viewer-filtered local situation.
+* `GET /v1/me/navigation/route?origin=current&destination=sh_<id>&allow_off_road=false` returns a diegetic strategic route summary, semantic legs, travel totals, and an initial compass instruction without exposing H3 cells. A stronghold reference may replace `current`; off-road planning uses the current army's mobility profile but deliberately ignores live remote intelligence.
 * `GET /v1/me/roads/border` derives adjacent off-environs road cells from the authenticated army's visibility.
 * Staging validation accepts a contiguous `staged_path` rooted at the authenticated army; arbitrary remote origins are rejected.
 * `POST /v1/me/actions/plan` replaces active queue with either forage, a staged march path, or halt (empty march path).
@@ -149,12 +166,8 @@ and field-army creation/destruction are recorded in `world_history_events`. Snap
 share the gameplay transaction. History begins with the first snapshot captured after this feature is
 deployed; earlier watches are intentionally not reconstructed.
 
-For an in-progress deployment, apply the migration and capture the current watch as the baseline:
-
-```bash
-alembic upgrade head
-python -m forwantofanail.history.capture
-```
+For this reset-required release, follow the clean deployment instructions below.
+After initialization, `python -m forwantofanail.history.capture` can capture the current watch.
 
 When a game ends before another watch advances, finalize its last frame explicitly:
 
@@ -173,6 +186,87 @@ and `manifest.json`. Use `--no-video` for frames only, `--include-provisional` t
 unfinished watch, and `--help` for tick-range, dimensions, frame rate, marker duration, output, and
 scenario-config overrides. The exporter only reads the database and rejects missing/non-final ticks
 instead of fabricating frames.
+
+## Commander tool facade
+
+Authenticated API sessions can discover the provider-neutral commander tools at
+`GET /v1/tools` and invoke one at `POST /v1/tools/{tool_name}`. Mutating tools
+require an `Idempotency-Key` header. The facade deliberately returns opaque,
+session-bound tactical handles rather than map cell identifiers.
+
+The same registry is available through stateless MCP at `POST /mcp`, using the
+same bearer session token. A local MCP host can bridge stdio to a running game:
+
+```bash
+FWOAN_API_URL=http://127.0.0.1:8000 \
+FWOAN_SESSION_TOKEN='<api-session-token>' \
+python -m forwantofanail.agent_tools.stdio_proxy
+```
+
+Export the canonical JSON Schema catalog for any other model/tool runtime with:
+
+```bash
+python -m forwantofanail.agent_tools.export commander-tools.json
+```
+
+## Agent commanders
+
+Agent control is assigned by an administrator from the dev dashboard and is
+mutually exclusive with a human commander claim. Each enabled agent receives
+one queued heartbeat per watch. Time advancement waits for those heartbeats to
+complete or be explicitly skipped.
+
+The scenario-owned strategic atlas is generated during scenario authoring, not
+at API startup. After changing locations, roads, or strongholds, regenerate it:
+
+```bash
+python -m forwantofanail.agent_runtime.strategic_atlas
+```
+
+Review the configured package's `agent_strategic_atlas.json`, set `selected: true`
+only on non-city choke-point candidates that should be promoted, rerun the
+generator to build their corridors, and commit the artifact. CI/deployment can
+verify that it is current without rewriting it:
+
+```bash
+python -m forwantofanail.agent_runtime.strategic_atlas --check
+```
+
+Every agent heartbeat receives a compact static atlas. The detailed
+`fwoan_get_strategic_overview` tool exposes the same scenario-static material
+without current remote control, army, garrison, or siege information. New
+assignments must establish a structured strategic plan; plans and passive-watch
+review state are persisted alongside revisioned scratchpad memory.
+
+Configure either or both provider profiles:
+
+```bash
+export OPENAI_API_KEY='...'
+export OPENAI_AGENT_MODEL='your-tool-capable-model'
+
+export OLLAMA_BASE_URL='http://127.0.0.1:11434'
+export OLLAMA_AGENT_MODEL='your-installed-tool-capable-model'
+```
+
+Run the API, then start one or more independent workers:
+
+```bash
+python -m forwantofanail.agent_runtime.worker --concurrency 4
+```
+
+Optional, non-CI provider evaluations can review a completed transcript with
+either a configured OpenAI or Ollama profile. The report includes six rubric
+scores and source/evaluator token usage:
+
+```bash
+python -m forwantofanail.agent_runtime.evaluate_strategy --run-id 42 --profile openai_default
+```
+
+The scenario owns `agent_rules.md`, `agent_commander_dossiers.json`, and
+`agent_profiles.json`. Original commanders use authored dossiers; subcommanders
+receive deterministic dossiers when they are created. The database stores
+versioned scratchpads and append-only visible run transcripts. Hidden provider
+reasoning is neither stored nor displayed.
 
 # Data Structure
 
@@ -341,3 +435,52 @@ Scout reports contain accurate summaries of terrain, roads, water features, stro
 Armies cannot enter open water unless they are embarked on ships (IS_EMBARKED=TRUE). If a cell has "river" terrain but also IS_ROAD, then there is a bridge and armies can move through at on-road speeds. Otherwise, all-cavalry armies can ford rivers at normal speed, but if an army contains any infantry it must take a full day to ford the river. Wagons cannot enter river cells at all.
 
 Some terrain types reduce scouting distance to a fraction of the normal value (stored in the SCOUT_MULTIPLIER field). Other terrain types reduce the speed of an army traveling off-road (stored in the SPEED_MULTIPLIER field). 
+
+## Command-integrity release (20260913_0007)
+
+This release requires a clean game database. Existing games have no upgrade path.
+Army siege history now survives destruction, army IDs cannot be reused, and worker
+sessions are fenced by a lease generation. Items 7–8 from the diagnostic (river
+planning and morale) are deferred.
+
+Deploy in this order:
+
+1. Stop the API and every agent worker.
+2. Recreate the disposable game database, using the configured `DATABASE_URL`.
+   For SQLite, create a new database file; for PostgreSQL, recreate the game database.
+3. Set `SCENARIO_DIR`, validate the package, and run `alembic upgrade head`.
+4. Run `python -m forwantofanail.core.initialize_db` to load the scenario into the
+   empty schema. Initialization synchronizes PostgreSQL sequences before committing.
+5. Restart the API, then the workers.
+
+The new revision rejects old physical schemas with a reset-required message. The
+baseline intentionally creates current metadata, so fresh migrations remain supported.
+No deployment or test command automatically resets a user's game database.
+
+### Required validation
+
+Run the existing suite and the SQLite regressions with a configured scenario:
+
+```bash
+export SCENARIO_DIR=/absolute/path/to/copper-coast
+export COPPER_COAST_SCENARIO_DIR="$SCENARIO_DIR"
+python -m pytest forwantofanail/tests -m 'not postgresql' -q
+```
+
+Then run the PostgreSQL integration suite against the disposable PostgreSQL 16
+Compose service. Its database is separate from the application database:
+
+```bash
+docker compose -f docker-compose.test.yml up -d --wait
+export TEST_DATABASE_URL=postgresql+psycopg://forwantofanail:development-only@127.0.0.1:55432/forwantofanail_test
+bash scripts/test_postgresql.sh -q
+docker compose -f docker-compose.test.yml down
+```
+
+The integration command fails if its URL is missing or PostgreSQL is unavailable;
+it cannot silently pass by skipping PostgreSQL. Each test creates and removes a
+unique schema in a database whose name must contain `test`. Tests cover full
+scenario initialization, fresh migrations, concurrent commands and retries,
+process-level claims, lease recovery, siege history, and enemy-contact movement.
+Provider doubles keep validation independent of live model calls. Both database
+suites must pass before release.

@@ -42,6 +42,15 @@ def get_engine(echo: bool = False):
 
     engine = create_engine(database_url, echo=echo, future=True, connect_args=connect_args)
 
+    if engine.dialect.name == "postgresql":
+        @event.listens_for(engine, "connect")
+        def _configure_postgresql_connection(dbapi_connection, _connection_record):
+            # Legacy runtime timestamps are stored without timezone. Their
+            # application interpretation is UTC, regardless of server locale.
+            with dbapi_connection.cursor() as cursor:
+                cursor.execute("SET TIME ZONE 'UTC'")
+            dbapi_connection.commit()
+
     if database_url.startswith("sqlite"):
         @event.listens_for(engine, "connect")
         def _configure_sqlite_connection(dbapi_connection, _connection_record):

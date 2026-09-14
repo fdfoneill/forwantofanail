@@ -12,4 +12,12 @@ dependencies:
   - psycopg
   - pillow
   - rasterio
+  - pyshp
+  - networkx>=3
+  - scipy
   - ffmpeg
+  - pip
+  - pip:
+      - "mcp>=2,<3"
+      - "openai>=1,<3"
+      - "ollama>=0.4,<1"

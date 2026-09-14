@@ -29,6 +29,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Capture the current authoritative world-history snapshot.")
     parser.add_argument("--finalize", action="store_true", help="Mark the current watch final for postgame export.")
     args = parser.parse_args()
+    from forwantofanail.core.scenario import get_scenario_package, validate_database_binding
+    get_scenario_package()
+    validate_database_binding()
     tick = capture_current(finalize=args.finalize)
     state = "final" if args.finalize else "provisional"
     print(f"Captured {state} world snapshot at tick {tick}.")

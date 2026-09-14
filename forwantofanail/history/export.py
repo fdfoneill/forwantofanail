@@ -29,25 +29,13 @@ from forwantofanail.core.models import Location, TerrainType, WorldHistoryEvent,
 
 
 DEFAULT_OUTPUT = Path("exports/game-history")
-DATA_DIR = Path(__file__).resolve().parents[1] / "data"
-SCENARIO_MANIFEST = DATA_DIR / "scenario_manifest.json"
-SCENARIO_EPOCH = date(1410, 5, 20)
 WATCH_NAMES = {0: "Night", 1: "Matin", 2: "Prime", 3: "Sixbell", 4: "Vesper"}
 HEX_COLOR = re.compile(r"^#[0-9A-Fa-f]{6}$")
 
 
 def _scenario_config_path() -> Path:
-    manifest = json.loads(SCENARIO_MANIFEST.read_text(encoding="utf-8"))
-    relative = manifest.get("history_export_config")
-    if not relative:
-        raise ValueError("Scenario manifest does not define history_export_config")
-    candidate = (DATA_DIR / str(relative)).resolve()
-    if DATA_DIR.resolve() not in (candidate, *candidate.parents):
-        raise ValueError("Scenario history export config escapes the data directory")
-    return candidate
-
-
-DEFAULT_CONFIG = _scenario_config_path()
+    from forwantofanail.core.scenario import get_scenario_package
+    return get_scenario_package().resolve("history_export_config")
 
 
 def _normalized_faction(value: str) -> str:
@@ -341,7 +329,8 @@ class HistoryRenderer:
 
         for event in events:
             self._draw_event(draw, event)
-        scenario_date = SCENARIO_EPOCH + timedelta(days=max(0, int(snapshot.day) - 1))
+        from forwantofanail.core.scenario import get_scenario_package
+        scenario_date = get_scenario_package().calendar_start_date + timedelta(days=max(0, int(snapshot.day) - 1))
         heading = f"{scenario_date.strftime('%B %d, %Y')}  ·  Day {snapshot.day}  ·  {WATCH_NAMES.get(int(snapshot.watch), str(snapshot.watch))} Watch"
         draw.text((self.width * 0.035, self.height * 0.025), heading, fill=colors["text"], font=self.title_font)
         return image
@@ -414,12 +403,13 @@ def export_history(
     height: int = 1080,
     fps: float = 2.0,
     event_duration: int = 3,
-    config_path: Path = DEFAULT_CONFIG,
+    config_path: Path | None = None,
     no_video: bool = False,
     include_provisional: bool = False,
 ) -> dict[str, Any]:
     if width < 320 or height < 240 or fps <= 0 or event_duration < 1:
         raise ValueError("Invalid dimensions, fps, or event duration")
+    config_path = config_path or _scenario_config_path()
     config, config_hash = load_export_config(config_path)
     engine = get_engine()
     with Session(engine, autoflush=False, expire_on_commit=False) as session:
@@ -478,10 +468,13 @@ def main() -> None:
     parser.add_argument("--height", type=int, default=1080)
     parser.add_argument("--fps", type=float, default=2.0)
     parser.add_argument("--event-duration", type=int, default=3)
-    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--config", type=Path)
     parser.add_argument("--no-video", action="store_true")
     parser.add_argument("--include-provisional", action="store_true")
     args = parser.parse_args()
+    from forwantofanail.core.scenario import get_scenario_package, validate_database_binding
+    get_scenario_package()
+    validate_database_binding()
     manifest = export_history(
         output_dir=args.output_dir,
         start_tick=args.start_tick,
