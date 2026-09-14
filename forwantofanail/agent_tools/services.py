@@ -20,6 +20,7 @@ from forwantofanail.api.schemas import (
     ArmyManagementCommanderCreateRequest,
     ArmyManagementRightTargetRequest,
     MessageCreateRequest,
+    StandingFollowRoadUpdateRequest,
 )
 from forwantofanail.core.models import (
     Action,
@@ -76,6 +77,7 @@ class ToolContext:
     session_binding: str
     idempotency_key: str | None = None
     request_identity: str | None = None
+    credential: str | None = None
 
 
 class ToolInvocationError(Exception):
@@ -356,12 +358,12 @@ def _activity_rows(ctx: ToolContext, payload: ListActivityInput) -> list[dict[st
             )
             .all()
         )
-        now = datetime.now(timezone.utc)
+        delivery_ids = []
         for alert, receipt in rows:
             if payload.unread_only and receipt.read_at is not None:
                 continue
             if receipt.delivered_at is None:
-                receipt.delivered_at = now
+                delivery_ids.append(alert.alert_id)
             items.append(
                 {
                     "activity_ref": routes._alert_ref(alert.alert_id),
@@ -376,6 +378,8 @@ def _activity_rows(ctx: ToolContext, payload: ListActivityInput) -> list[dict[st
                     "_sort": (int(receipt.available_tick), 1, int(alert.alert_id)),
                 }
             )
+        if delivery_ids:
+            routes.command_acknowledge_alert_delivery(delivery_ids, ctx.commander_id, session)
     return sorted(items, key=lambda item: item["_sort"], reverse=True)
 
 
@@ -401,7 +405,7 @@ def list_activity(ctx: ToolContext, payload: ListActivityInput) -> dict[str, Any
         clean = {key: value for key, value in item.items() if key != "_sort"}
         clean["cursor"] = opaque_handle("activity", ctx.session_binding, ctx.commander_id, item["_sort"])
         output.append(clean)
-    ctx.session.commit()  # delivery acknowledgement only; listing never marks read
+    ctx.session.flush()  # the facade owns delivery acknowledgement commit
     return _result(
         ctx,
         "fwoan_list_activity",
@@ -417,24 +421,12 @@ def read_activity(ctx: ToolContext, payload: ReadActivityInput) -> dict[str, Any
     ref = payload.activity_ref
     try:
         if ref.startswith("msg_"):
-            value = routes.get_message(ref, commander_id=ctx.commander_id, session=ctx.session)
+            value = routes.command_get_message(ref, commander_id=ctx.commander_id, session=ctx.session)
             value.update({"source": "player_letter", "untrusted_content": True})
         elif ref.startswith("alt_"):
-            alert_id = routes._parse_alert_ref(ref)
-            row = (
-                ctx.session.query(Alert, AlertRecipient)
-                .join(AlertRecipient, AlertRecipient.alert_id == Alert.alert_id)
-                .filter(Alert.alert_id == alert_id, AlertRecipient.commander_id == ctx.commander_id)
-                .one_or_none()
-            )
-            clock = routes._get_or_create_clock(ctx.session, for_update=True)
-            if row is None or int(row[1].available_tick) > int(clock.world_tick):
-                raise ToolInvocationError("not_found", "Activity not found.", status_code=404)
-            alert, receipt = row
-            now = datetime.now(timezone.utc)
-            receipt.delivered_at = receipt.delivered_at or now
-            receipt.read_at = receipt.read_at or now
-            ctx.session.commit()
+            receipt = routes.command_mark_alert_read(ref, ctx.commander_id, ctx.session)
+            alert = ctx.session.get(Alert, receipt.alert_id)
+            ctx.session.flush()
             value = routes._serialize_alert(alert, receipt)
             value.update({"source": "game_event", "untrusted_content": False})
         else:
@@ -451,7 +443,7 @@ def list_correspondents(ctx: ToolContext, _payload: EmptyInput) -> dict[str, Any
 
 def send_letter(ctx: ToolContext, payload: SendLetterInput) -> dict[str, Any]:
     try:
-        value = routes.send_message(
+        value = routes.command_send_message(
             MessageCreateRequest(
                 recipient_id=payload.recipient_ref,
                 content=payload.content,
@@ -459,7 +451,6 @@ def send_letter(ctx: ToolContext, payload: SendLetterInput) -> dict[str, Any]:
             ),
             commander_id=ctx.commander_id,
             session=ctx.session,
-            idempotency_key=_mutation_key(ctx),
         )
     except HTTPException as exc:
         raise _from_http(exc) from exc
@@ -737,7 +728,7 @@ def _legal_next_cells(ctx: ToolContext, army: Army, prefix: list[str]) -> list[s
     )
     return sorted(
         cell for cell in valid
-        if not routes._is_enemy_occupied(ctx.session, destination_h3=cell, moving_army=army)
+        if not routes._known_enemy_occupied(ctx.session, army, cell)
         and routes._path_watches_for_army(ctx.session, army, army.location_id, prefix + [cell]) <= budget
     )
 
@@ -911,25 +902,22 @@ def submit_order(ctx: ToolContext, payload: SubmitOrderInput) -> dict[str, Any]:
     try:
         if order.kind == "march":
             cells = _resolve_steps(ctx, army, state, order.steps)
-            receipt = routes.plan_actions(
+            receipt = routes.command_plan_actions(
                 ActionPlanRequest(kind="march", path=cells),
                 commander_id=ctx.commander_id,
                 session=ctx.session,
-                idempotency_key=key,
             )
         elif order.kind == "hold":
-            receipt = routes.plan_actions(
+            receipt = routes.command_plan_actions(
                 ActionPlanRequest(kind="march", path=[]),
                 commander_id=ctx.commander_id,
                 session=ctx.session,
-                idempotency_key=key,
             )
         elif order.kind == "forage":
-            receipt = routes.plan_actions(
+            receipt = routes.command_plan_actions(
                 ActionPlanRequest(kind="forage", path=[]),
                 commander_id=ctx.commander_id,
                 session=ctx.session,
-                idempotency_key=key,
             )
         else:
             attacks, besieges = _target_options(ctx, state)
@@ -947,11 +935,10 @@ def submit_order(ctx: ToolContext, payload: SubmitOrderInput) -> dict[str, Any]:
                 if order.kind == "besiege"
                 else ActionCreateRequest(kind="attack", target_h3=target_h3, target_army_id=entity_ref)
             )
-            receipt = routes.create_action(
+            receipt = routes.command_create_action(
                 request,
                 commander_id=ctx.commander_id,
                 session=ctx.session,
-                idempotency_key=key,
             )
     except HTTPException as exc:
         raise _from_http(exc) from exc
@@ -961,11 +948,10 @@ def submit_order(ctx: ToolContext, payload: SubmitOrderInput) -> dict[str, Any]:
 def cancel_order(ctx: ToolContext, payload: CancelOrderInput) -> dict[str, Any]:
     _require_state(ctx, payload.state_token)
     try:
-        receipt = routes.cancel_action(
+        receipt = routes.command_cancel_action(
             payload.order_ref,
             commander_id=ctx.commander_id,
             session=ctx.session,
-            idempotency_key=_mutation_key(ctx),
         )
     except HTTPException as exc:
         raise _from_http(exc) from exc
@@ -977,69 +963,24 @@ def set_standing_orders(ctx: ToolContext, payload: SetStandingOrdersInput) -> di
 
     def operation():
         routes._lock_commander_scope(ctx.session, ctx.commander_id)
-        clock = routes._get_or_create_clock(ctx.session, for_update=True)
-        army = routes._find_commander_army(ctx.session, ctx.commander_id)
+        routes._find_commander_army(ctx.session, ctx.commander_id)
         current = routes._get_current_action_row(ctx.session, ctx.commander_id)
         if current is not None and current.kind == "rout" and current.state == "in_progress":
             raise HTTPException(status_code=409, detail="Army is routing; standing orders cannot be changed.")
         standing = routes._get_or_create_standing_order(ctx.session, ctx.commander_id)
-        if payload.follow_road is not None:
-            requested_follow = bool(payload.follow_road)
-            if bool(standing.follow_road_enabled) != requested_follow:
-                standing.follow_road_enabled = requested_follow
-                standing.last_report = (
-                    "Standing order issued: follow road."
-                    if requested_follow
-                    else "Standing order rescinded: follow road."
-                )
-                standing.last_report_day = None if requested_follow else clock.day
-                standing.last_report_watch = None if requested_follow else clock.watch
-                routes._create_alert(
-                    ctx.session,
-                    recipient_commander_id=ctx.commander_id,
-                    alert_type="action",
-                    signal_kind="event",
-                    category="standing-order",
-                    importance="normal",
-                    message=standing.last_report,
-                    created_day=clock.day,
-                    created_watch=clock.watch,
-                )
+        if payload.follow_road is not None and bool(standing.follow_road_enabled) != bool(payload.follow_road):
+            routes.command_set_follow_road_standing_order(
+                StandingFollowRoadUpdateRequest(enabled=payload.follow_road), ctx.commander_id, ctx.session
+            )
         if payload.forced_march is not None:
-            if (
-                bool(standing.forced_march_enabled)
-                and not payload.forced_march
-                and routes._forced_march_is_locked_for_watch(int(clock.watch))
-            ):
-                raise HTTPException(status_code=400, detail="Forced march cannot be disabled in this watch.")
-            requested_forced = bool(payload.forced_march)
-            if bool(standing.forced_march_enabled) != requested_forced:
-                standing.forced_march_enabled = requested_forced
-                if requested_forced:
-                    routes._create_alert(
-                        ctx.session,
-                        recipient_commander_id=ctx.commander_id,
-                        alert_type="action",
-                        signal_kind="event",
-                        category="standing-order",
-                        importance="normal",
-                        message="Standing order issued: forced march.",
-                        created_day=clock.day,
-                        created_watch=clock.watch,
-                    )
+            routes.command_set_forced_march_standing_order(
+                StandingFollowRoadUpdateRequest(enabled=payload.forced_march), ctx.commander_id, ctx.session
+            )
         standing.updated_at = datetime.now(timezone.utc)
-        _ = army
         return routes._serialize_standing_orders(standing)
 
     try:
-        receipt = routes._run_idempotent_mutation(
-            ctx.session,
-            actor_scope=f"commander:{ctx.commander_id}",
-            route="agent-standing-orders",
-            idempotency_key=_mutation_key(ctx),
-            payload=payload,
-            operation=operation,
-        )
+        receipt = operation()
     except HTTPException as exc:
         raise _from_http(exc) from exc
     return _result(ctx, "fwoan_set_standing_orders", {"standing_orders": receipt})
@@ -1133,11 +1074,10 @@ def reorganize_armies(ctx: ToolContext, payload: ReorganizeArmiesInput) -> dict[
         right_army=right,
     )
     try:
-        receipt = routes.apply_army_management(
+        receipt = routes.command_apply_army_management(
             request,
             commander_id=ctx.commander_id,
             session=ctx.session,
-            idempotency_key=_mutation_key(ctx),
         )
     except HTTPException as exc:
         raise _from_http(exc) from exc

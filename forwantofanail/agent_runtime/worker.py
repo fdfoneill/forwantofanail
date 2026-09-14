@@ -19,6 +19,8 @@ from forwantofanail.core.models import (
     Action, AgentAssignment, AgentCommanderDossier, AgentMemoryRevision, AgentRun, AgentRunEvent,
     AgentWorkerHeartbeat, Alert, AlertRecipient, Army, GameClock, Stronghold,
 )
+from .leases import RunLease, LeaseLost, owned_run, lock_agent_scope
+from forwantofanail.core.locking import begin_write, lock_clock
 from .context import dossier_as_markdown, load_faction_overview, load_profiles, load_rules
 from .providers import ModelToolCall, adapter_for
 from .service import (
@@ -129,9 +131,11 @@ def _worker_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}"
 
 
-def claim_run(worker_id: str) -> tuple[int, str] | None:
+def claim_run(worker_id: str) -> tuple[RunLease, str] | None:
     session = create_session()
     try:
+        begin_write(session)
+        lock_clock(session, exclusive=True)
         now = utcnow()
         reconcile_current_tick(session)
         query = session.query(AgentRun).filter(
@@ -164,6 +168,7 @@ def claim_run(worker_id: str) -> tuple[int, str] | None:
             append_event(session, run, "lease_recovered", {"previous_owner": run.lease_owner})
         run.status = "running"
         run.lease_owner = worker_id
+        run.lease_generation = int(run.lease_generation or 0) + 1
         run.started_at = run.started_at or now
         run.provider = profile.provider
         run.model = profile.model
@@ -176,7 +181,7 @@ def claim_run(worker_id: str) -> tuple[int, str] | None:
         raw_token = issue_run_session(session, run, profile.wall_time_seconds + 60)
         append_event(session, run, "started", {"worker": worker_id, "provider": profile.provider, "model": profile.model})
         session.commit()
-        return int(run.run_id), raw_token
+        return RunLease(int(run.run_id), worker_id, run.lease_generation), raw_token
     except Exception:
         session.rollback()
         raise
@@ -200,10 +205,11 @@ def _invoke_gameplay_tool(raw_token: str, name: str, arguments: dict[str, Any], 
     return {"ok": True, "result": payload}
 
 
-def _record(run_id: int, kind: str, payload: dict[str, Any], *, duration_ms: int | None = None) -> None:
+def _record(lease: RunLease, kind: str, payload: dict[str, Any], *, duration_ms: int | None = None) -> None:
+    run_id = lease.run_id
     session = create_session()
     try:
-        run = session.get(AgentRun, run_id)
+        run = owned_run(session, lease)
         if run is not None:
             append_event(session, run, kind, payload, duration_ms)
         session.commit()
@@ -344,7 +350,8 @@ def _heartbeat_had_active_success(session, run_id: int) -> bool:
     return False
 
 
-def _march_requires_plan(run_id: int, call: ModelToolCall) -> bool:
+def _march_requires_plan(lease: RunLease, call: ModelToolCall) -> bool:
+    run_id = lease.run_id
     if call.name != "fwoan_submit_order" or ((call.arguments.get("order") or {}).get("kind") != "march"):
         return False
     session = create_session()
@@ -356,10 +363,17 @@ def _march_requires_plan(run_id: int, call: ModelToolCall) -> bool:
         session.close()
 
 
-def _load_context(run_id: int, raw_token: str) -> tuple[Any, list[dict[str, Any]], list[dict[str, Any]]]:
+def _load_context(lease: RunLease, raw_token: str) -> tuple[Any, list[dict[str, Any]], list[dict[str, Any]]]:
+    run_id = lease.run_id
+    situation = _invoke_gameplay_tool(raw_token, "fwoan_get_situation", {}, f"run-{run_id}-situation")
+    if not situation.get("ok"):
+        raise RuntimeError(f"Unable to obtain initial situation: {situation.get('error')}")
+    atlas = _invoke_gameplay_tool(raw_token, "fwoan_get_strategic_overview", {"origin_ref": "current", "focus": "all"}, f"run-{run_id}-atlas")
+    if not atlas.get("ok"):
+        raise RuntimeError(f"Unable to obtain strategic atlas: {atlas.get('error')}")
     session = create_session()
     try:
-        run = session.get(AgentRun, run_id)
+        run = owned_run(session, lease)
         if run is None or run.status != "running":
             raise RuntimeError("Heartbeat is no longer active")
         profile = load_profiles()[run.profile_id]
@@ -370,17 +384,7 @@ def _load_context(run_id: int, raw_token: str) -> tuple[Any, list[dict[str, Any]
         prior_events = session.query(AgentRunEvent).filter(AgentRunEvent.run_id == run_id).order_by(AgentRunEvent.sequence).all()
         context_event = next((row for row in prior_events if row.event_kind == "context"), None)
         stored_context = json.loads(context_event.payload_json) if context_event is not None else None
-        situation = _invoke_gameplay_tool(raw_token, "fwoan_get_situation", {}, f"run-{run_id}-situation")
-        if not situation.get("ok"):
-            raise RuntimeError(f"Unable to obtain initial situation: {situation.get('error')}")
         initial_situation = stored_context.get("situation") if stored_context else situation["result"]
-        atlas = (
-            {"ok": True, "result": stored_context["strategic_atlas"]}
-            if stored_context and stored_context.get("strategic_atlas")
-            else _invoke_gameplay_tool(raw_token, "fwoan_get_strategic_overview", {"origin_ref": "current", "focus": "all"}, f"run-{run_id}-atlas")
-        )
-        if not atlas.get("ok"):
-            raise RuntimeError(f"Unable to obtain strategic atlas: {atlas.get('error')}")
         initial_atlas = stored_context.get("strategic_atlas") if stored_context else atlas["result"]
         assignment = session.get(AgentAssignment, run.commander_id)
         plan = _refresh_review_state(session, run, assignment)
@@ -450,21 +454,23 @@ def _load_context(run_id: int, raw_token: str) -> tuple[Any, list[dict[str, Any]
                         "kind": "tool_result", "call_id": payload["call_id"],
                         "name": payload["name"], "result": payload.get("result"),
                     })
+            session.commit()
             recovered_finished = False
             for identity, pending in calls_by_identity.items():
                 if identity in result_identities:
                     continue
                 if pending["name"] in {"fwoan_update_scratchpad", "fwoan_finish_heartbeat"}:
                     recovered, recovered_finished = _runtime_call(
-                        run_id,
-                        ModelToolCall(pending["call_id"], pending["name"], pending.get("arguments", {})),
+                        lease,
+                        ModelToolCall(pending["call_id"], pending["name"], pending.get("arguments", {})), identity,
                     )
                 else:
                     recovered = _invoke_gameplay_tool(raw_token, pending["name"], pending.get("arguments", {}), identity)
-                append_event(session, run, "tool_result", {
-                    "identity": identity, "call_id": pending["call_id"],
-                    "name": pending["name"], "result": recovered, "recovered": True,
-                })
+                if not (pending["name"] in {"fwoan_update_scratchpad", "fwoan_finish_heartbeat"} and recovered.get("ok")):
+                    _record(lease, "tool_result", {
+                        "identity": identity, "call_id": pending["call_id"],
+                        "name": pending["name"], "result": recovered, "recovered": True,
+                    })
                 messages.append({
                     "kind": "tool_result", "call_id": pending["call_id"],
                     "name": pending["name"], "result": recovered,
@@ -482,12 +488,21 @@ def _load_context(run_id: int, raw_token: str) -> tuple[Any, list[dict[str, Any]
         session.close()
 
 
-def _runtime_call(run_id: int, call: ModelToolCall) -> tuple[dict[str, Any], bool]:
+def _runtime_call(lease: RunLease, call: ModelToolCall, identity: str | None = None) -> tuple[dict[str, Any], bool]:
+    run_id = lease.run_id
     session = create_session()
     try:
-        run = session.get(AgentRun, run_id)
+        run = owned_run(session, lease)
         if run is None or run.status != "running":
             return {"ok": False, "error": "heartbeat is no longer active"}, True
+        identity = identity or f"runtime:{run_id}:{call.call_id}"
+        for event in session.query(AgentRunEvent).filter_by(run_id=run_id, event_kind="tool_result").all():
+            prior = json.loads(event.payload_json)
+            if prior.get("identity") == identity:
+                return prior["result"], False
+        def receipt(result):
+            append_event(session, run, "tool_result", {"identity": identity, "call_id": call.call_id,
+                         "name": call.name, "result": result})
         if call.name == "fwoan_update_scratchpad":
             value = ScratchpadInput.model_validate(call.arguments)
             assignment = session.get(AgentAssignment, run.commander_id)
@@ -541,6 +556,7 @@ def _runtime_call(run_id: int, call: ModelToolCall) -> tuple[dict[str, Any], boo
             append_event(session, run, "scratchpad_update", {"revision": row.revision, "content": row.content})
             if value.strategic_plan is not None:
                 append_event(session, run, "strategic_plan_revision", {"revision": row.revision, "plan": raw_plan, "review_due_tick": assignment.plan_review_due_tick})
+            receipt({"ok": True, "revision": row.revision})
             session.commit()
             return {"ok": True, "revision": row.revision}, False
         if call.name == "fwoan_finish_heartbeat":
@@ -570,6 +586,7 @@ def _runtime_call(run_id: int, call: ModelToolCall) -> tuple[dict[str, Any], boo
             run.final_summary_json = json.dumps(value.model_dump(), sort_keys=True, ensure_ascii=False)
             revoke_run_sessions(session, run)
             append_event(session, run, "completed", value.model_dump())
+            receipt({"ok": True, "status": "completed"})
             session.commit()
             return {"ok": True, "status": "completed"}, True
         return {"ok": False, "error": "unknown runtime tool"}, False
@@ -588,10 +605,11 @@ def _runtime_call(run_id: int, call: ModelToolCall) -> tuple[dict[str, Any], boo
         session.close()
 
 
-def _increment_usage(run_id: int, *, turns: int = 0, calls: int = 0, input_tokens: int = 0, output_tokens: int = 0) -> AgentRun:
+def _increment_usage(lease: RunLease, *, turns: int = 0, calls: int = 0, input_tokens: int = 0, output_tokens: int = 0) -> AgentRun:
+    run_id = lease.run_id
     session = create_session()
     try:
-        run = session.get(AgentRun, run_id)
+        run = owned_run(session, lease)
         run.model_turns += turns
         run.tool_calls += calls
         run.input_tokens += input_tokens
@@ -602,10 +620,11 @@ def _increment_usage(run_id: int, *, turns: int = 0, calls: int = 0, input_token
         session.close()
 
 
-def fail_run(run_id: int, code: str, message: str, *, timed_out: bool = False) -> None:
+def fail_run(lease: RunLease, code: str, message: str, *, timed_out: bool = False) -> None:
+    run_id = lease.run_id
     session = create_session()
     try:
-        run = session.get(AgentRun, run_id)
+        run = owned_run(session, lease)
         if run is not None and run.status == "running":
             run.status = "timed_out" if timed_out else "failed"
             run.finished_at = utcnow()
@@ -630,27 +649,28 @@ def _safe_error(exc: Exception, *extra_secrets: str) -> str:
     return message
 
 
-def execute_run(run_id: int, raw_token: str) -> None:
+def execute_run(lease: RunLease, raw_token: str) -> None:
+    run_id = lease.run_id
     started = time.monotonic()
     try:
-        profile, messages, tools = _load_context(run_id, raw_token)
+        profile, messages, tools = _load_context(lease, raw_token)
         adapter = adapter_for(profile)
         finish_reminder_sent = False
         while True:
             if time.monotonic() - started > profile.wall_time_seconds:
-                fail_run(run_id, "wall_time_exceeded", "Heartbeat exceeded its wall-clock budget.", timed_out=True)
+                fail_run(lease, "wall_time_exceeded", "Heartbeat exceeded its wall-clock budget.", timed_out=True)
                 return
             turn = adapter.invoke(messages, tools, profile)
-            run = _increment_usage(run_id, turns=1, input_tokens=turn.input_tokens, output_tokens=turn.output_tokens)
-            _record(run_id, "model_response", {"content": turn.content, "tool_calls": [call.__dict__ for call in turn.tool_calls], "finish_reason": turn.finish_reason})
+            run = _increment_usage(lease, turns=1, input_tokens=turn.input_tokens, output_tokens=turn.output_tokens)
+            _record(lease, "model_response", {"content": turn.content, "tool_calls": [call.__dict__ for call in turn.tool_calls], "finish_reason": turn.finish_reason})
             if run.model_turns > profile.max_model_turns or run.output_tokens > profile.max_total_output_tokens:
-                fail_run(run_id, "model_budget_exceeded", "Heartbeat exceeded its model-turn or output-token budget.", timed_out=True)
+                fail_run(lease, "model_budget_exceeded", "Heartbeat exceeded its model-turn or output-token budget.", timed_out=True)
                 return
             if turn.content:
                 messages.append({"role": "assistant", "content": turn.content})
             if not turn.tool_calls:
                 if finish_reminder_sent:
-                    fail_run(run_id, "missing_completion", "Model did not call fwoan_finish_heartbeat.")
+                    fail_run(lease, "missing_completion", "Model did not call fwoan_finish_heartbeat.")
                     return
                 messages.append({"role": "user", "content": "Finish now by calling fwoan_finish_heartbeat with your decision summary."})
                 finish_reminder_sent = True
@@ -658,24 +678,24 @@ def execute_run(run_id: int, raw_token: str) -> None:
             calls_to_execute = turn.tool_calls[:1]
             ignored_calls = turn.tool_calls[1:]
             if ignored_calls:
-                _record(run_id, "tool_calls_ignored", {
+                _record(lease, "tool_calls_ignored", {
                     "reason": "Only one tool call is permitted per model turn; retry needed calls after reading the first result.",
                     "calls": [{"call_id": call.call_id, "name": call.name} for call in ignored_calls],
                 })
             for call in calls_to_execute:
-                run = _increment_usage(run_id, calls=1)
+                run = _increment_usage(lease, calls=1)
                 if run.tool_calls > profile.max_tool_calls:
-                    fail_run(run_id, "tool_budget_exceeded", "Heartbeat exceeded its tool-call budget.", timed_out=True)
+                    fail_run(lease, "tool_budget_exceeded", "Heartbeat exceeded its tool-call budget.", timed_out=True)
                     return
                 messages.append({"kind": "tool_call", "call_id": call.call_id, "name": call.name, "arguments": call.arguments})
                 identity = f"agent-run:{run_id}:tool-sequence:{run.tool_calls}"
-                _record(run_id, "tool_call", {
+                _record(lease, "tool_call", {
                     "identity": identity, "call_id": call.call_id,
                     "name": call.name, "arguments": call.arguments,
                 })
                 if call.name in {"fwoan_update_scratchpad", "fwoan_finish_heartbeat"}:
-                    result, finished = _runtime_call(run_id, call)
-                elif _march_requires_plan(run_id, call):
+                    result, finished = _runtime_call(lease, call, identity)
+                elif _march_requires_plan(lease, call):
                     result = {"ok": False, "error": {"code": "strategic_plan_required", "message": "Establish a structured strategic plan before the first strategic march."}}
                     finished = False
                 else:
@@ -684,10 +704,11 @@ def execute_run(run_id: int, raw_token: str) -> None:
                         identity,
                     )
                     finished = False
-                _record(run_id, "tool_result", {
-                    "identity": identity, "call_id": call.call_id,
-                    "name": call.name, "result": result,
-                })
+                if not (call.name in {"fwoan_update_scratchpad", "fwoan_finish_heartbeat"} and result.get("ok")):
+                    _record(lease, "tool_result", {
+                        "identity": identity, "call_id": call.call_id,
+                        "name": call.name, "result": result,
+                    })
                 messages.append({"kind": "tool_result", "call_id": call.call_id, "name": call.name, "result": result})
                 if finished:
                     return
@@ -700,10 +721,13 @@ def execute_run(run_id: int, raw_token: str) -> None:
                         "the returned data."
                     ),
                 })
-    except StopIteration:
+    except (StopIteration, LeaseLost):
         return
     except Exception as exc:
-        fail_run(run_id, "runtime_error", _safe_error(exc, raw_token))
+        try:
+            fail_run(lease, "runtime_error", _safe_error(exc, raw_token))
+        except LeaseLost:
+            pass
 
 
 def work_once(worker_id: str | None = None) -> bool:

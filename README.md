@@ -166,12 +166,8 @@ and field-army creation/destruction are recorded in `world_history_events`. Snap
 share the gameplay transaction. History begins with the first snapshot captured after this feature is
 deployed; earlier watches are intentionally not reconstructed.
 
-For an in-progress deployment, apply the migration and capture the current watch as the baseline:
-
-```bash
-alembic upgrade head
-python -m forwantofanail.history.capture
-```
+For this reset-required release, follow the clean deployment instructions below.
+After initialization, `python -m forwantofanail.history.capture` can capture the current watch.
 
 When a game ends before another watch advances, finalize its last frame explicitly:
 
@@ -439,3 +435,52 @@ Scout reports contain accurate summaries of terrain, roads, water features, stro
 Armies cannot enter open water unless they are embarked on ships (IS_EMBARKED=TRUE). If a cell has "river" terrain but also IS_ROAD, then there is a bridge and armies can move through at on-road speeds. Otherwise, all-cavalry armies can ford rivers at normal speed, but if an army contains any infantry it must take a full day to ford the river. Wagons cannot enter river cells at all.
 
 Some terrain types reduce scouting distance to a fraction of the normal value (stored in the SCOUT_MULTIPLIER field). Other terrain types reduce the speed of an army traveling off-road (stored in the SPEED_MULTIPLIER field). 
+
+## Command-integrity release (20260913_0007)
+
+This release requires a clean game database. Existing games have no upgrade path.
+Army siege history now survives destruction, army IDs cannot be reused, and worker
+sessions are fenced by a lease generation. Items 7–8 from the diagnostic (river
+planning and morale) are deferred.
+
+Deploy in this order:
+
+1. Stop the API and every agent worker.
+2. Recreate the disposable game database, using the configured `DATABASE_URL`.
+   For SQLite, create a new database file; for PostgreSQL, recreate the game database.
+3. Set `SCENARIO_DIR`, validate the package, and run `alembic upgrade head`.
+4. Run `python -m forwantofanail.core.initialize_db` to load the scenario into the
+   empty schema. Initialization synchronizes PostgreSQL sequences before committing.
+5. Restart the API, then the workers.
+
+The new revision rejects old physical schemas with a reset-required message. The
+baseline intentionally creates current metadata, so fresh migrations remain supported.
+No deployment or test command automatically resets a user's game database.
+
+### Required validation
+
+Run the existing suite and the SQLite regressions with a configured scenario:
+
+```bash
+export SCENARIO_DIR=/absolute/path/to/copper-coast
+export COPPER_COAST_SCENARIO_DIR="$SCENARIO_DIR"
+python -m pytest forwantofanail/tests -m 'not postgresql' -q
+```
+
+Then run the PostgreSQL integration suite against the disposable PostgreSQL 16
+Compose service. Its database is separate from the application database:
+
+```bash
+docker compose -f docker-compose.test.yml up -d --wait
+export TEST_DATABASE_URL=postgresql+psycopg://forwantofanail:development-only@127.0.0.1:55432/forwantofanail_test
+bash scripts/test_postgresql.sh -q
+docker compose -f docker-compose.test.yml down
+```
+
+The integration command fails if its URL is missing or PostgreSQL is unavailable;
+it cannot silently pass by skipping PostgreSQL. Each test creates and removes a
+unique schema in a database whose name must contain `test`. Tests cover full
+scenario initialization, fresh migrations, concurrent commands and retries,
+process-level claims, lease recovery, siege history, and enemy-contact movement.
+Provider doubles keep validation independent of live model calls. Both database
+suites must pass before release.

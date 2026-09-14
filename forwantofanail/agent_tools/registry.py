@@ -121,7 +121,9 @@ def invoke(name: str, raw_arguments: Any, ctx: ToolContext) -> dict[str, Any]:
             details=details,
         ) from exc
     def run_handler() -> dict[str, Any]:
-        return HANDLERS[name](ctx, arguments)
+        value = HANDLERS[name](ctx, arguments)
+        ctx.session.flush()
+        return definition.output_model.model_validate(value).model_dump(mode="json")
 
     if definition.classification == "mutation":
         # This facade-level record deliberately surrounds state-token checks. A
@@ -142,6 +144,7 @@ def invoke(name: str, raw_arguments: Any, ctx: ToolContext) -> dict[str, Any]:
                 idempotency_key=identity,
                 payload=arguments,
                 operation=run_handler,
+                authorize=lambda: _authorize_mutation(ctx),
             )
         except Exception as exc:
             from fastapi import HTTPException
@@ -149,9 +152,24 @@ def invoke(name: str, raw_arguments: Any, ctx: ToolContext) -> dict[str, Any]:
             if isinstance(exc, HTTPException):
                 raise _from_http(exc, default_code="conflict") from exc
             raise
+    elif name == "fwoan_list_activity":
+        from forwantofanail.api import routes
+        def acknowledged_read():
+            _authorize_mutation(ctx)
+            return run_handler()
+        value = routes._run_world_mutation(ctx.session, acknowledged_read)
     else:
         value = run_handler()
     try:
         return definition.output_model.model_validate(value).model_dump(mode="json")
     except ValidationError as exc:  # pragma: no cover - programming error guardrail
         raise RuntimeError(f"Tool {name} returned an invalid result") from exc
+
+
+def _authorize_mutation(ctx):
+    from forwantofanail.api import routes
+    # Acquire gameplay scope before checking the run; keep it until receipt commit.
+    routes._lock_management_scope(ctx.session, ctx.commander_id)
+    if ctx.credential:
+        from forwantofanail.agent_runtime.service import validate_tool_credential
+        validate_tool_credential(ctx.session, ctx.credential, ctx.commander_id)

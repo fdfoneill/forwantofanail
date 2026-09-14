@@ -49,6 +49,8 @@ def _latest_run(session: Session, commander_id: int, world_tick: int) -> AgentRu
 
 
 def append_event(session: Session, run: AgentRun, event_kind: str, payload: dict[str, Any], duration_ms: int | None = None) -> AgentRunEvent:
+    from .leases import lock_agent_scope
+    lock_agent_scope(session, run.commander_id)
     sequence = int(
         session.query(func.coalesce(func.max(AgentRunEvent.sequence), 0))
         .filter(AgentRunEvent.run_id == run.run_id)
@@ -107,6 +109,8 @@ def reconcile_current_tick(session: Session) -> list[AgentRun]:
 
 
 def assign_agent(session: Session, commander_id: int, profile_id: str) -> AgentAssignment:
+    from .leases import lock_agent_scope
+    lock_agent_scope(session, commander_id)
     profile = load_profiles().get(profile_id)
     if profile is None:
         raise HTTPException(status_code=404, detail={"code": "profile_not_found", "message": "Unknown agent profile."})
@@ -179,6 +183,8 @@ def revoke_run_sessions(session: Session, run: AgentRun) -> None:
 
 
 def disable_agent(session: Session, commander_id: int) -> AgentAssignment:
+    from .leases import lock_agent_scope
+    lock_agent_scope(session, commander_id)
     assignment = session.get(AgentAssignment, commander_id)
     if assignment is None or not assignment.enabled:
         raise HTTPException(status_code=404, detail="Enabled agent assignment not found")
@@ -194,6 +200,8 @@ def disable_agent(session: Session, commander_id: int) -> AgentAssignment:
 
 
 def retry_run(session: Session, commander_id: int, world_tick: int) -> AgentRun:
+    from .leases import lock_agent_scope
+    lock_agent_scope(session, commander_id)
     assignment = session.get(AgentAssignment, commander_id)
     if assignment is None or not assignment.enabled:
         raise HTTPException(status_code=404, detail="Enabled agent assignment not found")
@@ -204,6 +212,8 @@ def retry_run(session: Session, commander_id: int, world_tick: int) -> AgentRun:
 
 
 def cancel_and_requeue_run(session: Session, commander_id: int, world_tick: int) -> AgentRun:
+    from .leases import lock_agent_scope
+    lock_agent_scope(session, commander_id)
     assignment = session.get(AgentAssignment, commander_id)
     latest = _latest_run(session, commander_id, world_tick)
     if assignment is None or not assignment.enabled or latest is None or latest.status not in ACTIVE_RUN_STATUSES:
@@ -217,6 +227,8 @@ def cancel_and_requeue_run(session: Session, commander_id: int, world_tick: int)
 
 
 def skip_run(session: Session, commander_id: int, world_tick: int, reason: str = "admin_skip") -> AgentRun:
+    from .leases import lock_agent_scope
+    lock_agent_scope(session, commander_id)
     run = _latest_run(session, commander_id, world_tick)
     if run is None:
         raise HTTPException(status_code=404, detail="Heartbeat not found")
@@ -274,6 +286,7 @@ def issue_run_session(session: Session, run: AgentRun, lease_seconds: int) -> st
     expires = now + timedelta(seconds=lease_seconds)
     session.add(AgentRunSession(
         token_hash=token_hash(raw), run_id=run.run_id, commander_id=run.commander_id,
+        lease_generation=int(run.lease_generation or 0),
         created_at=now, last_used_at=now, expires_at=expires, revoked_at=None,
     ))
     run.lease_expires_at = expires
@@ -291,7 +304,7 @@ def authenticate_run_session(session: Session, raw: str) -> int | None:
     run = session.get(AgentRun, row.run_id)
     assignment = session.get(AgentAssignment, row.commander_id)
     clock = session.get(GameClock, 1)
-    if expires <= now or run is None or run.status != "running" or assignment is None or not assignment.enabled or clock is None or int(clock.world_tick) != int(run.world_tick):
+    if expires <= now or run is None or row.lease_generation != run.lease_generation or run.status != "running" or assignment is None or not assignment.enabled or clock is None or int(clock.world_tick) != int(run.world_tick):
         row.revoked_at = now
         session.commit()
         return None
@@ -400,3 +413,25 @@ def _display_tick(world_tick: int | None) -> dict[str, Any] | None:
     day, watch = from_world_tick(int(world_tick))
     labels = {1: "Matin", 2: "Prime", 3: "Sixbell", 4: "Vesper", 0: "Night"}
     return {"world_tick": int(world_tick), "day": day, "watch": labels[int(watch)]}
+
+
+def validate_tool_credential(session, raw, commander_id):
+    from forwantofanail.core.models import AuthToken
+    from .leases import RunLease, owned_run, LeaseLost
+    human = session.get(AuthToken, token_hash(raw))
+    if human is not None and human.revoked_at is None and human.commander_id == commander_id:
+        return
+    row = session.get(AgentRunSession, token_hash(raw))
+    if row is None or row.revoked_at is not None or row.commander_id != commander_id:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    run = session.get(AgentRun, row.run_id)
+    if run is None:
+        raise HTTPException(status_code=401, detail="Invalid session")
+    try:
+        owned_run(session, RunLease(run.run_id, run.lease_owner, row.lease_generation))
+    except LeaseLost as exc:
+        raise HTTPException(status_code=401, detail="Agent lease is no longer active") from exc
+    session.refresh(row)
+    expires = row.expires_at.replace(tzinfo=timezone.utc) if row.expires_at.tzinfo is None else row.expires_at
+    if row.revoked_at is not None or expires <= utcnow():
+        raise HTTPException(status_code=401, detail="Agent lease is no longer active")

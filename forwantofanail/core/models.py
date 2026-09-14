@@ -128,6 +128,7 @@ class Army(Base):
         ),
         CheckConstraint("noncombattant_percent >= 0", name="ck_armies_noncombattant_percent_nonnegative"),
         CheckConstraint("army_supply >= 0", name="ck_armies_supply_nonnegative"),
+        {"sqlite_autoincrement": True},
     )
 
     army_id = Column(Integer, primary_key=True)
@@ -202,7 +203,8 @@ class Siege(Base):
 
     siege_id = Column(Integer, primary_key=True, autoincrement=True)
     stronghold_id = Column(Integer, ForeignKey("strongholds.stronghold_id"), nullable=False, index=True)
-    besieger_army_id = Column(Integer, ForeignKey("armies.army_id"), nullable=False, index=True)
+    besieger_army_id = Column(Integer, nullable=False, index=True)
+    live_besieger_army_id = Column(Integer, ForeignKey("armies.army_id", ondelete="SET NULL"), nullable=True, index=True)
     besieger_commander_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=True, index=True)
     started_day = Column(Integer, nullable=False)
     started_watch = Column(Integer, nullable=False)
@@ -216,7 +218,7 @@ class Siege(Base):
     ended_reason = Column(String(40), nullable=True)
 
     stronghold = relationship("Stronghold", back_populates="sieges")
-    besieger_army = relationship("Army", foreign_keys=[besieger_army_id])
+    besieger_army = relationship("Army", foreign_keys=[live_besieger_army_id])
     besieger_commander = relationship("Commander", foreign_keys=[besieger_commander_id])
     participants = relationship("SiegeParticipant", back_populates="siege", cascade="all, delete-orphan")
 
@@ -228,7 +230,8 @@ class SiegeParticipant(Base):
     )
 
     siege_id = Column(Integer, ForeignKey("sieges.siege_id"), nullable=False)
-    besieger_army_id = Column(Integer, ForeignKey("armies.army_id"), nullable=False, index=True)
+    besieger_army_id = Column(Integer, nullable=False, index=True)
+    live_besieger_army_id = Column(Integer, ForeignKey("armies.army_id", ondelete="SET NULL"), nullable=True, index=True)
     besieger_commander_id = Column(Integer, ForeignKey("commanders.commander_id"), nullable=True, index=True)
     started_day = Column(Integer, nullable=False)
     started_watch = Column(Integer, nullable=False)
@@ -238,7 +241,7 @@ class SiegeParticipant(Base):
     ended_reason = Column(String(40), nullable=True)
 
     siege = relationship("Siege", back_populates="participants")
-    besieger_army = relationship("Army", foreign_keys=[besieger_army_id])
+    besieger_army = relationship("Army", foreign_keys=[live_besieger_army_id])
     besieger_commander = relationship("Commander", foreign_keys=[besieger_commander_id])
 
 
@@ -555,6 +558,7 @@ class AgentRun(Base):
     dossier_hash = Column(String(64), nullable=True)
     starting_memory_revision = Column(Integer, nullable=False, default=0)
     ending_memory_revision = Column(Integer, nullable=True)
+    lease_generation = Column(Integer, nullable=False, default=0, server_default="0")
     lease_owner = Column(String(120), nullable=True)
     lease_expires_at = Column(DateTime, nullable=True, index=True)
     started_at = Column(DateTime, nullable=True)
@@ -612,6 +616,7 @@ class AgentRunSession(Base):
     __tablename__ = "agent_run_sessions"
 
     token_hash = Column(String(64), primary_key=True)
+    lease_generation = Column(Integer, nullable=False, default=0, server_default="0")
     run_id = Column(Integer, ForeignKey("agent_runs.run_id", ondelete="CASCADE"), nullable=False, index=True)
     commander_id = Column(Integer, ForeignKey("commanders.commander_id", ondelete="CASCADE"), nullable=False, index=True)
     created_at = Column(DateTime, nullable=False)

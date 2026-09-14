@@ -371,6 +371,8 @@ def initialize_database(data_dir: Path | None = None, reset: bool = False) -> No
         binding.database_source_fingerprint = package.database_source_fingerprint
         session.add(binding)
 
+        from forwantofanail.core.sequences import synchronize_sequences
+        synchronize_sequences(session)
         session.commit()
     except Exception:
         session.rollback()

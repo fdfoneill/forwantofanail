@@ -112,7 +112,7 @@ def mcp_endpoint(
             if definition is None:
                 return JSONResponse(_error(request_id, -32601, "Unknown commander tool."))
             identity_payload = json.dumps(
-                [request_id, name, params.get("arguments") or {}],
+                [request_id, name],
                 sort_keys=True,
                 separators=(",", ":"),
                 default=str,
@@ -126,6 +126,7 @@ def mcp_endpoint(
                         session=session,
                         commander_id=int(auth.commander_id),
                         session_binding=token_binding(raw_token),
+                        credential=raw_token,
                         request_identity=request_identity,
                     ),
                 )
@@ -139,7 +140,7 @@ def mcp_endpoint(
             else:
                 result = {
                     "resultType": "complete",
-                    "content": [{"type": "text", "text": json.dumps(value, default=str)}],
+                    "content": [{"type": "text", "text": json.dumps(value, default=str, sort_keys=True)}],
                     "structuredContent": value,
                     "isError": False,
                 }

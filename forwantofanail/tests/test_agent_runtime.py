@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import json
 
 import pytest
@@ -29,6 +29,19 @@ from forwantofanail.core.models import (
     AgentAssignment, AgentMemoryRevision, AgentRun, Army, AuthToken, Commander, CommanderClaim,
     Detachment, GameClock, Location, TerrainType,
 )
+
+
+def _test_lease(run_id):
+    from forwantofanail.agent_runtime.leases import RunLease
+    with create_session() as session:
+        run = session.get(AgentRun, run_id)
+        run.lease_owner = "test-worker"
+        run.lease_generation = 1
+        run.lease_expires_at = datetime.now(timezone.utc) + timedelta(minutes=10)
+        clock = session.get(GameClock, 1)
+        clock.world_tick = run.world_tick
+        session.commit()
+        return RunLease(run_id, "test-worker", 1)
 
 
 @pytest.fixture()
@@ -206,7 +219,7 @@ def test_worker_completes_structured_heartbeat_and_persists_memory(agent_db, mon
     monkeypatch.setattr(worker, "_invoke_gameplay_tool", lambda *_args, **_kwargs: {
         "ok": True, "result": {"tool": "fwoan_get_situation", "as_of": "May 20, Matin watch", "data": {"brief": "All is quiet."}}
     })
-    worker.execute_run(run_id, "run-token")
+    worker.execute_run(_test_lease(run_id), "run-token")
 
     session = create_session()
     finished = session.get(AgentRun, run_id)
@@ -270,7 +283,7 @@ def test_required_strategic_review_consults_atlas_and_persists_plan(agent_db, mo
 
     monkeypatch.setattr(worker, "adapter_for", lambda _profile: ReviewingAdapter())
     monkeypatch.setattr(worker, "_invoke_gameplay_tool", fake_gameplay)
-    worker.execute_run(run_id, "run-token")
+    worker.execute_run(_test_lease(run_id), "run-token")
     session = create_session()
     finished = session.get(AgentRun, run_id)
     assignment = session.get(AgentAssignment, 0)
@@ -316,7 +329,7 @@ def test_fifth_passive_watch_requires_review_and_hold_does_not_evade_it(agent_db
             "result": {"ok": True},
         })
         session.commit()
-        result, finished = worker._runtime_call(row.run_id, ModelToolCall("finish", "fwoan_finish_heartbeat", {
+        result, finished = worker._runtime_call(_test_lease(row.run_id), ModelToolCall("finish", "fwoan_finish_heartbeat", {
             "assessment": "Holding.", "actions_taken": ["Held position"],
             "unresolved_matters": [], "next_intent": "Continue observing.",
         }))
@@ -343,7 +356,7 @@ def test_plan_destination_reference_round_trips_and_bad_reference_is_recoverable
     session.commit()
     run_id = run.run_id
     session.close()
-    result, finished = worker._runtime_call(run_id, ModelToolCall("bad-plan", "fwoan_update_scratchpad", {
+    result, finished = worker._runtime_call(_test_lease(run_id), ModelToolCall("bad-plan", "fwoan_update_scratchpad", {
         "expected_revision": 1,
         "content": "Advance toward Brialgon.",
         "strategic_plan": {
@@ -428,7 +441,7 @@ def test_worker_executes_only_one_tool_call_per_model_turn(agent_db, monkeypatch
 
     monkeypatch.setattr(worker, "adapter_for", lambda _profile: BatchedAdapter())
     monkeypatch.setattr(worker, "_invoke_gameplay_tool", fake_gameplay)
-    worker.execute_run(run_id, "run-token")
+    worker.execute_run(_test_lease(run_id), "run-token")
 
     session = create_session()
     finished = session.get(AgentRun, run_id)
